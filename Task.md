@@ -193,7 +193,10 @@ sequenceDiagram
 - `infra/logging.py` 的 `DbLogHandler`：有界队列加后台线程批量写入；队列满时丢弃并计数；`close()` 写完剩余记录。
 - `main.py` 在数据库迁移完成后挂载处理器，退出前关闭。
 - 验证：`tests/infra/test_db_log.py` 新增 11 项，覆盖入库、时间格式、异常文本、按时间与批量刷新、关闭时排空、队列满时不阻塞、关闭后忽略、数据库不可用时不影响日志调用、重复挂载替换。`tests/infra/test_store.py` 更新为两个迁移。`tests/test_main.py` 新增端到端用例，验证日志确实写入数据库。`uv run pytest` 共 118 项通过。
-- 注意：进程被强制结束（Windows 上的 `TerminateProcess`）时，队列中未写入的记录会丢失，最多约 1 秒的记录。
+- 注意：进程被强制结束（Windows 上的 `TerminateProcess`）时，尚未写入的记录会丢失，最多为一个未满批次的内容。
+- 批次规则调整：批次满 `queue_size`（默认 20，`PET_LOG_QUEUE_SIZE`）条，或自批次第一条起超过 `max_wait_seconds`（默认 30 秒，`PET_LOG_MAX_WAIT_SECONDS`）即封口写入；封口后进入下一批次，生产方不阻塞。参数由构造函数传入，配置层提供默认值。
+- 验证：`tests/infra/test_db_log.py` 共 15 项（新增队列满写入、超时前不写入、超时后进入下一批次、满队列时生产方不阻塞、参数校验等）；`tests/config/test_service_settings.py` 新增 7 项；`uv run pytest` 共 129 项通过。连续运行 3 次结果一致。
+- 待确认：强制结束会丢失未满批次的日志，建议实现优雅退出（如 stdin 关闭或 `/api/shutdown`），以便退出前调用 `close()`。
 
 ### T8. 单实例锁（T-008）
 

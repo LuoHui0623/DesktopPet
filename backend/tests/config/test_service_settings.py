@@ -138,3 +138,31 @@ def test_token_is_not_in_repr(config_dir: Path):
     settings = load(config_dir)
     assert TOKEN not in repr(settings)
     assert TOKEN not in settings.model_dump_json()
+
+
+def test_log_batch_defaults(config_dir: Path):
+    settings = load(config_dir)
+    assert settings.log_queue_size == 20
+    assert settings.log_max_wait_seconds == 30.0
+
+
+def test_log_batch_values_are_read(config_dir: Path):
+    settings = load(config_dir, {"PET_LOG_QUEUE_SIZE": "50", "PET_LOG_MAX_WAIT_SECONDS": "2.5"})
+    assert settings.log_queue_size == 50
+    assert settings.log_max_wait_seconds == 2.5
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("PET_LOG_QUEUE_SIZE", "0"),
+        ("PET_LOG_QUEUE_SIZE", "abc"),
+        ("PET_LOG_MAX_WAIT_SECONDS", "0"),
+        ("PET_LOG_MAX_WAIT_SECONDS", "soon"),
+        ("PET_LOG_MAX_WAIT_SECONDS", "99999"),
+    ],
+)
+def test_invalid_log_batch_values_are_rejected(config_dir: Path, key: str, value: str):
+    with pytest.raises(ServiceSettingsError) as exc:
+        load(config_dir, {key: value})
+    assert any(key in error for error in exc.value.errors)

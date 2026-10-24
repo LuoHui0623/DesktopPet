@@ -316,6 +316,25 @@ class ServiceSettings(BaseModel):
     quiet_hours: str
     proactive_max_per_hour: int
     proactive_max_per_day: int
+    log_queue_size: int
+    log_max_wait_seconds: float
+
+
+def _float_value(
+    values: Mapping[str, str], key: str, default: float, low: float, high: float, errors: list[str]
+) -> float:
+    raw = values.get(key)
+    if raw is None:
+        return default
+    try:
+        number = float(raw)
+    except ValueError:
+        errors.append(f"{key} 必须是数字，当前为 {raw!r}")
+        return default
+    if not low <= number <= high:
+        errors.append(f"{key} 必须在 {low} 到 {high} 之间，当前为 {number}")
+        return default
+    return number
 
 
 def _int_value(
@@ -377,6 +396,11 @@ def load_service_settings(
     per_hour = _int_value(values, "PET_PROACTIVE_MAX_PER_HOUR", 2, 0, 1000, errors)
     per_day = _int_value(values, "PET_PROACTIVE_MAX_PER_DAY", 15, 0, 1000, errors)
 
+    log_queue_size = _int_value(values, "PET_LOG_QUEUE_SIZE", 20, 1, 10000, errors)
+    log_max_wait_seconds = _float_value(
+        values, "PET_LOG_MAX_WAIT_SECONDS", 30.0, 0.1, 3600.0, errors
+    )
+
     if errors:
         raise ServiceSettingsError(errors)
 
@@ -391,6 +415,8 @@ def load_service_settings(
         quiet_hours=quiet_hours,
         proactive_max_per_hour=per_hour,
         proactive_max_per_day=per_day,
+        log_queue_size=log_queue_size,
+        log_max_wait_seconds=log_max_wait_seconds,
     )
 
 

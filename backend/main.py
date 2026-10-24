@@ -59,7 +59,11 @@ def main() -> int:
         logger.info("数据库迁移完成，已应用版本：%s", applied)
     else:
         logger.info("数据库已是最新版本，无需迁移")
-    db_log = attach_db_logging(settings.data_dir / "pet.db")
+    db_log = attach_db_logging(
+        settings.data_dir / "pet.db",
+        queue_size=settings.log_queue_size,
+        max_wait_seconds=settings.log_max_wait_seconds,
+    )
 
     try:
         sock = bind_socket(settings.host, settings.port)

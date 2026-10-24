@@ -185,7 +185,13 @@ def test_error_level_suppresses_info_and_access_logs(tmp_path: Path):
 def test_logs_are_written_to_database(tmp_path: Path):
     import sqlite3
 
-    process = run_backend({"PET_DATA_DIR": str(tmp_path), "PET_LOG_LEVEL": "INFO"})
+    process = run_backend(
+        {
+            "PET_DATA_DIR": str(tmp_path),
+            "PET_LOG_LEVEL": "INFO",
+            "PET_LOG_MAX_WAIT_SECONDS": "0.2",
+        }
+    )
     try:
         port = int(process.stdout.readline().strip().split("=", 1)[1])
         request = urllib.request.Request(

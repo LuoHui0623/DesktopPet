@@ -239,6 +239,8 @@ opencode:
 | `PET_QUIET_HOURS` | `23:00-08:00` | `HH:MM-HH:MM` 格式，小时 00–23，分钟 00–59 |
 | `PET_PROACTIVE_MAX_PER_HOUR` | `2` | 0 到 1000 的整数 |
 | `PET_PROACTIVE_MAX_PER_DAY` | `15` | 0 到 1000 的整数 |
+| `PET_LOG_QUEUE_SIZE` | `20` | 日志入库的批次大小，1 到 10000 的整数；批次满即写入数据库 |
+| `PET_LOG_MAX_WAIT_SECONDS` | `30` | 日志入库的最长等待，0.1 到 3600 秒；自批次第一条记录起超过该时间即写入 |
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。

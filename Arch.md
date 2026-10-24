@@ -711,12 +711,13 @@ providers:
 
 ### 9.6 日志入库
 - 文件日志与数据库日志由 `infra/logging.py` 提供：`setup_logging()` 写文件，`attach_db_logging()` 挂载 `DbLogHandler` 写入 `log_record` 表（迁移 `0002_log_record.sql`）。
-- `DbLogHandler.emit` 只格式化记录并放入有界队列（默认 10000 条），不访问数据库，因此调用方不会因写库而阻塞。
-- 后台线程 `pet-log-writer` 持有自己的数据库连接，按批写入（默认每批 100 条，或每 1 秒）。
-- 队列满时丢弃新记录并计数（`handler.dropped`），不阻塞、不抛异常。
+- 批次规则：记录先进入当前批次（pending）。批次满 `queue_size` 条（默认 20，对应 `PET_LOG_QUEUE_SIZE`），或自批次第一条记录起超过 `max_wait_seconds`（默认 30 秒，对应 `PET_LOG_MAX_WAIT_SECONDS`），批次即封口，移入就绪队列（ready）。封口后新记录进入下一个批次。
+- `emit` 只格式化记录并追加到当前批次，从不等待写库；封口的批次由后台线程 `pet-log-writer` 逐批写入，使用线程自己的数据库连接。
+- 就绪队列最多保留 `max_ready_batches` 个批次（默认 50）。已满时，需要封口的新记录被丢弃并计数（`handler.dropped`），不阻塞、不抛异常。
+- 构造参数 `queue_size`、`max_wait_seconds`、`max_ready_batches` 由调用方传入；启动入口从 `ServiceSettings` 读取前两者。非法参数抛出 `ValueError`。
 - 数据库不可用时，线程输出到 stderr 并丢弃记录，日志调用本身不受影响。
-- `close()` 会写完队列中剩余的记录后返回；关闭之后的记录被忽略。
-- 注意：进程被强制结束（如 Windows 上的 `TerminateProcess`）时，队列中尚未写入的记录会丢失，最多约 1 秒的记录。
+- `close()` 会封口当前批次，写完所有批次后返回；关闭之后的记录被忽略。
+- 注意：进程被强制结束（如 Windows 上的 `TerminateProcess`）时，尚未写入的记录会丢失，最多为一个未满批次的内容（默认最长 30 秒）。需要完整记录时应使用优雅退出，见 Task.md。
 
 ### 9.3 测试
 - `pytest`，放在 `backend/tests/`，以 service 与 capabilities 的纯逻辑为主。
