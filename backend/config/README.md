@@ -125,6 +125,7 @@ providers:                      # 必需，映射
     models:                     # 必需，列表，可以为空
       - id: <字符串>            # 必需，同一 provider 内唯一
         name: <字符串>          # 必需
+        api: openai_chat        # 必需，接口范式，见 §6.5
         roles: [chat, consolidate]   # 必需，非空，只能取 chat / consolidate
         temperature: 0.7        # 必需，0 到 2 之间的数字
         max_tokens: 1024        # 必需，大于 0 的整数
@@ -133,6 +134,7 @@ providers:                      # 必需，映射
 ### 6.2 校验规则
 
 - 未知字段报错，用于发现拼写错误。
+- `api` 只能取 `openai_chat`、`openai_responses`、`anthropic_messages` 之一。
 - `roles` 中的值只能是 `chat` 或 `consolidate`，不允许重复。
 - 同一 provider 下 `id` 不得重复。
 - `request_header` 的键必须匹配 `^[A-Za-z0-9-]+$`，值必须是非空字符串。
@@ -156,6 +158,18 @@ opencode:
 - OpenCode Go 文档要求每个会话发送稳定的会话 ID（`x-opencode-session`），用于路由与缓存优化。
 - 当前配置使用固定的 UUID，所有请求共用同一个会话 ID。若需要按会话区分，后续可改为运行时为每个对话生成 UUID，覆盖此处的固定值。
 - 请求头的值不是密钥，但它标识会话，不在任何接口响应中返回。
+
+### 6.5 接口范式
+
+| `api` 取值 | 对应接口 | 适用 | `base_url` 处理 |
+|---|---|---|---|
+| `openai_chat` | OpenAI 兼容 `POST {base}/chat/completions` | 大多数 provider | 原样使用，如 `https://api.deepseek.com/v1` |
+| `openai_responses` | OpenAI Responses `POST {base}/responses` | GPT 等支持 Responses 的模型 | 原样使用，同上 |
+| `anthropic_messages` | Anthropic `POST {base}/v1/messages` | Claude 等 | 去掉末尾的 `/v1` 后使用，如 `https://opencode.ai/zen/go/v1` → `https://opencode.ai/zen/go` |
+
+- 同一 provider 下的不同模型可以使用不同的范式（例如 opencode 同时提供 chat 模型与 Claude 模型）。
+- 范式由 `api` 字段决定，不根据模型名猜测。
+- 对应的 LangChain 实现见 `backend/infra/llm/paradigms.py`。
 
 ### 6.4 provider 的接口地址
 

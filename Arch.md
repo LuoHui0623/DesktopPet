@@ -58,7 +58,7 @@
 | 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
-| 模型 | LangChain（`langchain-openai`，OpenAI 兼容接口） |
+| 模型 | LangChain：`langchain-openai`（OpenAI 兼容 chat、Responses），`langchain-anthropic`（Anthropic messages） |
 | 配置 | `.env`（通用配置与 provider 引用）+ `llm.yaml`（模型预设）+ `persona.yaml`；LLM 配置支持热更新 |
 | 依赖管理 | 前端 npm（`package.json` + `package-lock.json`），后端 uv（`pyproject.toml` + `uv.lock`） |
 | 版本管理 | Git |
@@ -259,7 +259,9 @@ backend/
 │  │  │  └─ 0001_init.sql    # 初始表结构（PRD §7.7）
 │  │  └─ repositories/       # 各表的增删改查，只返回数据，不做规则判断
 │  ├─ llm/
-│  │  ├─ client.py           # 按快照与 (provider, model, version) 创建并缓存 LangChain 模型实例
+│  │  ├─ spec.py             # ModelSpec 与 ApiParadigm：一次模型调用所需的解析结果（不含 config 依赖）
+│  │  ├─ paradigms.py        # 三种接口范式的 LangChain 构造：openai_chat / openai_responses / anthropic_messages
+│  │  ├─ client.py           # 按 (provider, model, version) 缓存模型实例（待 T13 后实现）
 │  │  └─ usage.py            # 调用用量记录（写入 store）
 │  ├─ weather/
 │  │  ├─ provider.py         # 天气数据源统一接口
@@ -607,11 +609,13 @@ providers:
     models:
       - id: deepseek-flash
         name: DeepSeek V4.1 Flash
+        api: openai_chat
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
       - id: deepseek-v4-pro
         name: DeepSeek V4 Pro
+        api: openai_chat
         roles: [chat]
         temperature: 0.7
         max_tokens: 2048
@@ -622,29 +626,33 @@ providers:
     models:
       - id: deepseek-v4.1-flash
         name: DeepSeek V4.1 Flash（OpenCode Go）
+        api: openai_chat
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: deepseek-v4-pro
-        name: DeepSeek V4 Pro（OpenCode Go）
+      - id: gpt-5.6-luna
+        name: GPT 5.6 Luna（OpenCode Go）
+        api: openai_responses
         roles: [chat]
         temperature: 0.7
-        max_tokens: 2048
-      - id: glm-5.3-flash
-        name: GLM 5.3 Flash（OpenCode Go）
+        max_tokens: 1024
+      - id: claude-haiku-5-5
+        name: Claude Haiku 5.5（OpenCode Go）
+        api: anthropic_messages
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
 ```
 
+- `api` 为接口范式，取值见 `backend/config/README.md` §6.5。
 - `roles` 取值为 `chat`、`consolidate`，表示该模型可用于哪种用途。
 - `llm.yaml` 只保存预设，不保存默认选择。默认选择由 `.env` 的 `DEFAULT_<能力>_MODEL` 指定。
 - `llm.yaml` 不含任何密钥或密钥引用，可入 Git。
 - `request_header` 为 provider 级别的固定请求头，每次请求都会附带。opencode 要求发送稳定的会话 ID（`x-opencode-session`）。
 - **opencode 的限制**：
   - 免费模型（`*-free`）只能在 OpenCode 客户端中使用，后端不能调用。
-  - Claude（如 `claude-haiku-5-5`）、Gemini、MiniMax M3 等模型在 Go 中使用 Anthropic / Google 原生接口，不是 OpenAI 兼容的 `chat/completions`，当前设计不支持。
-  - 预设中只列出 `chat/completions` 接口的模型。
+  - Gemini 使用 Google 原生接口，当前设计不支持。
+  - Claude 使用 `anthropic_messages` 范式，GPT 使用 `openai_responses` 范式，均已支持。
 - 解析规则的完整说明见 `backend/config/README.md`。
 
 #### 8.3.3 校验规则

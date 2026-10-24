@@ -252,6 +252,23 @@ sequenceDiagram
 
 **验证结果**：未执行。
 
+### T14. LLM 三种接口范式（T-014）
+
+**目的**：基于 LangChain 提供 OpenAI 兼容 chat、OpenAI Responses、Anthropic messages 三种调用方式，供 provider 的模型按 `api` 字段选择。
+
+**状态**：已完成。
+
+**范围**：
+- 依赖：新增 `langchain-anthropic`（`uv add`），`langchain-openai` 已在 T2 中引入。
+- `backend/infra/llm/spec.py`：`ApiParadigm` 与 `ModelSpec`（API 密钥不出现在 repr 中）。
+- `backend/infra/llm/paradigms.py`：`build_chat_model(spec)` 按范式构造 `ChatOpenAI` 或 `ChatAnthropic`；`anthropic_root_url` 去掉 `/v1`。
+- `backend/config/llm.yaml`：每个模型新增 `api` 字段；opencode 增加 `gpt-5.6-luna`（responses）与 `claude-haiku-5-5`（messages）。
+- `backend/config/README.md` §6.5：范式说明。
+
+**验收**：三种范式返回正确的 LangChain 类型，请求头与 base_url 正确传入；密钥不出现在 repr 中。
+
+**验证结果**：`uv run pytest` 9 项通过（含 `tests/infra/test_paradigms.py`）；`ruff check` 通过。已用 opencode Go 地址确认三条接口路径可达（带 `x-opencode-session` 时返回服务端错误而非路由错误），未做带密钥的真实调用。
+
 ## 八、推荐执行顺序
 
 1. T2：创建后端项目（依赖 uv）。
