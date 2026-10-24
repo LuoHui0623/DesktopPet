@@ -128,11 +128,13 @@ sequenceDiagram
 
 **目的**：让 Electron 能拿到后端实际端口。
 
-**状态**：待办。依赖 T3。
+**状态**：已完成。依赖 T3。
 
-**范围**：`backend/main.py` 启动 uvicorn，`backend/api/app.py` 中 `create_app()`；`PET_PORT=0` 时随机端口，首行 stdout 输出端口。
+**范围**：`backend/main.py` 加载 `ServiceSettings`，先绑定 `PET_HOST:PET_PORT`，首行 stdout 输出 `PET_PORT=<实际端口>`，再把同一个 socket 交给 uvicorn（`PET_PORT=0` 时端口由系统分配，输出的即为服务实际监听的端口）；`backend/api/app.py` 中 `create_app()`。配置错误、端口被占用时输出到 stderr 并以退出码 1 结束，stdout 无输出。stdout 与 stderr 强制 UTF-8。
 
 **验收**：启动后首行输出形如 `PET_PORT=<端口>`，端口可被访问。
+
+**验证结果**：已验证。`tests/test_main.py` 7 项通过：首行输出端口、该端口可访问（返回 404，应用尚无路由）、固定端口、`PET_HOST=0.0.0.0` 退出码 1、缺少 `PET_TOKEN` 退出码 1、端口被占用退出码 1。`uv run pytest` 共 71 项通过，`ruff check` 通过。
 
 **验证结果**：未执行。
 
