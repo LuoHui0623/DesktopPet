@@ -281,6 +281,18 @@ sequenceDiagram
 
 **验证结果**：已验证。`uv run pre-commit install` 成功；`pre-commit run --all-files` 因暂无 Python 源码显示 Skipped；使用临时文件（含未使用导入与未排序导入）测试 `ruff check`，报出 F401 与 I001，测试文件已删除。提交 ea51920。Windows 下中文路径导致钩子路径乱码，已用 `PYTHONUTF8=1` 重装解决，记录于 README。
 
+**扩展（补齐前端检查，依 Arch §9.4）**：
+- `frontend/eslint.config.mjs`（flat config，typescript-eslint，react-hooks，按目录区分 browser / node 全局变量）。
+- `frontend/.prettierrc.json`（printWidth 100，双引号，尾逗号）与 `.prettierignore`（排除 out、node_modules、锁文件、生成的契约文件）。
+- npm 脚本：`lint`、`format`、`format:check`、`check`。
+- `frontend/scripts/check.mjs`：ESLint 与 Prettier 检查，供 pre-commit 调用。
+- `.pre-commit-config.yaml` 新增 `frontend-check` 钩子（`node frontend/scripts/check.mjs`，`pass_filenames: false`）。
+- TypeScript 从 7.0 降至 5.9：`typescript-eslint` 的 peer 依赖只支持 TypeScript 5.x，两者冲突无法安装。TypeScript 7 的 `tsc` 仍可用，但不适合作为 ESLint 解析器的依赖。
+- 初次运行 ESLint 时从仓库根目录调用，扫描了 `frontend/node_modules` 的构建产物（1112 个错误），原因是 ignore 规则按当前目录解析。改由 `check.mjs` 切换到 `frontend/` 后解决。
+- 格式化：对 `launcher.ts` 与 `tsconfig.json` 做了 Prettier 修正（仅空白与换行）。
+
+**验证结果（扩展）**：`npm run lint` 0 错误；`npm run format:check` 通过；`node frontend/scripts/check.mjs` 从仓库根与 frontend 目录运行均通过；`uv run --project backend pre-commit run --all-files` 三个钩子全部 Passed；`tsc --noEmit` 通过；`vitest run` 20 项通过；`gen:api:check` 通过。
+
 ### T12. 里程碑收尾（T-012）
 
 **目的**：标记 M0 完成，便于回溯。

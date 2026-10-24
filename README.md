@@ -128,7 +128,15 @@ cd backend
 uv run pytest
 ```
 
-### 6. 代码检查（首次克隆后执行一次）
+### 6. 前端代码检查
+
+```powershell
+cd frontend
+npm run check        # ESLint + Prettier 检查
+npm run format       # 按 Prettier 自动格式化
+```
+
+### 7. 代码检查（首次克隆后执行一次）
 
 ```powershell
 cd backend

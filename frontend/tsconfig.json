@@ -14,4 +14,3 @@
   },
   "include": ["electron", "src", "scripts", "tests", "*.ts"]
 }
-

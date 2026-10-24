@@ -73,11 +73,7 @@ export function launchBackend(options: LaunchOptions): Promise<BackendProcess> {
 
     child.on("error", (error) => fail(error));
     child.on("exit", (code, signal) => {
-      fail(
-        new Error(
-          `后端在启动前退出（代码 ${code}，信号 ${signal}）\n${stderrTail.join("\n")}`,
-        ),
-      );
+      fail(new Error(`后端在启动前退出（代码 ${code}，信号 ${signal}）\n${stderrTail.join("\n")}`));
     });
   });
 }

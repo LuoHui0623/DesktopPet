@@ -745,7 +745,9 @@ providers:
 
 ### 9.4 代码检查
 - 后端：`ruff`（格式化与检查），配置在 `backend/pyproject.toml`。
-- 前端：ESLint + Prettier（待 Task.md 确认配置时机）。
+- 前端：ESLint（flat config，`frontend/eslint.config.mjs`）+ Prettier（`frontend/.prettierrc.json`）。`npm run check` 同时运行两者；`npm run lint`、`npm run format`、`npm run format:check` 可单独使用。
+- ESLint 与 Prettier 的 pre-commit 钩子通过 `node frontend/scripts/check.mjs` 调用：脚本先切换到 `frontend/` 再执行检查，避免 ESLint 按仓库根目录解析忽略规则（否则会扫描 `node_modules`）。
+- TypeScript 锁定在 5.9 系列，因为 `typescript-eslint` 目前只支持 TypeScript 5.x（TypeScript 7 的原生实现暂不兼容）。
 - 提交前由 `pre-commit` 运行检查，配置在根目录 `.pre-commit-config.yaml`。
 - 首次克隆后执行一次 `cd backend && uv run pre-commit install`。
 

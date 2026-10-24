@@ -18,3 +18,12 @@ repos:
         types: [python]
         files: ^backend/
         pass_filenames: false
+
+      # 前端：ESLint + Prettier 检查。需要先在 frontend/ 中执行 npm install。
+      # 直接用 node 调用，避免在 Windows 上找不到 npm.cmd。
+      - id: frontend-check
+        name: eslint + prettier check (frontend)
+        entry: node frontend/scripts/check.mjs
+        language: system
+        files: ^frontend/
+        pass_filenames: false
