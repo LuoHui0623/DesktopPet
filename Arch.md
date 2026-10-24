@@ -700,7 +700,12 @@ providers:
 
 ### 9.2 数据库与迁移
 - `sqlite3`，开启 WAL 与外键约束。
-- 表结构见 PRD §7.7。结构变更通过新增 `infra/store/migrations/NNNN_描述.sql` 完成，已提交的迁移不修改。
+- 表结构见 PRD §7.7（`llm_provider` 不入库，模型配置来自 `llm.yaml`；新增 `app_setting`）。
+- 结构变更通过新增 `infra/store/migrations/NNNN_描述.sql` 完成，已提交的迁移不修改。
+- 迁移在启动时执行（`main.py` 的 `initialize_database`，早于端口绑定）。每个迁移在一个 `BEGIN IMMEDIATE` 事务中执行，失败则回滚。
+- `schema_version` 记录每个已应用迁移的版本、名称和 SHA-256。若已应用的文件被修改，或数据库中存在代码未知的版本，启动失败。
+- 迁移编号必须从 `0001` 开始连续。
+- 数据库连接启用 WAL、外键约束与 5 秒忙等待；连接使用 autocommit 模式，事务由 `transaction()` 显式管理。
 - 时间字段存 ISO 8601 文本（带时区），日期字段存 `YYYY-MM-DD`。
 
 ### 9.3 测试

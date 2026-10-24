@@ -432,12 +432,12 @@ rules:
 | `memory_archive` | 同 memory | 过期归档 |
 | `core_memory` | memory_id, sort_order | 核心典藏 |
 | `consolidation_run` | id, started_at, finished_at, added, expired, status | 整理日志 |
-| `llm_provider` | id, name, base_url, model, role(chat/consolidate), api_key_ref | 模型配置 |
-| `llm_usage` | id, provider, model, tokens_in, tokens_out, latency_ms, created_at | 调用记录 |
+| `llm_usage` | id, provider, model, tokens_in, tokens_out, latency_ms, success, created_at | 调用记录（success 为是否成功） |
+| `app_setting` | key, value, updated_at | 运行时设置，如设置页切换的当前对话模型与整理模型 |
 | `persona_version` | version, content, created_at | 人设历史版本 |
 | `behavior_event` | id, type, payload, occurred_at | 感知元数据，保留 30 天 |
 | `proactive_feedback` | id, message_id, type(like/dislike/ignore), created_at | 主动消息反馈 |
-| `capability_run` | id, action, params_summary, risk, confirmed, result, created_at | 能力执行日志 |
+| `capability_run` | id, action, params_summary, risk, confirmed, result, undo_payload, created_at | 能力执行日志（undo_payload 记录撤销所需的原路径等信息） |
 | `chat_import` | id, source, conversation, imported_at, file_path | 聊天记录导入记录 |
 | `weather_cache` | city_key, payload, fetched_at | 天气缓存 |
 

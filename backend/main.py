@@ -1,10 +1,21 @@
 import socket
 import sys
+from pathlib import Path
 
 import uvicorn
 
 from api.app import create_app
 from config.settings import ServiceSettingsError, load_service_settings
+from infra.store.db import connect
+from infra.store.migrate import MigrationError, migrate
+
+
+def initialize_database(data_dir: Path) -> list[int]:
+    conn = connect(data_dir / "pet.db")
+    try:
+        return migrate(conn)
+    finally:
+        conn.close()
 
 
 def bind_socket(host: str, port: int) -> socket.socket:
@@ -25,6 +36,12 @@ def main() -> int:
     except ServiceSettingsError as exc:
         for error in exc.errors:
             print(f"配置错误：{error}", file=sys.stderr)
+        return 1
+
+    try:
+        initialize_database(settings.data_dir)
+    except (MigrationError, OSError) as exc:
+        print(f"数据库初始化失败：{exc}", file=sys.stderr)
         return 1
 
     try:

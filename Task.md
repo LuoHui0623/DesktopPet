@@ -160,13 +160,17 @@ sequenceDiagram
 
 **目的**：建立 SQLite 存储基础，后续表结构统一由迁移管理。
 
-**状态**：待办。依赖 T2。
+**状态**：已完成。依赖 T2。
 
-**范围**：`backend/infra/store/db.py`（WAL、外键）、`backend/infra/store/migrate.py`（按序号执行，记录 `schema_version`）、`backend/infra/store/migrations/0001_init.sql`（表结构见 PRD §7.7）。
+**范围**：
+- `backend/infra/store/db.py`：`connect()`（WAL、外键、忙等待）、`transaction()`（`BEGIN IMMEDIATE`，异常时回滚）。
+- `backend/infra/store/migrate.py`：`load_migrations()` 校验文件名与连续编号；`migrate()` 按序执行未应用的迁移，`schema_version` 记录 SHA-256；已应用文件被修改、存在未知版本时报错；`split_statements()` 按完整语句拆分迁移。
+- `backend/infra/store/migrations/0001_init.sql`：按 PRD §7.7 建表（`llm_provider` 不入库，新增 `app_setting`，`llm_usage` 增加 `success`，`capability_run` 增加 `undo_payload`）。
+- `backend/main.py`：启动时调用 `initialize_database(settings.data_dir)`，位于端口绑定之前；失败时输出到 stderr 并以退出码 1 结束。
 
 **验收**：首次启动生成 `data/pet.db`，重复启动不重复执行迁移。
 
-**验证结果**：未执行。
+**验证结果**：已验证。`tests/infra/test_store.py` 新增 19 项：WAL 与外键、首次迁移建表、重复迁移无操作、校验和记录、外键与 CHECK 约束、事务回滚、迁移失败回滚、已应用文件被修改、未知版本、编号不连续、文件名不合法、语句拆分。`tests/test_main.py` 新增 2 项：启动创建数据库、数据目录不可用时退出码为 1。`uv run pytest` 共 100 项通过，`ruff check` 通过。
 
 ### T7. 日志（T-007）
 

@@ -2,18 +2,27 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 import pytest
 
 from constants.path import BACKEND_DIR
 
 TOKEN = "test-token-value"
+TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="pet-test-data-"))
 
 
 def run_backend(extra_env: dict[str, str]) -> subprocess.Popen:
-    env = {**os.environ, "PET_TOKEN": TOKEN, "PET_PORT": "0", **extra_env}
+    env = {
+        **os.environ,
+        "PET_TOKEN": TOKEN,
+        "PET_PORT": "0",
+        "PET_DATA_DIR": str(TEST_DATA_DIR),
+        **extra_env,
+    }
     return subprocess.Popen(
         [sys.executable, "main.py"],
         cwd=BACKEND_DIR,
@@ -79,6 +88,7 @@ def test_non_loopback_host_exits_with_error():
 def test_missing_token_exits_with_error():
     env = {key: value for key, value in os.environ.items() if key != "PET_TOKEN"}
     env["PET_PORT"] = "0"
+    env["PET_DATA_DIR"] = str(TEST_DATA_DIR)
     process = subprocess.Popen(
         [sys.executable, "main.py"],
         cwd=BACKEND_DIR,
@@ -104,3 +114,18 @@ def test_occupied_port_exits_with_error():
     assert process.returncode == 1
     assert stdout == ""
     assert "无法绑定" in stderr
+
+
+def test_startup_creates_database(backend: subprocess.Popen):
+    backend.stdout.readline()
+    assert (TEST_DATA_DIR / "pet.db").exists()
+
+
+def test_unusable_data_dir_exits_with_error(tmp_path: Path):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x", encoding="utf-8")
+    process = run_backend({"PET_DATA_DIR": str(blocker / "data")})
+    stdout, stderr = process.communicate(timeout=20)
+    assert process.returncode == 1
+    assert stdout == ""
+    assert "数据库初始化失败" in stderr
