@@ -4,7 +4,7 @@
 !.env.example
 
 # 运行数据
-data/
+backend/data/
 
 # Python
 backend/.venv/
@@ -16,10 +16,10 @@ __pycache__/
 htmlcov/
 
 # Node / Electron
-app/node_modules/
-app/dist/
-app/out/
-app/release/
+frontend/node_modules/
+frontend/dist/
+frontend/out/
+frontend/release/
 
 # 日志与临时文件
 *.log

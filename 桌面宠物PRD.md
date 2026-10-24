@@ -409,16 +409,16 @@ rules:
 
 ### 7.5 配置与密钥
 
-- 所有配置通过**环境变量**管理，本地开发写在项目根目录 `.env` 中（模板为 `.env.example`）。
+- 所有配置通过**环境变量**管理，本地开发写在 `backend/config/.env` 中（模板为 `backend/config/.env.example`）。
 - `.env` 包含 API Key，**不入 Git**；`.env.example` 只放变量名与示例值，入 Git。
 - 后端只绑定 `127.0.0.1`，监听地址与端口由环境变量指定，不允许配置为对外地址。
 
 ### 7.6 运行方式（自用）
 
 - 使用 uv 创建的项目虚拟环境直接运行，不做打包。
-- Electron 开发期拉起后端：在虚拟环境中执行 `python -m pet_backend`（或 `uv run`）。
+- Electron 开发期拉起后端：在 `backend/` 下执行 `uv run python main.py`。
 - 发布期（可选，暂不做）：再考虑用 PyInstaller 打包后端。
-- 数据目录固定在项目 `data/` 下，备份时复制 `data/pet.db` 与 `config/persona.yaml`。
+- 数据目录固定在 `backend/data/` 下，备份时复制 `backend/data/pet.db` 与 `backend/config/persona.yaml`。
 - 版本管理使用 Git，每个里程碑打一个 tag。
 
 ### 7.7 数据库表

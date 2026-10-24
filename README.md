@@ -16,11 +16,11 @@
 
 | 部分 | 技术 |
 |---|---|
-| 桌面端 | Electron + TypeScript |
+| 桌面端 | Electron + React + TypeScript（Vite），样式 Tailwind，状态 Zustand |
 | 后端 | Python 3.12 + FastAPI + uvicorn |
 | 数据库 | SQLite |
 | 模型 | LangChain（OpenAI 兼容接口） |
-| 依赖管理 | npm（前端）、uv（后端） |
+| 依赖管理 | npm（`frontend/`）、uv（`backend/`） |
 | 版本管理 | Git |
 
 平台：Windows 11，本机自用，不对外发布。
@@ -31,6 +31,18 @@
 |---|---|
 | [`桌面宠物PRD.md`](桌面宠物PRD.md) | 产品需求、场景、功能设计、技术选型、里程碑 |
 | [`Arch.md`](Arch.md) | 架构设计：前后端分离、目录结构、分层说明、接口与配置 |
+
+## 目录速览
+
+```
+桌宠/
+├─ frontend/     前端：Electron + React（electron/ 主进程与预加载，src/ 渲染进程）
+├─ backend/      后端：Python + FastAPI（api / service / capabilities / infra / config）
+├─ README.md     项目介绍
+├─ Arch.md       架构设计
+├─ Task.md       行动计划与工作单
+└─ 桌面宠物PRD.md  需求与技术选型
+```
 | [`Task.md`](Task.md) | 行动计划、工作单、当前进度 |
 | `README.md` | 本文件：项目介绍与运行方式 |
 
@@ -54,10 +66,11 @@
 ### 1. 配置
 
 ```powershell
+cd backend/config
 copy .env.example .env
 ```
 
-编辑 `.env`，至少填写：
+编辑 `backend/config/.env`，至少填写：
 
 - `PET_TOKEN`：启动令牌，可用以下命令生成：
 
@@ -67,7 +80,7 @@ copy .env.example .env
 
 - `LLM_CHAT_BASE_URL`、`LLM_CHAT_API_KEY`、`LLM_CHAT_MODEL`：对话模型。
 
-所有变量说明见 `Arch.md` §7。`.env` 含密钥，不要提交到 Git。
+所有变量说明见 `Arch.md` §8。`.env` 含密钥，不要提交到 Git。
 
 ### 2. 安装后端依赖
 
@@ -81,7 +94,7 @@ uv sync
 
 ```powershell
 cd backend
-uv run python -m pet_backend
+uv run python main.py
 ```
 
 后端监听 `127.0.0.1` 的随机端口，启动后第一行输出实际端口。
@@ -89,7 +102,7 @@ uv run python -m pet_backend
 ### 4. 运行桌面端
 
 ```powershell
-cd app
+cd frontend
 npm install
 npm run dev
 ```
@@ -122,8 +135,8 @@ uv run ruff check --fix .
 
 ## 数据与备份
 
-- 运行数据保存在 `data/`，核心文件是 `data/pet.db`。
-- 备份时复制 `data/pet.db` 与 `config/persona.yaml`，并自行保管 `.env`。
+- 运行数据保存在 `backend/data/`，核心文件是 `backend/data/pet.db`。
+- 备份时复制 `backend/data/pet.db` 与 `backend/config/persona.yaml`，并自行保管 `backend/config/.env`。
 - 复制数据库前先停止后端，避免写入中途备份。
 
 ## 注意事项

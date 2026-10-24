@@ -33,6 +33,7 @@
 | T-000-d | 初始化 Git 仓库，编写 Arch.md / README.md / .env.example / .gitignore | 2026-10-24 | 3c45015 |
 | T-000-e | 文档职责重划分：PRD 管需求与选型，README 管介绍，Arch 管架构，Task 管计划 | 2026-10-24 | ed86ee6 |
 | T-000-f | 确定前端技术栈：React + Vite + Tailwind + Zustand | 2026-10-24 | 19e29a9 |
+| T-000-g | 架构调整：前端 `frontend/`、后端 `backend/`（不设 pet_backend），infra / service / capabilities 分层，前端 OpenAPI 契约生成，`.env` 与人设迁入 `backend/config/`（Arch v0.3） | 2026-10-24 | 待提交 |
 
 ## 二、当前业务工作流（mermaid）[可选]
 
@@ -40,7 +41,7 @@
 sequenceDiagram
     participant E as Electron 主进程
     participant B as Python 后端
-    E->>B: 启动 python -m pet_backend（PET_PORT=0, PET_TOKEN）
+    E->>B: 启动 python main.py（PET_PORT=0, PET_TOKEN）
     B-->>E: 首行 stdout 输出实际端口
     E->>B: GET /api/health（X-Pet-Token）
     B-->>E: 200 OK
@@ -64,7 +65,8 @@ sequenceDiagram
 
 1. ~~**D-2 是否引入 `ruff` 与 `pre-commit`**~~：已确认，见 T11。
 2. **D-3 和风天气的鉴权方式与凭据格式**（影响 M3，不阻塞 M0）。
-3. **D-4 `config/persona.yaml` 是否入 Git**（不阻塞，可先入 Git）。
+3. **D-4 `backend/config/persona.yaml` 是否入 Git**（不阻塞，可先入 Git）。
+4. **架构待确认**：infra 与 service 的划分标准、Zustand store 位置、api-contracts.json 生成方式，见 Arch §10。
 4. **风险：Electron 与 Python 进程的生命周期联动**。若 Electron 异常退出，后端可能残留。应对：后端单实例锁 + 监控退出（T8、T9）。
 5. **风险：端口握手依赖 stdout 首行格式**。应对：约定首行格式固定，并在 T10 中验证。
 
@@ -75,7 +77,8 @@ sequenceDiagram
 - 前端：React + Vite（electron-vite）+ Tailwind CSS + Zustand。Zustand store 仅作为每个窗口的展示缓存，数据源为后端。
 - 后端：Python 3.12、FastAPI、uvicorn、SQLite（`sqlite3`）、LangChain（`langchain-openai`）。
 - 后端只监听 `127.0.0.1`，所有请求带 `X-Pet-Token`。
-- 配置：环境变量优先，项目根目录 `.env` 为本地来源；`.env` 不入 Git。
+- 配置：环境变量优先，`backend/config/.env` 为本地来源；`.env` 不入 Git。配置文件统一放在 `backend/config/`。
+- 目录：前端根目录 `frontend/`，后端根目录 `backend/`，后端不设 `pet_backend` 包。
 - 依赖：前端 npm，后端 uv（`pyproject.toml` + `uv.lock`）。
 - 运行：使用项目虚拟环境直接运行，暂不打包。
 - 版本：Git 管理，里程碑打 tag（如 `m0-skeleton`）。
@@ -114,7 +117,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T2。
 
-**范围**：`backend/pet_backend/config.py` 中的 `Settings`，读取 `.env` 与环境变量；`PET_HOST` 只允许 `127.0.0.1`，其他值启动报错。
+**范围**：`backend/config/settings.py` 中的 `Settings`，读取 `backend/config/.env` 与环境变量；`PET_HOST` 只允许 `127.0.0.1`，其他值启动报错。
 
 **验收**：`PET_HOST=0.0.0.0` 时启动失败并给出明确错误；缺少 `PET_TOKEN` 时启动失败。
 
@@ -126,7 +129,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T3。
 
-**范围**：`__main__.py` 启动 uvicorn，`app.py` 中 `create_app()`；`PET_PORT=0` 时随机端口，首行 stdout 输出端口。
+**范围**：`backend/main.py` 启动 uvicorn，`backend/api/app.py` 中 `create_app()`；`PET_PORT=0` 时随机端口，首行 stdout 输出端口。
 
 **验收**：启动后首行输出形如 `PET_PORT=<端口>`，端口可被访问。
 
@@ -150,7 +153,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T2。
 
-**范围**：`storage/db.py`（WAL、外键）、`storage/migrate.py`（按序号执行，记录 `schema_version`）、`storage/migrations/0001_init.sql`（表结构见 PRD §7.7）。
+**范围**：`backend/infra/store/db.py`（WAL、外键）、`backend/infra/store/migrate.py`（按序号执行，记录 `schema_version`）、`backend/infra/store/migrations/0001_init.sql`（表结构见 PRD §7.7）。
 
 **验收**：首次启动生成 `data/pet.db`，重复启动不重复执行迁移。
 
@@ -162,7 +165,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T4。
 
-**范围**：`logging_setup.py`，日志写入 `data/logs/`，级别由 `PET_LOG_LEVEL` 控制。
+**范围**：`backend/infra/logging.py`，日志写入 `backend/data/logs/`，级别由 `PET_LOG_LEVEL` 控制。
 
 **验收**：启动与请求会写入日志文件；`PET_LOG_LEVEL` 生效。
 
@@ -174,7 +177,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T4。
 
-**范围**：`data/backend.lock`，启动时加锁，退出时释放。
+**范围**：`backend/data/backend.lock`，启动时加锁，退出时释放。
 
 **验收**：已有实例运行时，第二次启动报错退出。
 
@@ -186,7 +189,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T1（已完成）、T4。
 
-**范围**：`app/` 使用 electron-vite；主进程 `backend/launcher.ts` 启动后端、读取端口；`supervisor.ts` 监控退出并联动关闭。
+**范围**：`frontend/` 使用 electron-vite；主进程 `frontend/electron/main/backend/launcher.ts` 启动后端、读取端口；`supervisor.ts` 监控退出并联动关闭；`frontend/electron/preload/index.ts` 通过 contextBridge 暴露后端地址与令牌。
 
 **验收**：`npm run dev` 启动时自动拉起后端；关闭 Electron 后后端进程随之结束。
 
@@ -198,7 +201,7 @@ sequenceDiagram
 
 **状态**：待办。依赖 T5、T9。
 
-**范围**：`app/src/api/rest.ts` 调用 `/api/health`，在窗口中显示结果。
+**范围**：`backend/scripts/export_openapi.py` 导出 `backend/openapi.json`；`frontend/scripts/gen-api-contracts.ts`（`npm run gen:api`）生成 `frontend/src/api/api-contracts.json`；`frontend/src/api/client.ts` 调用 `/api/health`，在窗口中显示结果。
 
 **验收**：窗口显示后端健康状态；令牌错误时显示错误信息。
 
