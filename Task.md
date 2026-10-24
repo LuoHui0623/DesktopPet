@@ -142,11 +142,17 @@ sequenceDiagram
 
 **目的**：保证只有持有令牌的客户端可访问后端。
 
-**状态**：待办。依赖 T4。
+**状态**：已完成。依赖 T4。
 
-**范围**：鉴权中间件校验 `X-Pet-Token`；`GET /api/health`。
+**范围**：
+- `backend/api/auth.py`：纯 ASGI 的 `TokenAuthMiddleware`，同时覆盖 HTTP 与 WebSocket；使用 `hmac.compare_digest` 比较令牌。
+- `backend/api/errors.py`：统一错误结构；HTTP 404、405、参数校验错误也使用同一结构。
+- `backend/api/routers/system.py`：`GET /api/health`，`operationId` 为 `health`。
+- `create_app(token)` 挂载路由、错误处理与鉴权中间件；`main.py` 传入 `PET_TOKEN`。
 
 **验收**：无令牌或错误令牌返回统一错误结构 `{ "error": { "code", "message" } }`；正确令牌返回 200。
+
+**验证结果**：已验证。`tests/api/test_auth.py` 新增 11 项：正确令牌返回 200、缺失与错误令牌返回 401、空令牌、请求头名大小写不敏感、未知路径未鉴权时不泄露路由、已鉴权的 404 与 405 统一结构、WebSocket 缺失或错误令牌以 1008 关闭。`tests/test_main.py` 的端到端用例同步更新为未鉴权返回 401、带令牌返回 200。`uv run pytest` 共 81 项通过，`ruff check` 通过。
 
 **验证结果**：未执行。
 

@@ -35,7 +35,10 @@ def main() -> int:
 
     print(f"PET_PORT={sock.getsockname()[1]}", flush=True)
 
-    config = uvicorn.Config(create_app(), log_level=settings.log_level.lower())
+    config = uvicorn.Config(
+        create_app(settings.token.get_secret_value()),
+        log_level=settings.log_level.lower(),
+    )
     uvicorn.Server(config).run(sockets=[sock])
     return 0
 

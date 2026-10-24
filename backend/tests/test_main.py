@@ -45,8 +45,15 @@ def test_first_stdout_line_is_port(backend: subprocess.Popen):
 def test_printed_port_accepts_http(backend: subprocess.Popen):
     port = int(backend.stdout.readline().strip().split("=", 1)[1])
     with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=5)
-    assert exc.value.code == 404
+        urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=5)
+    assert exc.value.code == 401
+
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/health", headers={"X-Pet-Token": TOKEN}
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        assert response.status == 200
+        assert response.read() == b'{"status":"ok"}'
 
 
 def test_fixed_port_is_used():
