@@ -297,13 +297,21 @@ sequenceDiagram
 
 **目的**：标记 M0 完成，便于回溯。
 
-**状态**：待办。依赖 T1–T11。
+**状态**：已完成。依赖 T1–T11。
 
-**范围**：更新 `README.md` 当前进度，提交，打 tag `m0-skeleton`。
+**范围**：更新 `README.md` 当前进度，提交，打 tag `m0-skeleton`（指向本次提交）。
 
 **验收**：`git tag` 中存在 `m0-skeleton`，README 进度与实际一致。
 
-**验证结果**：未执行。
+**验证结果**：已验证，收尾时的全部检查：
+- 后端 `pytest`：151 项通过；`ruff check .` 通过。
+- 前端 `tsc --noEmit`：通过；`vitest run`：20 项通过；`npm run check`（ESLint + Prettier）通过；`npm run gen:api:check`：契约与后端一致。
+- `uv run --project backend pre-commit run --all-files`：三个钩子全部通过。
+- 真实 Electron 端到端（T9、T10）：窗口显示后端健康状态，关闭窗口后后端经 stdin 指令优雅退出。
+
+**M0 完成清单**：T1 前端技术栈 · T2 后端项目 · T3 通用配置 · T4 启动与端口握手 · T5 令牌鉴权与健康检查 · T6 数据库与迁移 · T7 日志（含入库） · T8 单实例锁 · T9 Electron 骨架 · T10 接口契约与健康检查 · T11 代码检查 · T12 收尾。附加完成：T13（LLM 配置解析与热更新）、T14（三种接口范式）、T15（model_settings 与服务装配）、T16（常数层）、T17（安全退出）。
+
+**下一步**：进入 M1「基础对话」（悬浮窗、对话窗口、模型网关切换、人设系统提示词、设置页）。T13 中的 `GET/PUT /api/llm/active` 与 `POST /api/llm/reload` 接口随 M1 接入。
 
 ### T13. LLM 配置加载、校验与热更新（T-013）
 
