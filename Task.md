@@ -188,6 +188,13 @@ sequenceDiagram
 
 **验证结果**：已验证。`tests/infra/test_logging.py` 新增 5 项：创建日志文件、级别过滤、根 logger 级别、重复配置不重复输出、UTF-8 写入。`tests/test_main.py` 新增 2 项：`INFO` 级别下启动与请求写入日志且令牌不出现在日志中；`ERROR` 级别下不写入启动与访问日志。`uv run pytest` 共 107 项通过，`ruff check` 通过。
 
+**扩展：日志入库（DbLogHandler）**
+- 迁移 `0002_log_record.sql` 新增 `log_record` 表。
+- `infra/logging.py` 的 `DbLogHandler`：有界队列加后台线程批量写入；队列满时丢弃并计数；`close()` 写完剩余记录。
+- `main.py` 在数据库迁移完成后挂载处理器，退出前关闭。
+- 验证：`tests/infra/test_db_log.py` 新增 11 项，覆盖入库、时间格式、异常文本、按时间与批量刷新、关闭时排空、队列满时不阻塞、关闭后忽略、数据库不可用时不影响日志调用、重复挂载替换。`tests/infra/test_store.py` 更新为两个迁移。`tests/test_main.py` 新增端到端用例，验证日志确实写入数据库。`uv run pytest` 共 118 项通过。
+- 注意：进程被强制结束（Windows 上的 `TerminateProcess`）时，队列中未写入的记录会丢失，最多约 1 秒的记录。
+
 ### T8. 单实例锁（T-008）
 
 **目的**：防止后端重复启动导致端口与数据库冲突。
