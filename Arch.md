@@ -44,7 +44,8 @@
 - 后端只监听 `127.0.0.1`，配置其他地址时启动报错。
 - 所有 HTTP 与 WebSocket 连接都必须携带启动令牌（`X-Pet-Token`），不匹配则拒绝。
 - 令牌由 Electron 主进程生成并传给后端；渲染进程通过 preload 获取，不写入 URL，也不落盘。
-- 安全退出：Electron 以管道方式启动后端，并通过 stdin 控制退出（见 §1.3）。单实例，通过 `backend/data/backend.lock` 防止重复启动。
+- 安全退出：Electron 以管道方式启动后端，并通过 stdin 控制退出（见 §1.3）。
+- 单实例：启动时获取 `<数据目录>/backend.lock` 上的操作系统文件锁，锁由进程持有，进程结束（包括被强制结束）时自动释放，因此不会因残留的锁文件而无法启动。第二个实例直接退出（退出码 1），且不执行数据库迁移。
 
 ### 1.3 安全退出
 后端有三条退出通道，均汇入同一个 `ShutdownController`（`infra/lifecycle.py`）：
@@ -292,7 +293,8 @@ backend/
 │  ├─ events/
 │  │  └─ bus.py              # 进程内发布 / 订阅，供 WebSocket 推送
 │  ├─ logging.py             # 日志配置：文件日志与数据库日志（DbLogHandler，批次写入）
-│  └─ lifecycle.py           # 安全退出：ShutdownController 与 stdin 监听
+│  ├─ lifecycle.py           # 安全退出：ShutdownController 与 stdin 监听
+│  └─ lock.py                # 单实例锁：操作系统文件锁，进程结束自动释放
 │
 ├─ scripts/
 │  └─ export_openapi.py      # 导出 OpenAPI 到 backend/openapi.json，供前端生成契约

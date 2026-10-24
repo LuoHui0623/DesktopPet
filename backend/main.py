@@ -6,8 +6,9 @@ from pathlib import Path
 import uvicorn
 
 from api.app import create_app
-from config.settings import ServiceSettingsError, load_service_settings
+from config.settings import ServiceSettings, ServiceSettingsError, load_service_settings
 from infra.lifecycle import ShutdownController, watch_stdin
+from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
@@ -34,23 +35,7 @@ def bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def main() -> int:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-    try:
-        settings = load_service_settings()
-    except ServiceSettingsError as exc:
-        for error in exc.errors:
-            print(f"配置错误：{error}", file=sys.stderr)
-        return 1
-
-    try:
-        log_file = setup_logging(settings.log_level, settings.data_dir / "logs")
-    except OSError as exc:
-        print(f"日志初始化失败：{exc}", file=sys.stderr)
-        return 1
-    logger.info("日志文件：%s，级别：%s", log_file, settings.log_level)
-
+def serve(settings: ServiceSettings) -> int:
     try:
         applied = initialize_database(settings.data_dir)
     except (MigrationError, OSError) as exc:
@@ -72,6 +57,7 @@ def main() -> int:
     except OSError as exc:
         logger.error("无法绑定 %s:%s：%s", settings.host, settings.port, exc)
         print(f"无法绑定 {settings.host}:{settings.port}：{exc}", file=sys.stderr)
+        db_log.close()
         return 1
 
     port = sock.getsockname()[1]
@@ -95,6 +81,40 @@ def main() -> int:
     logger.info("后端已退出，退出原因：%s", shutdown.reason or "信号")
     db_log.close()
     return 0
+
+
+def main() -> int:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    try:
+        settings = load_service_settings()
+    except ServiceSettingsError as exc:
+        for error in exc.errors:
+            print(f"配置错误：{error}", file=sys.stderr)
+        return 1
+
+    try:
+        log_file = setup_logging(settings.log_level, settings.data_dir / "logs")
+    except OSError as exc:
+        print(f"日志初始化失败：{exc}", file=sys.stderr)
+        return 1
+    logger.info("日志文件：%s，级别：%s", log_file, settings.log_level)
+
+    lock = SingleInstanceLock(settings.data_dir / "backend.lock")
+    try:
+        lock.acquire()
+    except InstanceLockError as exc:
+        logger.error("%s，本实例退出", exc)
+        print(f"{exc}，本实例退出", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"单实例锁获取失败：{exc}", file=sys.stderr)
+        return 1
+
+    try:
+        return serve(settings)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

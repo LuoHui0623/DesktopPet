@@ -272,3 +272,52 @@ def test_shutdown_without_token_keeps_backend_running(backend: subprocess.Popen)
         urllib.request.urlopen(request, timeout=5)
     assert exc.value.code == 401
     assert backend.poll() is None
+
+
+def start_with_data_dir(data_dir: Path, **extra: str) -> subprocess.Popen:
+    env = {"PET_DATA_DIR": str(data_dir), "PET_PORT": "0", **extra}
+    return run_backend(env)
+
+
+def test_second_instance_on_same_data_dir_is_rejected(tmp_path: Path):
+    first = start_with_data_dir(tmp_path)
+    try:
+        assert first.stdout.readline().startswith("PET_PORT=")
+        second = start_with_data_dir(tmp_path)
+        stdout, stderr = second.communicate(timeout=20)
+        assert second.returncode == 1
+        assert stdout == ""
+        assert "已有后端实例在运行" in stderr
+        assert first.poll() is None
+    finally:
+        first.terminate()
+        first.wait(timeout=10)
+
+
+def test_lock_is_released_after_graceful_exit(tmp_path: Path):
+    first = start_with_data_dir(tmp_path)
+    assert first.stdout.readline().startswith("PET_PORT=")
+    first.stdin.close()
+    assert first.communicate(timeout=20)[0] == ""
+    assert first.returncode == 0
+
+    second = start_with_data_dir(tmp_path)
+    try:
+        assert second.stdout.readline().startswith("PET_PORT=")
+    finally:
+        second.terminate()
+        second.wait(timeout=10)
+
+
+def test_lock_is_released_after_forced_kill(tmp_path: Path):
+    first = start_with_data_dir(tmp_path)
+    assert first.stdout.readline().startswith("PET_PORT=")
+    first.kill()
+    first.wait(timeout=10)
+
+    second = start_with_data_dir(tmp_path)
+    try:
+        assert second.stdout.readline().startswith("PET_PORT=")
+    finally:
+        second.terminate()
+        second.wait(timeout=10)
