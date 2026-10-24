@@ -100,13 +100,13 @@ sequenceDiagram
 
 **目的**：建立 Python 3.12 的 uv 项目，锁定依赖。
 
-**状态**：🔄 进行中。已创建 `backend/pyproject.toml`，Python 3.12.12 虚拟环境与 `uv.lock` 已生成，开发依赖 ruff、pre-commit 已安装。运行时依赖待补充。
+**状态**：已完成。依赖已全部安装并锁定。
 
 **范围**：`backend/pyproject.toml` 写入运行时依赖：fastapi、uvicorn、pydantic-settings、langchain、langchain-openai、httpx、pyyaml；开发依赖：pytest。
 
 **验收**：`uv sync` 在 `backend/` 下成功，生成 `uv.lock`，`.venv` 使用 Python 3.12。
 
-**验证结果**：部分完成。`uv add --dev ruff pre-commit` 成功，`.venv` 为 Python 3.12.12，`uv.lock` 已生成；运行时依赖未添加。
+**验证结果**：已验证。`.venv` 为 Python 3.12.12；运行时依赖 fastapi、uvicorn、pydantic-settings、langchain、langchain-openai、httpx、pyyaml 与开发依赖 pytest、ruff、pre-commit 均已写入 `pyproject.toml` 并锁定在 `uv.lock`；`uv run python -c "import ..."` 导入全部通过。
 
 ### T3. 配置模块（T-003）
 
@@ -238,4 +238,4 @@ sequenceDiagram
 6. T11：已完成。
 7. T12：收尾并打 tag。
 
-下一步：完成 T2 的运行时依赖，然后执行 T3。
+下一步：执行 T3（配置模块）。
