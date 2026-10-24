@@ -3,6 +3,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -128,4 +129,54 @@ def test_unusable_data_dir_exits_with_error(tmp_path: Path):
     stdout, stderr = process.communicate(timeout=20)
     assert process.returncode == 1
     assert stdout == ""
-    assert "数据库初始化失败" in stderr
+    assert "初始化失败" in stderr
+
+
+def read_log(log_file: Path) -> str:
+    return log_file.read_text(encoding="utf-8") if log_file.exists() else ""
+
+
+def wait_for(predicate, timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return predicate()
+
+
+def test_startup_and_requests_are_logged(tmp_path: Path):
+    process = run_backend({"PET_DATA_DIR": str(tmp_path), "PET_LOG_LEVEL": "INFO"})
+    try:
+        port = int(process.stdout.readline().strip().split("=", 1)[1])
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/health", headers={"X-Pet-Token": TOKEN}
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+        log_file = tmp_path / "logs" / "backend.log"
+        assert wait_for(lambda: "/api/health" in read_log(log_file))
+        content = read_log(log_file)
+        assert "后端已启动" in content
+        assert TOKEN not in content
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+def test_error_level_suppresses_info_and_access_logs(tmp_path: Path):
+    process = run_backend({"PET_DATA_DIR": str(tmp_path), "PET_LOG_LEVEL": "ERROR"})
+    try:
+        port = int(process.stdout.readline().strip().split("=", 1)[1])
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/health", headers={"X-Pet-Token": TOKEN}
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+        time.sleep(0.3)
+        content = read_log(tmp_path / "logs" / "backend.log")
+        assert "后端已启动" not in content
+        assert "/api/health" not in content
+    finally:
+        process.terminate()
+        process.wait(timeout=10)

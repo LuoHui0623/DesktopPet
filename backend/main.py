@@ -1,3 +1,4 @@
+import logging
 import socket
 import sys
 from pathlib import Path
@@ -6,8 +7,11 @@ import uvicorn
 
 from api.app import create_app
 from config.settings import ServiceSettingsError, load_service_settings
+from infra.logging import setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
+
+logger = logging.getLogger("pet")
 
 
 def initialize_database(data_dir: Path) -> list[int]:
@@ -39,24 +43,41 @@ def main() -> int:
         return 1
 
     try:
-        initialize_database(settings.data_dir)
+        log_file = setup_logging(settings.log_level, settings.data_dir / "logs")
+    except OSError as exc:
+        print(f"日志初始化失败：{exc}", file=sys.stderr)
+        return 1
+    logger.info("日志文件：%s，级别：%s", log_file, settings.log_level)
+
+    try:
+        applied = initialize_database(settings.data_dir)
     except (MigrationError, OSError) as exc:
+        logger.error("数据库初始化失败：%s", exc)
         print(f"数据库初始化失败：{exc}", file=sys.stderr)
         return 1
+    if applied:
+        logger.info("数据库迁移完成，已应用版本：%s", applied)
+    else:
+        logger.info("数据库已是最新版本，无需迁移")
 
     try:
         sock = bind_socket(settings.host, settings.port)
     except OSError as exc:
+        logger.error("无法绑定 %s:%s：%s", settings.host, settings.port, exc)
         print(f"无法绑定 {settings.host}:{settings.port}：{exc}", file=sys.stderr)
         return 1
 
-    print(f"PET_PORT={sock.getsockname()[1]}", flush=True)
+    port = sock.getsockname()[1]
+    print(f"PET_PORT={port}", flush=True)
+    logger.info("后端已启动，监听 %s:%s", settings.host, port)
 
     config = uvicorn.Config(
         create_app(settings.token.get_secret_value()),
-        log_level=settings.log_level.lower(),
+        log_config=None,
+        log_level=None,
     )
     uvicorn.Server(config).run(sockets=[sock])
+    logger.info("后端已退出")
     return 0
 
 

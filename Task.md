@@ -176,13 +176,17 @@ sequenceDiagram
 
 **目的**：便于排查问题，日志只写本地。
 
-**状态**：待办。依赖 T4。
+**状态**：已完成。依赖 T4。
 
-**范围**：`backend/infra/logging.py`，日志写入 `backend/data/logs/`，级别由 `PET_LOG_LEVEL` 控制。
+**范围**：
+- `backend/infra/logging.py`：`setup_logging(level, log_dir)` 在根 logger 上挂载 `RotatingFileHandler`，文件为 `<log_dir>/backend.log`，单文件 5 MB，保留 5 份，UTF-8 编码。重复调用不会重复添加处理器。
+- `backend/main.py`：日志目录为 `PET_DATA_DIR/logs`（随数据目录配置）；启动、数据库迁移结果、监听地址、退出均写入日志。
+- uvicorn 使用 `log_config=None` 且不传 `log_level`，访问日志沿用根 logger 的配置，写入同一文件。
+- 日志只写文件，不写 stdout；stdout 第一行仍是 `PET_PORT=<端口>`。令牌不写入日志。
 
 **验收**：启动与请求会写入日志文件；`PET_LOG_LEVEL` 生效。
 
-**验证结果**：未执行。
+**验证结果**：已验证。`tests/infra/test_logging.py` 新增 5 项：创建日志文件、级别过滤、根 logger 级别、重复配置不重复输出、UTF-8 写入。`tests/test_main.py` 新增 2 项：`INFO` 级别下启动与请求写入日志且令牌不出现在日志中；`ERROR` 级别下不写入启动与访问日志。`uv run pytest` 共 107 项通过，`ruff check` 通过。
 
 ### T8. 单实例锁（T-008）
 
