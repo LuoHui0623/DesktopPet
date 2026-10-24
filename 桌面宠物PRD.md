@@ -1,8 +1,21 @@
 # 桌面宠物 PRD（Chat Agent，自用版）
 
-- 版本：v0.5（草案，明确 Python 3.12 / FastAPI / LangChain / uv 等技术细节，目录详见 Arch.md）
+- 版本：v0.6（草案，文档职责重新划分，技术选型与需求分离）
 - 日期：2026-10-24
 - 状态：待评审
+
+---
+
+## 文档职责
+
+| 文档 | 负责什么 | 不负责什么 |
+|---|---|---|
+| `桌面宠物PRD.md` | 产品定位、目标、需求、典型场景、功能设计、**技术选型**、里程碑、风险、待定事项 | 目录树、模块内部实现、运行步骤 |
+| `Arch.md` | 架构设计：前后端分离、运行时结构、目录树（带注释）、分层与依赖规则、接口与配置约定 | 产品需求与取舍原因 |
+| `README.md` | 项目介绍、文档索引、环境准备与运行方式 | 详细设计与需求 |
+| `Task.md` | 每次沟通的行动计划、任务工作单、当前进度与待决策事项 | 长期设计内容（以 PRD / Arch 为准） |
+
+变更约定：需求或技术选型变化先改 PRD；架构或目录变化同步改 Arch；行动与进度只记在 Task。
 
 ---
 
@@ -371,32 +384,13 @@ rules:
 | 配置 | `pyyaml` 读取 `persona.yaml` / 配置文件 | 人设与参数可直接手改 |
 | 日志 | 标准库 `logging`，写入本地文件 | 便于排查，不上传 |
 
-### 7.2 进程与通信
+### 7.2 前后端关系与架构
 
-```
-┌──────────────────────────── Electron（Node.js / TypeScript）────────────────────────────┐
-│  main 进程：窗口与托盘、全局快捷键、开机自启、拉起/监控后端、紧急停止                   │
-│  preload：contextBridge 暴露白名单 API（禁止渲染层直接访问 Node）                       │
-│  renderer：悬浮窗 / 对话窗 / 设置页（只展示，不做决策）                                  │
-└───────────────┬──────────────────────────────────────────────▲────────────────────────┘
-                │ 启动参数: --port 0 --token <随机>            │ WebSocket 推送
-                │ 首行 stdout 输出实际端口（握手）              │ （状态、主动消息、流式回复）
-                ▼                                              │
-┌──────────────────────────── Python 后端（pet_backend）───────┴────────────────────────┐
-│  FastAPI：REST（对话、设置、记忆、能力确认）+ WebSocket（事件推送）                    │
-│  core 模块：persona / memory / llm / perception / scheduler / weather /                │
-│             capabilities / chat_import / storage / config                              │
-└────────────────────────────────────────────────────────────────────────────────────────┘
-```
-
-- 后端由 Electron 主进程拉起，随 Electron 退出而退出；单实例，避免重复启动。
-- 所有 HTTP 请求必须携带启动令牌（`X-Pet-Token`），后端只监听 `127.0.0.1`。
-- 展示层不做任何业务判断，按钮动作（喜欢/别这样/确认执行）统一转为 REST 请求交给后端处理。
-- 紧急停止快捷键由 Electron 主进程注册，同时调用后端 `POST /emergency-stop`。
+前后端分离（Electron 界面 + 本机 Python 后端，经本地 REST / WebSocket 通信）的运行时结构、目录树与分层说明，见 **`Arch.md`**。本 PRD 只约定技术选型与产品行为，不重复维护架构细节。
 
 ### 7.3 目录结构
 
-完整目录与模块职责见项目根目录 **`Arch.md`**，本 PRD 不再重复维护。
+见 **`Arch.md`** §4。
 
 ### 7.4 Python 依赖（初版）
 
@@ -446,27 +440,9 @@ rules:
 | `chat_import` | id, source, conversation, imported_at, file_path | 聊天记录导入记录 |
 | `weather_cache` | city_key, payload, fetched_at | 天气缓存 |
 
-### 7.4 关键配置（示例）
+### 7.8 关键配置
 
-```yaml
-llm:
-  chat:
-    provider: "openai-compatible"
-    base_url: "https://api.example.com/v1"
-    model: "your-chat-model"
-  consolidate:
-    provider: "openai-compatible"
-    base_url: "https://api.example.com/v1"
-    model: "your-cheap-model"
-weather:
-  source: "qweather"
-  location: "auto"   # auto | manual
-  manual_city: "上海"
-quiet_hours: ["23:00", "08:00"]
-proactive:
-  max_per_hour: 2
-  max_per_day: 15
-```
+配置项与环境变量名以 `Arch.md` §7 为准，本 PRD 不再单独维护配置示例。
 
 ---
 
