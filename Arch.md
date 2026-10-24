@@ -182,7 +182,7 @@ backend/
 │
 ├─ constants/                # 【常数】不随运行变化的常量；不依赖任何其他层
 │  ├─ __init__.py
-│  └─ path.py                # 所有路径：项目根、后端根、配置、数据、日志、迁移、契约文件；resolve_from_root()
+│  └─ path.py                # 目录常量：项目根、后端根、前端根、配置、数据、日志、导出、迁移；resolve_from_root()。文件路径由使用处用目录拼接
 │
 ├─ config/                   # 【配置】.env、llm.yaml、人设；settings.py 解析为 model_settings
 │  ├─ .env                   # 本机配置：provider 列表、base_url、默认模型，不入 Git
@@ -377,7 +377,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.ts）
 | 受限能力层 | `capabilities/` | 动作注册、白名单校验、执行、撤销 | 被模型直接调用，绕过 validator |
 | 基础设施层 | `infra/` | 存储、模型客户端、外部接口、系统调用、事件、文件 | 包含业务规则，被 `api/` 直接调用 |
 | 配置 | `config/` | 读取并校验配置 | 在其他模块中读取环境变量 |
-| 常数 | `constants/` | 定义路径等常量，`path.py` 为所有路径的唯一来源 | 依赖任何其他层，写入运行时状态 |
+| 常数 | `constants/` | 定义目录常量，`path.py` 为所有目录路径的唯一来源；文件路径在使用处由目录拼接 | 依赖任何其他层，写入运行时状态 |
 
 ### 5.2 依赖方向
 

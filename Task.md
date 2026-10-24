@@ -275,11 +275,11 @@ sequenceDiagram
 **状态**：已完成。
 
 **范围**：
-- `backend/constants/path.py`：`BACKEND_DIR`、`ROOT_DIR`、`FRONTEND_DIR`，配置目录与文件（`ENV_FILE`、`LLM_CONFIG_FILE`、`PERSONA_FILE`，以及对应的文件名），数据目录（`DATA_DIR`、`DB_FILE`、`LOG_DIR`、`EXPORT_DIR`、`LOCK_FILE`），`MIGRATIONS_DIR`、`OPENAPI_FILE`、`API_CONTRACTS_FILE`，以及 `resolve_from_root()`。
+- `backend/constants/path.py`：仅定义目录常量 `BACKEND_DIR`、`ROOT_DIR`、`FRONTEND_DIR`、`CONFIG_DIR`、`DATA_DIR`、`LOG_DIR`、`EXPORT_DIR`、`MIGRATIONS_DIR`，以及 `resolve_from_root()`。具体文件路径在使用处用目录拼接，例如 `CONFIG_DIR / "llm.yaml"`。
 - `backend/config/settings.py` 改为引用常数层，不再自行定义路径。
 - 测试改为从常数层导入路径。
 
-**验收**：所有路径只在 `constants/path.py` 中定义；`config/settings.py` 中不再出现路径的字面量定义。
+**验收**：所有目录路径只在 `constants/path.py` 中定义；文件路径不在常量中定义，由目录拼接得到。
 
 **验证结果**：`uv run pytest` 65 项通过，`ruff check` 通过。
 

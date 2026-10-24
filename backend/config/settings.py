@@ -10,14 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
-from constants.path import (
-    CONFIG_DIR,
-    DATA_DIR,
-    ENV_FILE_NAME,
-    LLM_CONFIG_FILE_NAME,
-    PERSONA_FILE,
-    resolve_from_root,
-)
+from constants.path import CONFIG_DIR, DATA_DIR, resolve_from_root
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 QUIET_HOURS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
@@ -217,7 +210,7 @@ def load_model_settings(
     errors: list[str] = []
     warnings: list[str] = []
 
-    file_values, dotenv_warnings = read_dotenv(config_dir / ENV_FILE_NAME)
+    file_values, dotenv_warnings = read_dotenv(config_dir / ".env")
     warnings.extend(dotenv_warnings)
     for key in file_values:
         if key.endswith("_API_KEY"):
@@ -227,7 +220,7 @@ def load_model_settings(
     values = {key: value for key, value in file_values.items() if value}
     values.update({key: value for key, value in source.items() if value})
 
-    yaml_providers = _read_llm_yaml(config_dir / LLM_CONFIG_FILE_NAME, errors)
+    yaml_providers = _read_llm_yaml(config_dir / "llm.yaml", errors)
 
     for key in file_values:
         if (
@@ -351,7 +344,7 @@ def load_service_settings(
     config_dir: Path = CONFIG_DIR,
     environ: Mapping[str, str] | None = None,
 ) -> ServiceSettings:
-    file_values, _ = read_dotenv(config_dir / ENV_FILE_NAME)
+    file_values, _ = read_dotenv(config_dir / ".env")
     source: Mapping[str, str] = os.environ if environ is None else environ
     values = {key: value for key, value in file_values.items() if value}
     values.update({key: value for key, value in source.items() if value})
@@ -392,7 +385,7 @@ def load_service_settings(
         port=port,
         token=SecretStr(token),
         data_dir=_path_value(values, "PET_DATA_DIR", DATA_DIR),
-        persona_file=_path_value(values, "PET_PERSONA_FILE", PERSONA_FILE),
+        persona_file=_path_value(values, "PET_PERSONA_FILE", CONFIG_DIR / "persona.yaml"),
         timezone=timezone,
         log_level=log_level,
         quiet_hours=quiet_hours,
@@ -417,9 +410,7 @@ class ModelSettingsSource:
         self._environ = environ
 
     def stamp(self) -> tuple[tuple[int, int] | None, ...]:
-        return tuple(
-            _file_stamp(self._config_dir / name) for name in (ENV_FILE_NAME, LLM_CONFIG_FILE_NAME)
-        )
+        return tuple(_file_stamp(self._config_dir / name) for name in (".env", "llm.yaml"))
 
     def load(self) -> ModelSettings:
         return load_model_settings(self._config_dir, self._environ)
