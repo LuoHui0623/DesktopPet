@@ -78,9 +78,19 @@ copy .env.example .env
   python -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
 
-- `LLM_CHAT_BASE_URL`、`LLM_CHAT_API_KEY`、`LLM_CHAT_MODEL`：对话模型。
+- `LLM_PROVIDERS`：启用的 provider，如 `deepseek,openai`。每个 provider 需要 `<NAME>_BASE_URL` 与 `<NAME>_API_KEY`。
 
-所有变量说明见 `Arch.md` §8。`.env` 含密钥，不要提交到 Git。
+`<NAME>_API_KEY` 的值是**系统环境变量名**，不是密钥本身。例如 `DEEPSEEK_API_KEY=DEEPSEEK_KEY`，则需要在系统中设置名为 `DEEPSEEK_KEY` 的环境变量：
+
+```powershell
+[Environment]::SetEnvironmentVariable("DEEPSEEK_KEY", "你的密钥", "User")
+```
+
+设置后需重新打开终端或重启后端才能读取到。
+
+模型预设写在 `backend/config/llm.yaml`，可直接修改。修改 `.env` 或 `llm.yaml` 后，无需重启，可调用 `POST /api/llm/reload` 立即生效。
+
+所有变量说明见 `Arch.md` §8。`.env` 含配置，不要提交到 Git。
 
 ### 2. 安装后端依赖
 

@@ -1,0 +1,33 @@
+# 模型预设。不含密钥，可入 Git。
+# provider 名必须与 .env 中 LLM_PROVIDERS 的值一致，且 .env 中需有 <PROVIDER>_BASE_URL 与 <PROVIDER>_API_KEY。
+# 规则见 Arch.md §8.3。
+
+providers:
+  deepseek:
+    display_name: DeepSeek
+    models:
+      - id: deepseek-chat
+        name: DeepSeek Chat
+        roles: [chat, consolidate]
+        temperature: 0.7
+        max_tokens: 1024
+      - id: deepseek-reasoner
+        name: DeepSeek Reasoner
+        roles: [chat]
+        temperature: 0.7
+        max_tokens: 2048
+
+  openai:
+    display_name: OpenAI
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o mini
+        roles: [consolidate]
+        temperature: 0.5
+        max_tokens: 1024
+
+# 默认选择，格式为 <provider>/<model id>。
+# 设置页切换后写入数据库，优先级高于此处。
+defaults:
+  chat: deepseek/deepseek-chat
+  consolidate: openai/gpt-4o-mini

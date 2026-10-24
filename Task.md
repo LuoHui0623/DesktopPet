@@ -83,6 +83,7 @@ sequenceDiagram
 - 运行：使用项目虚拟环境直接运行，暂不打包。
 - 版本：Git 管理，里程碑打 tag（如 `m0-skeleton`）。
 - 代码检查：ruff（格式化与检查），由 pre-commit 在提交前自动运行。
+- LLM 配置：`.env` 提供 `LLM_PROVIDERS`、`<PROVIDER>_BASE_URL`、`<PROVIDER>_API_KEY`（值为系统环境变量名）；`llm.yaml` 提供模型预设与默认选择；配置支持热更新（变化检测 + 手动重载 + 原子替换）。详见 Arch §8.3。
 - 提交信息前缀：`feat:`、`fix:`、`docs:`、`refactor:`、`chore:`、`test:`。
 
 ## 七、实施任务与依赖
@@ -231,11 +232,31 @@ sequenceDiagram
 
 **验证结果**：未执行。
 
+### T13. LLM 配置加载、校验与热更新（T-013）
+
+**目的**：让模型 provider 与模型预设可配置、可校验，并支持不重启切换。
+
+**状态**：待办。依赖 T3。
+
+**范围**：
+- `backend/config/llm/models.py`：`LlmConfig` 不可变快照（含 `version`）。
+- `backend/config/llm/loader.py`：读取 `.env` 的 `LLM_PROVIDERS`、`<P>_BASE_URL`、`<P>_API_KEY`，读取 `llm.yaml`，执行 Arch §8.3.3 的全部校验；api_key 引用的环境变量缺失时标记 provider 不可用，不报错。
+- `backend/config/llm/holder.py`：持有当前快照，调用前比对 `.env` 与 `llm.yaml` 的修改时间和大小，变化则重载；失败保留旧快照。
+- `backend/api/routers/llm.py`：`GET /api/llm/providers`、`POST /api/llm/reload`（本任务内完成）。`GET/PUT /api/llm/active` 放到 M1 与模型网关一起实现。
+
+**验收**：
+- 缺少 `<P>_BASE_URL` 或 `<P>_API_KEY`、provider 不在 `llm.yaml` 中、默认模型不存在、api_key 值疑似密钥字面量时，启动或重载失败并给出明确错误。
+- 修改 `llm.yaml` 后调用 `POST /api/llm/reload`，`GET /api/llm/providers` 立即反映新结果；配置有误时返回错误，旧配置仍生效。
+- 响应中不出现任何密钥值。
+- 单元测试覆盖：解析、校验失败分支、版本变化、失败不替换旧快照。
+
+**验证结果**：未执行。
+
 ## 八、推荐执行顺序
 
 1. T2：创建后端项目（依赖 uv）。
 2. T3 → T4：配置与启动入口。
-3. T5、T6、T7、T8：并行推进（均依赖 T2–T4）。
+3. T5、T6、T7、T8、T13：并行推进（均依赖 T2–T4，T13 依赖 T3）。
 4. T9：Electron 骨架。
 5. T10：端到端连通。
 6. T11：已完成。

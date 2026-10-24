@@ -59,7 +59,7 @@
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
 | 模型 | LangChain（`langchain-openai`，OpenAI 兼容接口） |
-| 配置 | `.env` + `persona.yaml`，由 pydantic-settings / pyyaml 读取 |
+| 配置 | `.env`（通用配置与 provider 引用）+ `llm.yaml`（模型预设）+ `persona.yaml`；LLM 配置支持热更新 |
 | 依赖管理 | 前端 npm（`package.json` + `package-lock.json`），后端 uv（`pyproject.toml` + `uv.lock`） |
 | 版本管理 | Git |
 
@@ -180,11 +180,16 @@ backend/
 ├─ uv.lock                   # 依赖锁定，入 Git
 ├─ main.py                   # 入口：加载配置、创建应用、启动 uvicorn、打印端口握手
 │
-├─ config/                   # 【配置】.env、人设、Settings 加载
-│  ├─ .env                   # 本机环境变量与密钥，不入 Git
+├─ config/                   # 【配置】.env、llm.yaml、人设、Settings 与 LLM 配置加载
+│  ├─ .env                   # 本机配置：provider 列表、base_url、api_key 引用名，不入 Git
 │  ├─ .env.example           # 环境变量模板，入 Git
+│  ├─ llm.yaml               # 模型预设与默认选择，入 Git（不含密钥）
 │  ├─ persona.yaml           # 人设文件，入 Git（不含密钥）
-│  └─ settings.py            # Settings：pydantic-settings 读取 .env 与环境变量，启动时校验
+│  ├─ settings.py            # 通用配置 PET_*：pydantic-settings 读取，启动时校验
+│  └─ llm/                   # LLM 配置：解析、校验、热更新
+│     ├─ models.py           # LlmConfig 等不可变快照结构
+│     ├─ loader.py           # 读取 .env 与 llm.yaml，解析、校验，生成快照
+│     └─ holder.py           # 持有当前快照，检测文件变化，原子替换
 │
 ├─ api/                      # 【接口层】只做 HTTP 相关工作
 │  ├─ app.py                 # create_app()：挂载路由、鉴权中间件、异常处理
@@ -200,6 +205,7 @@ backend/
 │     ├─ chat.py             # 发送消息、历史查询
 │     ├─ memory.py           # 记忆查看、编辑、删除、临时模式
 │     ├─ settings.py         # 设置读写、模型连通性测试
+│     ├─ llm.py              # 模型预设列表、当前对话与整理模型、手动重载
 │     ├─ proactive.py        # 主动消息反馈
 │     ├─ capabilities.py     # 计划确认、执行日志、撤销
 │     ├─ imports.py          # 聊天记录导入
@@ -209,6 +215,8 @@ backend/
 │  ├─ chat/
 │  │  ├─ chat_service.py     # 对话用例：取记忆 → 组装上下文 → 调模型 → 写日志
 │  │  └─ context.py          # 上下文组装：人设 → 核心典藏 → 检索记忆 → 近期对话
+│  ├─ llm/
+│  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、触发重载、连通性测试
 │  ├─ memory/
 │  │  ├─ memory_service.py   # 记忆用例：增删改查、即时记住 / 忘掉
 │  │  ├─ retrieval.py        # 按关键词与类别检索有效记忆，按重要性排序
@@ -250,7 +258,7 @@ backend/
 │  │  │  └─ 0001_init.sql    # 初始表结构（PRD §7.7）
 │  │  └─ repositories/       # 各表的增删改查，只返回数据，不做规则判断
 │  ├─ llm/
-│  │  ├─ client.py           # 按配置创建 LangChain 模型实例，超时、重试、流式
+│  │  ├─ client.py           # 按快照与 (provider, model, version) 创建并缓存 LangChain 模型实例
 │  │  └─ usage.py            # 调用用量记录（写入 store）
 │  ├─ weather/
 │  │  ├─ provider.py         # 天气数据源统一接口
@@ -403,6 +411,9 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 |---|---|---|
 | **LLM 客户端**（创建 ChatOpenAI、超时、重试、流式） | `infra/llm/client.py` | 技术适配，换 provider 只改这里 |
 | **LLM 用量记录** | `infra/llm/usage.py` | 技术观测，写入 store |
+| **LLM 配置解析与校验** | `config/llm/loader.py` | 配置层，读取 .env 与 llm.yaml，启动和重载时执行 |
+| **LLM 配置热更新** | `config/llm/holder.py` | 配置层，持有快照，变化检测与原子替换 |
+| **当前模型选择与重载用例** | `service/llm/llm_service.py` | 业务用例，决定哪个模型用于对话与整理 |
 | **提示词模板** | `service/prompts/` | 内容属于产品设计，与人设、记忆相关 |
 | **上下文组装** | `service/chat/context.py` | 决定哪些记忆进入对话，是业务规则 |
 | **结构化输出的数据模型**（如记忆候选） | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
@@ -496,6 +507,9 @@ scheduler（03:00，或开机补跑）
 | POST | `/api/memories/temporary-mode` | `set_temporary_mode` | 切换临时模式 |
 | GET / PUT | `/api/settings` | `get_settings` / `update_settings` | 读取 / 更新非敏感设置 |
 | POST | `/api/settings/llm/test` | `test_llm` | 测试模型连通性 |
+| GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
+| GET / PUT | `/api/llm/active` | `get_active_llm` / `set_active_llm` | 当前对话模型与整理模型 |
+| POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |
 | POST | `/api/proactive/{id}/feedback` | `submit_proactive_feedback` | 主动消息反馈 |
 | GET | `/api/capabilities/runs` | `list_capability_runs` | 执行日志 |
 | POST | `/api/capabilities/plans/{id}/confirm` | `confirm_plan` | 确认计划 |
@@ -513,13 +527,14 @@ scheduler（03:00，或开机补跑）
 
 ### 8.1 文件位置
 
-| 文件 | 位置 | 是否入 Git |
-|---|---|---|
-| 本机环境变量与密钥 | `backend/config/.env` | 否 |
-| 环境变量模板 | `backend/config/.env.example` | 是 |
-| 人设 | `backend/config/persona.yaml` | 是（不含密钥） |
+| 文件 | 位置 | 是否入 Git | 作用 |
+|---|---|---|---|
+| 本机配置 | `backend/config/.env` | 否 | 通用配置、provider 列表、各 provider 的 base_url 与 api_key 引用名 |
+| 环境变量模板 | `backend/config/.env.example` | 是 | 与 `.env` 结构一致，不含真实值 |
+| 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设、默认选择 |
+| 人设 | `backend/config/persona.yaml` | 是（不含密钥） | 人设与语气 |
 
-读取优先级：进程环境变量 > `backend/config/.env`。`settings.py` 固定以自身所在目录定位 `.env`，与启动时的工作目录无关。
+读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。
 
 ### 8.2 变量
 
@@ -535,14 +550,9 @@ scheduler（03:00，或开机补跑）
 | `PET_QUIET_HOURS` | `23:00-08:00` | 勿扰时段 |
 | `PET_PROACTIVE_MAX_PER_HOUR` | `2` | 主动消息每小时上限 |
 | `PET_PROACTIVE_MAX_PER_DAY` | `15` | 主动消息每天上限 |
-| `LLM_CHAT_BASE_URL` | 无 | 对话模型 Base URL（OpenAI 兼容） |
-| `LLM_CHAT_API_KEY` | 无 | 对话模型 API Key |
-| `LLM_CHAT_MODEL` | 无 | 对话模型名 |
-| `LLM_CONSOLIDATE_BASE_URL` | 同 chat | 整理模型 Base URL |
-| `LLM_CONSOLIDATE_API_KEY` | 同 chat | 整理模型 API Key |
-| `LLM_CONSOLIDATE_MODEL` | 无 | 整理模型名，建议用更便宜的模型 |
-| `LLM_TEMPERATURE` | `0.7` | 生成温度 |
-| `LLM_MAX_TOKENS` | `1024` | 单次最大输出 token |
+| `LLM_PROVIDERS` | 空 | 启用的 provider 列表，逗号分隔，见 §8.3 |
+| `<PROVIDER>_BASE_URL` | 无 | 某 provider 的 Base URL（OpenAI 兼容），如 `DEEPSEEK_BASE_URL` |
+| `<PROVIDER>_API_KEY` | 无 | 某 provider 的密钥**环境变量名**，如 `DEEPSEEK_API_KEY=DEEPSEEK_KEY`，见 §8.3 |
 | `WEATHER_SOURCE` | `qweather` | 天气数据源 |
 | `WEATHER_LOCATION_MODE` | `auto` | `auto` 定位，或 `manual` 手动城市 |
 | `WEATHER_MANUAL_CITY` | `上海` | 手动城市 |
@@ -554,12 +564,102 @@ scheduler（03:00，或开机补跑）
 
 `.env.example` 与本表保持一致，新增变量时两处同步修改。
 
+### 8.3 LLM 配置
+
+LLM 配置由 `.env` 与 `llm.yaml` 共同实现，两者分工如下：
+
+| 来源 | 提供什么 | 示例 |
+|---|---|---|
+| `.env` | 启用哪些 provider；每个 provider 的 base_url；每个 provider 的 api_key **引用名** | `LLM_PROVIDERS=deepseek,openai` |
+| `llm.yaml` | 每个 provider 的预设模型（id、名称、角色、温度、最大 token）；默认的对话模型与整理模型 | `deepseek.models[0].id: deepseek-chat` |
+| 运行时（数据库 `app_setting`） | 用户在设置页切换后的当前对话模型与整理模型 | `llm.active.chat = deepseek/deepseek-chat` |
+
+#### 8.3.1 `.env` 写法
+
+```
+LLM_PROVIDERS=deepseek,openai
+
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_API_KEY=DEEPSEEK_KEY        # 值是系统环境变量名；真正的密钥写在系统环境变量 DEEPSEEK_KEY 中
+
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_API_KEY=OPENAI_KEY
+```
+
+- `<PROVIDER>_API_KEY` 的值是**系统环境变量名**，不是密钥本身。密钥只存在系统环境变量中，不写入任何文件。
+- provider 名只允许小写字母、数字、下划线；对应的环境变量前缀为大写（`-` 视为 `_`）。
+- 环境变量名必须匹配 `^[A-Z_][A-Z0-9_]*$`。若值不符合（例如 `sk-` 开头的密钥被误填），启动时报错，提示“疑似直接写入了密钥”。
+
+#### 8.3.2 `llm.yaml` 写法
+
+```yaml
+providers:
+  deepseek:
+    display_name: DeepSeek
+    models:
+      - id: deepseek-chat
+        name: DeepSeek Chat
+        roles: [chat, consolidate]
+        temperature: 0.7
+        max_tokens: 1024
+      - id: deepseek-reasoner
+        name: DeepSeek Reasoner
+        roles: [chat]
+        temperature: 0.7
+        max_tokens: 2048
+  openai:
+    display_name: OpenAI
+    models:
+      - id: gpt-4o-mini
+        name: GPT-4o mini
+        roles: [consolidate]
+        temperature: 0.5
+        max_tokens: 1024
+
+defaults:
+  chat: deepseek/deepseek-chat
+  consolidate: openai/gpt-4o-mini
+```
+
+- `roles` 取值为 `chat`、`consolidate`，表示该模型可用于哪种用途。
+- `llm.yaml` 不含任何密钥或密钥引用，可入 Git。
+
+#### 8.3.3 校验规则
+
+启动与每次重载时执行，任一失败即整体拒绝该配置：
+
+1. `LLM_PROVIDERS` 中的每个 provider，必须同时有 `<P>_BASE_URL` 与 `<P>_API_KEY`。
+2. 每个启用的 provider 必须在 `llm.yaml` 中有预设。
+3. 同一 provider 下的 model id 不得重复。
+4. `defaults.chat`、`defaults.consolidate` 必须指向已启用 provider 下、且 `roles` 包含对应角色的模型。
+5. `temperature` 在 0–2 之间，`max_tokens` 大于 0。
+
+**api_key 引用的环境变量缺失时**不属于配置错误：该 provider 标记为“不可用”，启动仍成功，调用时返回明确错误，并在 `GET /api/llm/providers` 中显示原因。
+
+#### 8.3.4 热更新
+
+允许 LLM 配置热更新，不需要重启后端。
+
+- **快照**：配置解析结果为不可变的 `LlmConfig` 快照，带 `version`（内容哈希）。
+- **持有与替换**：`config/llm/holder.py` 持有当前快照，使用锁保护。新快照完整解析并通过校验后才替换旧快照；失败则保留旧快照，并返回错误列表，不会出现半生效状态。
+- **触发方式**：
+  1. 文件变化：每次发起模型调用前，比对 `.env` 与 `llm.yaml` 的修改时间和大小，变化则重载。
+  2. 手动重载：`POST /api/llm/reload`，供设置页按钮调用。
+  3. 切换模型：设置页修改当前对话模型或整理模型，写入 `app_setting`，立即生效。
+- **进行中的请求**：继续使用发起时的快照；新请求使用新快照。
+- **客户端缓存**：`infra/llm` 按 `(provider, model, version)` 缓存 LangChain 模型实例，版本切换后淘汰旧实例。
+- **可热更新**：`LLM_PROVIDERS`、`*_BASE_URL`、`*_API_KEY` 引用名、`llm.yaml` 中的模型预设与默认选择、温度与最大 token。
+- **不可热更新**（需重启）：`PET_HOST`、`PET_PORT`、`PET_TOKEN`、`PET_DATA_DIR`。
+- **已知限制**：`*_API_KEY` 指向的密钥值来自进程环境变量，进程启动后不会自动读取注册表。修改 Windows 系统环境变量后，需重启后端才能生效。
+
 ---
 
 ## 9. 工程约定
 
 ### 9.1 LangChain
 - 通过 `infra/llm/client.py` 创建模型，业务代码不直接 import provider SDK。
+- 模型参数与 provider 信息只来自 `LlmConfig` 快照，业务代码不读取 `.env` 或 `llm.yaml`。
+- 每次调用前获取当前快照（`holder.current()`），同一次调用内始终使用同一快照。
 - 结构化输出使用 Pydantic 模型校验，校验失败则丢弃并记录，不无限重试。
 - 每次调用写入用量记录（token、耗时、是否失败）。
 
@@ -590,6 +690,8 @@ scheduler（03:00，或开机补跑）
 
 1. **infra 与 service 的划分标准**（§5.3）是否认可；存在争议的组件以 §5.4 为准。
 2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。当前设计为集中放在 `service/`。
-3. **`config/` 中同时存放 `.env` 与 `persona.yaml`**，`settings.py` 作为唯一配置入口。
+3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 负责通用配置，`config/llm/` 负责 LLM 配置。
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
 5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
+6. **Windows 系统环境变量的热读取**：当前设计为修改后需重启后端。若希望免重启，可在重载时通过 `winreg` 读取用户与系统环境变量，但要额外处理优先级，待确认。
+7. **对话模型与整理模型的当前选择**存于数据库 `app_setting`，未设置时使用 `llm.yaml` 的 `defaults`。是否需要在 `.env` 中也能指定默认值（当前不支持）。
