@@ -109,6 +109,8 @@ cd backend
 uv run pre-commit install
 ```
 
+> 注意：项目路径含中文时，Windows 下可能生成无法执行的钩子（提示 `pre-commit not found`）。此时在 PowerShell 中先设置 `$env:PYTHONUTF8="1"`，再执行 `uv run pre-commit install --overwrite`。
+
 之后每次 `git commit` 会自动运行 ruff 格式化与检查。手动运行：
 
 ```powershell

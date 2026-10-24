@@ -214,7 +214,7 @@ sequenceDiagram
 
 **验收**：`uv run pre-commit run --all-files` 可执行；对有问题的 Python 文件，`ruff check` 能报错。
 
-**验证结果**：已验证。`uv run pre-commit install` 成功；`pre-commit run --all-files` 因暂无 Python 源码显示 Skipped；使用临时文件（含未使用导入与未排序导入）测试 `ruff check`，报出 F401 与 I001，测试文件已删除。提交号待本次提交后补充。
+**验证结果**：已验证。`uv run pre-commit install` 成功；`pre-commit run --all-files` 因暂无 Python 源码显示 Skipped；使用临时文件（含未使用导入与未排序导入）测试 `ruff check`，报出 F401 与 I001，测试文件已删除。提交 ea51920。Windows 下中文路径导致钩子路径乱码，已用 `PYTHONUTF8=1` 重装解决，记录于 README。
 
 ### T12. 里程碑收尾（T-012）
 
