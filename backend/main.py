@@ -6,12 +6,19 @@ from pathlib import Path
 import uvicorn
 
 from api.app import create_app
-from config.settings import ServiceSettings, ServiceSettingsError, load_service_settings
+from config.settings import (
+    ModelSettingsError,
+    ModelSettingsSource,
+    ServiceSettings,
+    ServiceSettingsError,
+    load_service_settings,
+)
 from infra.lifecycle import ShutdownController, watch_stdin
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
+from service.llm import LlmService
 
 logger = logging.getLogger("pet")
 GRACEFUL_SHUTDOWN_SECONDS = 5
@@ -36,7 +43,7 @@ def bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def serve(settings: ServiceSettings) -> int:
+def serve(settings: ServiceSettings, llm_service: LlmService) -> int:
     try:
         applied = initialize_database(settings.data_dir)
     except (MigrationError, OSError) as exc:
@@ -66,7 +73,11 @@ def serve(settings: ServiceSettings) -> int:
     logger.info("后端已启动，监听 %s:%s", settings.host, port)
 
     shutdown = ShutdownController()
-    app = create_app(settings.token.get_secret_value(), request_shutdown=shutdown.request)
+    app = create_app(
+        settings.token.get_secret_value(),
+        request_shutdown=shutdown.request,
+        llm_service=llm_service,
+    )
     config = uvicorn.Config(
         app,
         log_config=None,
@@ -101,6 +112,16 @@ def main() -> int:
         return 1
     logger.info("日志文件：%s，级别：%s", log_file, settings.log_level)
 
+    llm_service = LlmService(ModelSettingsSource())
+    try:
+        llm_service.start()
+    except ModelSettingsError as exc:
+        for error in exc.errors:
+            logger.error("LLM 配置错误：%s", error)
+            print(f"LLM 配置错误：{error}", file=sys.stderr)
+        return 1
+    logger.info("LLM 配置已加载，版本：%s", llm_service.current().version)
+
     lock = SingleInstanceLock(settings.data_dir / "backend.lock")
     try:
         lock.acquire()
@@ -113,7 +134,7 @@ def main() -> int:
         return 1
 
     try:
-        return serve(settings)
+        return serve(settings, llm_service)
     finally:
         lock.release()
 

@@ -313,20 +313,29 @@ sequenceDiagram
 
 **目的**：让模型 provider 与模型预设可配置、可校验，并支持不重启切换。
 
-**状态**：🔄 进行中。解析、校验、热更新逻辑已完成（见 T15）；HTTP 接口待 T5 的 API 层接入。
+**状态**：已完成。依赖 T3、T5。
 
 **范围**：
-- `backend/config/settings.py`：`load_model_settings()` 解析 `.env` 与 `llm.yaml`，产出 `ModelSettings`（见 `backend/config/README.md` §10）。已完成。
-- `backend/service/llm/llm_service.py`：`LlmService` 持有快照、变化检测、原子替换、手动重载。已完成。
-- `backend/api/routers/llm.py`：`GET /api/llm/providers`、`POST /api/llm/reload`，依赖 T5 的 API 层。`GET/PUT /api/llm/active` 放到 M1 与模型网关一起实现。
+- `backend/config/settings.py`：`load_model_settings()` 解析 `.env` 与 `llm.yaml`，产出 `ModelSettings`（见 `backend/config/README.md` §10）。
+- `backend/service/llm/llm_service.py`：`LlmService` 持有快照、变化检测、原子替换、手动重载。
+- `backend/api/schemas/llm.py`、`backend/api/routers/llm.py`：`GET /api/llm/providers`（`list_llm_providers`）返回版本、provider 与模型列表（不含密钥）、可用状态与原因、默认选择、警告、最近一次重载的错误；`POST /api/llm/reload`（`reload_llm_config`）成功返回 200，失败返回 422、`code` 为 `llm_config_invalid`，旧配置保持生效。
+- `backend/api/app.py`：`create_app(token, request_shutdown, llm_service)` 注入服务；未注入时接口返回 503。
+- `backend/main.py`：启动时加载 LLM 配置，失败则输出错误到 stderr 与日志，退出码 1，早于数据库与端口绑定。
+- `frontend/src/api/api-contracts.json` 已重新生成，包含两个新操作。
+- `GET/PUT /api/llm/active` 放到 M1 与模型网关一起实现（未包含在本任务中）。
 
-**验收**：
-- 缺少 `<P>_BASE_URL` 或 `<P>_API_KEY`、provider 不在 `llm.yaml` 中、默认模型不存在、api_key 值疑似密钥字面量时，启动或重载失败并给出明确错误。
-- 修改 `llm.yaml` 后调用 `POST /api/llm/reload`，`GET /api/llm/providers` 立即反映新结果；配置有误时返回错误，旧配置仍生效。
+**验收**（按设计修正：密钥缺失不属于配置错误，见 `backend/config/README.md` §4）：
+- 缺少 `<P>_BASE_URL`、provider 不在 `llm.yaml` 中、默认模型无法解析、`.env` 中出现 `<P>_API_KEY` 时，启动或重载失败并给出明确错误。
+- 缺少密钥环境变量时启动成功，对应 provider 标记为不可用，原因显示在 `GET /api/llm/providers` 中。
+- 修改 `llm.yaml` 后调用 `POST /api/llm/reload`，`GET /api/llm/providers` 立即反映新版本；配置有误时返回 422，旧配置仍生效。
 - 响应中不出现任何密钥值。
-- 单元测试覆盖：解析、校验失败分支、版本变化、失败不替换旧快照。
 
-**验证结果**：未执行。
+**验证结果**：已验证。
+- `tests/api/test_llm_routes.py` 新增 8 项：需要令牌、列出模型与可用性、密钥缺失时的原因、响应不含密钥值、重载成功、重载失败保留旧配置、重载需要令牌、服务未注入时返回 503。
+- 解析、校验与热更新的单元测试在 T15 中已覆盖（`tests/config/test_settings.py`、`tests/service/test_llm_service.py`）。
+- 后端 `uv run pytest` 共 159 项通过，`ruff check` 通过。
+- 前端：契约 `gen:api:check` 通过，`vitest` 20 项通过，`tsc` 通过，ESLint 与 Prettier 通过。
+- pre-commit `--all-files` 全部通过。
 
 ### T14. LLM 三种接口范式（T-014）
 

@@ -19,6 +19,35 @@
       }
     },
     {
+      "operationId": "list_llm_providers",
+      "method": "GET",
+      "path": "/api/llm/providers",
+      "tags": [
+        "llm"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/LlmProvidersResponse"
+        }
+      }
+    },
+    {
+      "operationId": "reload_llm_config",
+      "method": "POST",
+      "path": "/api/llm/reload",
+      "tags": [
+        "llm"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ReloadResponse"
+        },
+        "422": null
+      }
+    },
+    {
       "operationId": "shutdown",
       "method": "POST",
       "path": "/api/shutdown",
@@ -38,6 +67,170 @@
     }
   ],
   "components": {
-    "schemas": {}
+    "schemas": {
+      "DefaultInfo": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "title": "DefaultInfo",
+        "type": "object"
+      },
+      "LlmProvidersResponse": {
+        "properties": {
+          "defaults": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/DefaultInfo"
+            },
+            "title": "Defaults",
+            "type": "object"
+          },
+          "last_reload_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Last Reload Errors",
+            "type": "array"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderInfo"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "version",
+          "providers",
+          "defaults",
+          "warnings",
+          "last_reload_errors"
+        ],
+        "title": "LlmProvidersResponse",
+        "type": "object"
+      },
+      "ModelInfo": {
+        "properties": {
+          "api": {
+            "title": "Api",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Roles",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "id",
+          "api",
+          "roles"
+        ],
+        "title": "ModelInfo",
+        "type": "object"
+      },
+      "ProviderInfo": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "name",
+          "display_name",
+          "available",
+          "reason",
+          "models"
+        ],
+        "title": "ProviderInfo",
+        "type": "object"
+      },
+      "ReloadResponse": {
+        "properties": {
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "ok",
+          "version",
+          "warnings"
+        ],
+        "title": "ReloadResponse",
+        "type": "object"
+      }
+    }
   }
 }
