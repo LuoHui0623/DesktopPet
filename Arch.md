@@ -44,7 +44,21 @@
 - 后端只监听 `127.0.0.1`，配置其他地址时启动报错。
 - 所有 HTTP 与 WebSocket 连接都必须携带启动令牌（`X-Pet-Token`），不匹配则拒绝。
 - 令牌由 Electron 主进程生成并传给后端；渲染进程通过 preload 获取，不写入 URL，也不落盘。
-- 后端随 Electron 退出而退出；单实例，通过 `backend/data/backend.lock` 防止重复启动。
+- 安全退出：Electron 以管道方式启动后端，并通过 stdin 控制退出（见 §1.3）。单实例，通过 `backend/data/backend.lock` 防止重复启动。
+
+### 1.3 安全退出
+后端有三条退出通道，均汇入同一个 `ShutdownController`（`infra/lifecycle.py`）：
+
+| 通道 | 触发 | 说明 |
+|---|---|---|
+| stdin | 读到 `shutdown` 行，或 stdin 关闭（EOF） | 父进程（Electron）退出时管道关闭即触发；Windows 上最可靠的方式，不暴露端口 |
+| HTTP | `POST /api/shutdown`（需 `X-Pet-Token`） | 供本机客户端使用；返回 202，随后退出 |
+| 信号 | SIGINT / SIGTERM | 由 uvicorn 处理，同样走优雅退出路径 |
+
+退出过程：停止接收新连接 → 等待在途请求（最多 5 秒，`GRACEFUL_SHUTDOWN_SECONDS`）→ 记录退出原因 → 关闭数据库日志处理器，写完所有未满批次。
+- 重复的退出请求被忽略，保留第一次的原因。
+- Electron 应以 `stdio: ['pipe', ...]` 启动后端，不要使用 `'ignore'`，否则 stdin 立即关闭，后端会马上退出。
+- 强制结束（`TerminateProcess`）不经过上述路径，仍会丢失未写入的日志，因此正常退出应使用上述通道。
 - 展示层不做业务判断。按钮动作（喜欢 / 别这样 / 确认执行 / 紧急停止）统一转为请求交给后端。
 - 模型输出只能提出计划，能力执行由后端校验后进行。
 
@@ -277,7 +291,8 @@ backend/
 │  │  └─ export.py           # 导出 Markdown 等文件
 │  ├─ events/
 │  │  └─ bus.py              # 进程内发布 / 订阅，供 WebSocket 推送
-│  └─ logging.py             # 日志配置，写入 data/logs
+│  ├─ logging.py             # 日志配置：文件日志与数据库日志（DbLogHandler，批次写入）
+│  └─ lifecycle.py           # 安全退出：ShutdownController 与 stdin 监听
 │
 ├─ scripts/
 │  └─ export_openapi.py      # 导出 OpenAPI 到 backend/openapi.json，供前端生成契约
@@ -520,6 +535,7 @@ scheduler（03:00，或开机补跑）
 | POST | `/api/capabilities/runs/{id}/undo` | `undo_run` | 撤销 |
 | POST | `/api/imports` | `import_chat` | 导入聊天记录 |
 | POST | `/api/emergency-stop` | `emergency_stop` | 紧急停止 |
+| POST | `/api/shutdown` | `shutdown` | 安全退出后端，返回 202（见 §1.3） |
 | WS | `/ws` | — | 事件推送：状态、主动消息、流式片段 |
 
 - 错误响应统一为 `{ "error": { "code": "...", "message": "..." } }`，前端按 `code` 处理，不解析 `message`。

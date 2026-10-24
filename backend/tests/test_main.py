@@ -28,6 +28,7 @@ def run_backend(extra_env: dict[str, str]) -> subprocess.Popen:
         [sys.executable, "main.py"],
         cwd=BACKEND_DIR,
         env=env,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -215,3 +216,59 @@ def test_logs_are_written_to_database(tmp_path: Path):
     finally:
         process.terminate()
         process.wait(timeout=10)
+
+
+def graceful_stop_messages(data_dir: Path) -> list[str]:
+    import sqlite3
+
+    conn = sqlite3.connect(data_dir / "pet.db")
+    try:
+        return [row[0] for row in conn.execute("SELECT message FROM log_record")]
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("trigger", ["close_stdin", "shutdown_line", "http"])
+def test_graceful_exit_flushes_pending_logs(tmp_path: Path, trigger: str):
+    process = run_backend(
+        {
+            "PET_DATA_DIR": str(tmp_path),
+            "PET_LOG_LEVEL": "INFO",
+            "PET_LOG_MAX_WAIT_SECONDS": "60",
+        }
+    )
+    try:
+        port = int(process.stdout.readline().strip().split("=", 1)[1])
+        if trigger == "close_stdin":
+            process.stdin.close()
+        elif trigger == "shutdown_line":
+            process.stdin.write("shutdown\n")
+            process.stdin.flush()
+        else:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{port}/api/shutdown",
+                method="POST",
+                headers={"X-Pet-Token": TOKEN},
+            )
+            with urllib.request.urlopen(request, timeout=5) as response:
+                assert response.status == 202
+
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0
+        assert stdout == ""
+        messages = graceful_stop_messages(tmp_path)
+        assert any("后端已退出" in m for m in messages)
+        assert any("后端已启动" in m for m in messages)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=10)
+
+
+def test_shutdown_without_token_keeps_backend_running(backend: subprocess.Popen):
+    port = int(backend.stdout.readline().strip().split("=", 1)[1])
+    request = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST")
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        urllib.request.urlopen(request, timeout=5)
+    assert exc.value.code == 401
+    assert backend.poll() is None

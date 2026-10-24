@@ -71,3 +71,23 @@ def test_websocket_with_wrong_token_is_closed(client: TestClient):
         with client.websocket_connect("/ws", headers={"X-Pet-Token": "wrong"}):
             pass
     assert exc.value.code == 1008
+
+
+def test_shutdown_requires_token():
+    calls: list[str] = []
+    client = TestClient(create_app(TOKEN, request_shutdown=lambda r: calls.append(r) or True))
+    assert_unauthorized(client.post("/api/shutdown"))
+    assert calls == []
+
+
+def test_shutdown_with_token_requests_exit_once():
+    calls: list[str] = []
+    client = TestClient(
+        create_app(TOKEN, request_shutdown=lambda r: calls.append(r) or len(calls) == 1)
+    )
+    first = client.post("/api/shutdown", headers={"X-Pet-Token": TOKEN})
+    second = client.post("/api/shutdown", headers={"X-Pet-Token": TOKEN})
+    assert first.status_code == 202
+    assert first.json() == {"status": "shutting_down"}
+    assert second.json() == {"status": "already_shutting_down"}
+    assert calls == ["HTTP 接口", "HTTP 接口"]

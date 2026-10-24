@@ -7,11 +7,13 @@ import uvicorn
 
 from api.app import create_app
 from config.settings import ServiceSettingsError, load_service_settings
+from infra.lifecycle import ShutdownController, watch_stdin
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 
 logger = logging.getLogger("pet")
+GRACEFUL_SHUTDOWN_SECONDS = 5
 
 
 def initialize_database(data_dir: Path) -> list[int]:
@@ -76,13 +78,21 @@ def main() -> int:
     print(f"PET_PORT={port}", flush=True)
     logger.info("后端已启动，监听 %s:%s", settings.host, port)
 
+    shutdown = ShutdownController()
+    app = create_app(settings.token.get_secret_value(), request_shutdown=shutdown.request)
     config = uvicorn.Config(
-        create_app(settings.token.get_secret_value()),
+        app,
         log_config=None,
         log_level=None,
+        timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
     )
-    uvicorn.Server(config).run(sockets=[sock])
-    logger.info("后端已退出")
+    server = uvicorn.Server(config)
+    shutdown.attach(server)
+    if sys.stdin is not None:
+        watch_stdin(sys.stdin, shutdown.request)
+
+    server.run(sockets=[sock])
+    logger.info("后端已退出，退出原因：%s", shutdown.reason or "信号")
     db_log.close()
     return 0
 

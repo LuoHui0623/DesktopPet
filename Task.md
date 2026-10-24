@@ -329,6 +329,22 @@ sequenceDiagram
 
 **验证结果**：`uv run pytest` 37 项通过（`tests/config/test_settings.py` 19 项，`tests/service/test_llm_service.py` 9 项，`tests/infra/test_paradigms.py` 9 项）；`ruff check` 通过。装配使用注入的假 builder 测试，未做真实模型调用。
 
+### T17. 安全退出机制（T-017）
+
+**目的**：后端能够优雅退出，退出前完成在途请求并把日志队列写完，避免丢失未满批次的日志。
+
+**状态**：已完成。
+
+**范围**：
+- `backend/infra/lifecycle.py`：`ShutdownController`（统一的退出入口，重复请求被忽略并保留第一次的原因）；`watch_stdin()`（监听 stdin，`shutdown` 行或 EOF 触发退出）。
+- `backend/api/routers/system.py`：`POST /api/shutdown`，需 `X-Pet-Token`，返回 202。
+- `backend/main.py`：uvicorn 使用 `timeout_graceful_shutdown=5`；退出后记录原因并关闭数据库日志处理器。
+- `Arch.md` §1.3：退出通道与退出过程；Electron 须使用 `stdio: pipe`。
+
+**验收**：三种退出通道（关闭 stdin、`shutdown` 指令、HTTP 接口）均以退出码 0 结束，并把未满批次的日志写入数据库；未鉴权的退出请求被拒绝且后端继续运行。
+
+**验证结果**：已验证。`tests/infra/test_lifecycle.py` 新增 5 项；`tests/api/test_auth.py` 新增 2 项；`tests/test_main.py` 新增 4 项（三种通道参数化，加上未鉴权不退出）。端到端用例的批次等待设为 60 秒，因此日志只能靠退出时的 `close()` 写入，验证了退出路径确实会写完剩余记录。`uv run pytest` 共 140 项通过，连续运行两次结果一致。
+
 ## 八、推荐执行顺序
 
 1. T2：创建后端项目（依赖 uv）。
