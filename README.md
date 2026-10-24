@@ -102,6 +102,21 @@ cd backend
 uv run pytest
 ```
 
+### 6. 代码检查（首次克隆后执行一次）
+
+```powershell
+cd backend
+uv run pre-commit install
+```
+
+之后每次 `git commit` 会自动运行 ruff 格式化与检查。手动运行：
+
+```powershell
+cd backend
+uv run ruff format .
+uv run ruff check --fix .
+```
+
 ## 数据与备份
 
 - 运行数据保存在 `data/`，核心文件是 `data/pet.db`。

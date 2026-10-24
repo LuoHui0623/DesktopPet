@@ -1,0 +1,20 @@
+# 提交前自动检查。安装钩子：cd backend && uv run pre-commit install
+# 工具版本由 backend/uv.lock 固定，不在此处单独指定。
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format
+        name: ruff format (backend)
+        entry: uv run --directory backend ruff format
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false
+
+      - id: ruff-check
+        name: ruff check (backend)
+        entry: uv run --directory backend ruff check --fix
+        language: system
+        types: [python]
+        files: ^backend/
+        pass_filenames: false

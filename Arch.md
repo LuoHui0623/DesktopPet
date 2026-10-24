@@ -71,6 +71,7 @@
 ├─ .env.example                     # 环境变量模板，入 Git
 ├─ .env                             # 本机环境变量与密钥，不入 Git
 ├─ .gitignore                       # Git 忽略规则
+├─ .pre-commit-config.yaml          # 提交前钩子：ruff format / ruff check
 │
 ├─ app/                             # ===== 前端：Electron + TypeScript =====
 │  ├─ package.json                  # 前端依赖与脚本
@@ -402,7 +403,9 @@ scheduler（03:00，或开机补跑）
 ### 8.3 测试
 - `pytest`，放在 `backend/tests/`，覆盖有效期、覆盖与失效、能力校验、调度频率、聊天记录解析等纯逻辑。
 - 不做 LLM 输出质量的自动评估（PRD 非目标）。
-- 代码检查使用 `ruff`（待 Task.md 中确认是否在 M0 引入）。
+- 代码检查与格式化使用 `ruff`，配置在 `backend/pyproject.toml` 的 `[tool.ruff]`。
+- 提交前由 `pre-commit` 自动运行 `ruff format` 与 `ruff check --fix`，配置在根目录 `.pre-commit-config.yaml`。钩子使用 `uv run` 调用，工具版本由 `backend/uv.lock` 固定。
+- 首次克隆后执行一次 `cd backend && uv run pre-commit install` 启用钩子。
 
 ### 8.4 Git 约定
 - 提交信息前缀：`feat:`、`fix:`、`docs:`、`refactor:`、`chore:`、`test:`。
@@ -416,4 +419,4 @@ scheduler（03:00，或开机补跑）
 
 2. 和风天气鉴权方式与凭据格式。
 3. `config/persona.yaml` 是否入 Git（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
-4. 是否在 M0 引入 `ruff` 与 `pre-commit`。
+4. ~~是否在 M0 引入 `ruff` 与 `pre-commit`~~：已确认引入，见 §8.3。

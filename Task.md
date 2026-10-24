@@ -51,7 +51,7 @@ sequenceDiagram
 
 - 文档职责已划分清楚：PRD 管需求与选型，README 管介绍，Arch 管前后端架构，Task 管计划与进度。
 - 技术栈已全部确定，M0 无阻塞于选型。
-- 唯一阻塞 M0 收尾的是 D-2（是否引入 ruff），其余待决策不影响 M0。
+- D-2 已确认：引入 ruff 与 pre-commit（T11 已完成）。M0 当前没有决策阻塞项。
 
 ## 四、非目标
 
@@ -62,7 +62,7 @@ sequenceDiagram
 
 ## 五、待确认问题与风险
 
-1. **D-2 是否引入 `ruff` 与 `pre-commit`**（影响 T11）。建议引入 `ruff`。
+1. ~~**D-2 是否引入 `ruff` 与 `pre-commit`**~~：已确认，见 T11。
 2. **D-3 和风天气的鉴权方式与凭据格式**（影响 M3，不阻塞 M0）。
 3. **D-4 `config/persona.yaml` 是否入 Git**（不阻塞，可先入 Git）。
 4. **风险：Electron 与 Python 进程的生命周期联动**。若 Electron 异常退出，后端可能残留。应对：后端单实例锁 + 监控退出（T8、T9）。
@@ -79,6 +79,7 @@ sequenceDiagram
 - 依赖：前端 npm，后端 uv（`pyproject.toml` + `uv.lock`）。
 - 运行：使用项目虚拟环境直接运行，暂不打包。
 - 版本：Git 管理，里程碑打 tag（如 `m0-skeleton`）。
+- 代码检查：ruff（格式化与检查），由 pre-commit 在提交前自动运行。
 - 提交信息前缀：`feat:`、`fix:`、`docs:`、`refactor:`、`chore:`、`test:`。
 
 ## 七、实施任务与依赖
@@ -99,13 +100,13 @@ sequenceDiagram
 
 **目的**：建立 Python 3.12 的 uv 项目，锁定依赖。
 
-**状态**：待办。
+**状态**：🔄 进行中。已创建 `backend/pyproject.toml`，Python 3.12.12 虚拟环境与 `uv.lock` 已生成，开发依赖 ruff、pre-commit 已安装。运行时依赖待补充。
 
-**范围**：创建 `backend/pyproject.toml`，写入依赖：fastapi、uvicorn、pydantic-settings、langchain、langchain-openai、httpx、pyyaml；开发依赖：pytest。
+**范围**：`backend/pyproject.toml` 写入运行时依赖：fastapi、uvicorn、pydantic-settings、langchain、langchain-openai、httpx、pyyaml；开发依赖：pytest。
 
 **验收**：`uv sync` 在 `backend/` 下成功，生成 `uv.lock`，`.venv` 使用 Python 3.12。
 
-**验证结果**：未执行。
+**验证结果**：部分完成。`uv add --dev ruff pre-commit` 成功，`.venv` 为 Python 3.12.12，`uv.lock` 已生成；运行时依赖未添加。
 
 ### T3. 配置模块（T-003）
 
@@ -207,19 +208,19 @@ sequenceDiagram
 
 **目的**：统一代码风格，尽早发现问题。
 
-**状态**：阻塞，等待 D-2 决策。
+**状态**：已完成。D-2 已确认引入。
 
-**范围**：若确认引入，配置 `ruff`（后端）与 `pre-commit`。
+**范围**：`backend/pyproject.toml` 的 `[tool.ruff]` 配置（行宽 100，py312，规则 E/F/I/B/UP）；根目录 `.pre-commit-config.yaml`，本地钩子通过 `uv run` 调用 ruff；`pre-commit install` 写入 `.git/hooks/pre-commit`。
 
-**验收**：`uv run ruff check .` 通过。
+**验收**：`uv run pre-commit run --all-files` 可执行；对有问题的 Python 文件，`ruff check` 能报错。
 
-**验证结果**：未执行。
+**验证结果**：已验证。`uv run pre-commit install` 成功；`pre-commit run --all-files` 因暂无 Python 源码显示 Skipped；使用临时文件（含未使用导入与未排序导入）测试 `ruff check`，报出 F401 与 I001，测试文件已删除。提交号待本次提交后补充。
 
 ### T12. 里程碑收尾（T-012）
 
 **目的**：标记 M0 完成，便于回溯。
 
-**状态**：待办。依赖 T1–T11（T11 若不引入则除外）。
+**状态**：待办。依赖 T1–T11。
 
 **范围**：更新 `README.md` 当前进度，提交，打 tag `m0-skeleton`。
 
@@ -234,7 +235,7 @@ sequenceDiagram
 3. T5、T6、T7、T8：并行推进（均依赖 T2–T4）。
 4. T9：Electron 骨架。
 5. T10：端到端连通。
-6. T11：如确认引入则执行。
+6. T11：已完成。
 7. T12：收尾并打 tag。
 
-待决策 D-2 确认后即可开始执行第 1 步。
+下一步：完成 T2 的运行时依赖，然后执行 T3。
