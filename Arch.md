@@ -58,7 +58,7 @@
 | 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
-| 模型 | LangChain：`langchain-openai`（OpenAI 兼容 chat、Responses），`langchain-anthropic`（Anthropic messages） |
+| 模型 | LangChain：`langchain-openai`（chat_completions、responses），`langchain-anthropic`（messages） |
 | 配置 | `.env`（通用配置与 provider 引用）+ `llm.yaml`（模型预设）+ `persona.yaml`；LLM 配置支持热更新 |
 | 依赖管理 | 前端 npm（`package.json` + `package-lock.json`），后端 uv（`pyproject.toml` + `uv.lock`） |
 | 版本管理 | Git |
@@ -180,17 +180,13 @@ backend/
 ├─ uv.lock                   # 依赖锁定，入 Git
 ├─ main.py                   # 入口：加载配置、创建应用、启动 uvicorn、打印端口握手
 │
-├─ config/                   # 【配置】.env、llm.yaml、人设、Settings 与 LLM 配置加载
-│  ├─ .env                   # 本机配置：provider 列表、base_url、api_key 引用名，不入 Git
+├─ config/                   # 【配置】.env、llm.yaml、人设；settings.py 解析为 model_settings
+│  ├─ .env                   # 本机配置：provider 列表、base_url、默认模型，不入 Git
 │  ├─ .env.example           # 环境变量模板，入 Git
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
 │  ├─ persona.yaml           # 人设文件，入 Git（不含密钥）
-│  ├─ README.md              # 配置目录说明与解析规则（.env、llm.yaml、默认模型、错误汇总）
-│  ├─ settings.py            # 通用配置 PET_*：pydantic-settings 读取，启动时校验
-│  └─ llm/                   # LLM 配置：解析、校验、热更新
-│     ├─ models.py           # LlmConfig 等不可变快照结构
-│     ├─ loader.py           # 读取 .env 与 llm.yaml，解析、校验，生成快照
-│     └─ holder.py           # 持有当前快照，检测文件变化，原子替换
+│  ├─ README.md              # 配置目录说明与解析规则
+│  └─ settings.py            # 解析入口：读取 .env 与 llm.yaml，产出 ModelSettings（model_settings）；PET_* 通用配置
 │
 ├─ api/                      # 【接口层】只做 HTTP 相关工作
 │  ├─ app.py                 # create_app()：挂载路由、鉴权中间件、异常处理
@@ -259,10 +255,9 @@ backend/
 │  │  │  └─ 0001_init.sql    # 初始表结构（PRD §7.7）
 │  │  └─ repositories/       # 各表的增删改查，只返回数据，不做规则判断
 │  ├─ llm/
-│  │  ├─ spec.py             # ModelSpec 与 ApiParadigm：一次模型调用所需的解析结果（不含 config 依赖）
-│  │  ├─ paradigms.py        # 三种接口范式的 LangChain 构造：openai_chat / openai_responses / anthropic_messages
-│  │  ├─ client.py           # 按 (provider, model, version) 缓存模型实例（待 T13 后实现）
-│  │  └─ usage.py            # 调用用量记录（写入 store）
+│  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
+│  │  ├─ paradigms.py        # build_chat_model(spec)：三种范式的 LangChain 构造
+│  │  └─ usage.py            # 调用用量记录（写入 store，待实现）
 │  ├─ weather/
 │  │  ├─ provider.py         # 天气数据源统一接口
 │  │  └─ qweather.py         # 和风天气 HTTP 客户端
@@ -412,11 +407,11 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 
 | 组件 | 归属 | 说明 |
 |---|---|---|
-| **LLM 客户端**（创建 ChatOpenAI、超时、重试、流式） | `infra/llm/client.py` | 技术适配，换 provider 只改这里 |
+| **LLM 接口范式**（ChatOpenAI / ChatAnthropic 的构造） | `infra/llm/paradigms.py` | 技术适配，三种范式，换 SDK 只改这里 |
 | **LLM 用量记录** | `infra/llm/usage.py` | 技术观测，写入 store |
-| **LLM 配置解析与校验** | `config/llm/loader.py` | 配置层，读取 .env 与 llm.yaml，启动和重载时执行 |
-| **LLM 配置热更新** | `config/llm/holder.py` | 配置层，持有快照，变化检测与原子替换 |
-| **当前模型选择与重载用例** | `service/llm/llm_service.py` | 业务用例，决定哪个模型用于对话与整理 |
+| **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
+| **LLM 客户端装配、缓存、热更新** | `service/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
+| **当前模型选择** | `service/llm/llm_service.py`（待 M1 接入数据库的 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
 | **提示词模板** | `service/prompts/` | 内容属于产品设计，与人设、记忆相关 |
 | **上下文组装** | `service/chat/context.py` | 决定哪些记忆进入对话，是业务规则 |
 | **结构化输出的数据模型**（如记忆候选） | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
@@ -609,13 +604,13 @@ providers:
     models:
       - id: deepseek-flash
         name: DeepSeek V4.1 Flash
-        api: openai_chat
+        api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
       - id: deepseek-v4-pro
         name: DeepSeek V4 Pro
-        api: openai_chat
+        api: chat_completions
         roles: [chat]
         temperature: 0.7
         max_tokens: 2048
@@ -626,19 +621,19 @@ providers:
     models:
       - id: deepseek-v4.1-flash
         name: DeepSeek V4.1 Flash（OpenCode Go）
-        api: openai_chat
+        api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
       - id: gpt-5.6-luna
         name: GPT 5.6 Luna（OpenCode Go）
-        api: openai_responses
+        api: responses
         roles: [chat]
         temperature: 0.7
         max_tokens: 1024
       - id: claude-haiku-5-5
         name: Claude Haiku 5.5（OpenCode Go）
-        api: anthropic_messages
+        api: messages
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
@@ -652,7 +647,7 @@ providers:
 - **opencode 的限制**：
   - 免费模型（`*-free`）只能在 OpenCode 客户端中使用，后端不能调用。
   - Gemini 使用 Google 原生接口，当前设计不支持。
-  - Claude 使用 `anthropic_messages` 范式，GPT 使用 `openai_responses` 范式，均已支持。
+  - Claude 使用 `messages` 范式，GPT 使用 `responses` 范式，均已支持。
 - 解析规则的完整说明见 `backend/config/README.md`。
 
 #### 8.3.3 校验规则
@@ -675,7 +670,8 @@ providers:
 允许 LLM 配置热更新，不需要重启后端。
 
 - **快照**：配置解析结果为不可变的 `LlmConfig` 快照，带 `version`（内容哈希）。
-- **持有与替换**：`config/llm/holder.py` 持有当前快照，使用锁保护。新快照完整解析并通过校验后才替换旧快照；失败则保留旧快照，并返回错误列表，不会出现半生效状态。
+- **解析**：`config/settings.py` 的 `load_model_settings()` 读取 `.env` 与 `llm.yaml`，产出不可变的 `ModelSettings`（model_settings），其中带 `version`，不含密钥值。
+- **装配与持有**：`service/llm/llm_service.py` 的 `LlmService` 持有当前 `ModelSettings`，用它装配 client（经 `infra/llm/paradigms.py`），按 `(provider, model, version)` 缓存。新快照完整解析并通过校验后才替换旧快照；失败则保留旧快照，并返回错误列表，不会出现半生效状态。
 - **触发方式**：
   1. 文件变化：每次发起模型调用前，比对 `.env` 与 `llm.yaml` 的修改时间和大小，变化则重载。
   2. 手动重载：`POST /api/llm/reload`，供设置页按钮调用。
@@ -691,9 +687,9 @@ providers:
 ## 9. 工程约定
 
 ### 9.1 LangChain
-- 通过 `infra/llm/client.py` 创建模型，业务代码不直接 import provider SDK。
+- client 由 `service/llm` 通过 `infra/llm/paradigms.py` 装配，业务代码不直接 import provider SDK。
 - 模型参数与 provider 信息只来自 `LlmConfig` 快照，业务代码不读取 `.env` 或 `llm.yaml`。
-- 每次调用前获取当前快照（`holder.current()`），同一次调用内始终使用同一快照。
+- 每次调用前获取当前快照（`LlmService.current()`），同一次调用内始终使用同一快照。
 - 结构化输出使用 Pydantic 模型校验，校验失败则丢弃并记录，不无限重试。
 - 每次调用写入用量记录（token、耗时、是否失败）。
 
@@ -724,7 +720,7 @@ providers:
 
 1. **infra 与 service 的划分标准**（§5.3）是否认可；存在争议的组件以 §5.4 为准。
 2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。当前设计为集中放在 `service/`。
-3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 负责通用配置，`config/llm/` 负责 LLM 配置。
+3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 是唯一解析入口，产出 `model_settings`；client 装配由 `service/llm` 负责。
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
 5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
 6. **Windows 系统环境变量的热读取**：当前设计为修改后需重启后端。若希望免重启，可在重载时通过 `winreg` 读取用户与系统环境变量，但要额外处理优先级，待确认。

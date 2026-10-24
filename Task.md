@@ -236,13 +236,12 @@ sequenceDiagram
 
 **目的**：让模型 provider 与模型预设可配置、可校验，并支持不重启切换。
 
-**状态**：待办。依赖 T3。
+**状态**：🔄 进行中。解析、校验、热更新逻辑已完成（见 T15）；HTTP 接口待 T5 的 API 层接入。
 
 **范围**：
-- `backend/config/llm/models.py`：`LlmConfig` 不可变快照（含 `version`）。
-- `backend/config/llm/loader.py`：读取 `.env` 的 `LLM_PROVIDERS`、`<P>_BASE_URL`、`<P>_API_KEY`，读取 `llm.yaml`，执行 Arch §8.3.3 的全部校验；api_key 引用的环境变量缺失时标记 provider 不可用，不报错。
-- `backend/config/llm/holder.py`：持有当前快照，调用前比对 `.env` 与 `llm.yaml` 的修改时间和大小，变化则重载；失败保留旧快照。
-- `backend/api/routers/llm.py`：`GET /api/llm/providers`、`POST /api/llm/reload`（本任务内完成）。`GET/PUT /api/llm/active` 放到 M1 与模型网关一起实现。
+- `backend/config/settings.py`：`load_model_settings()` 解析 `.env` 与 `llm.yaml`，产出 `ModelSettings`（见 `backend/config/README.md` §10）。已完成。
+- `backend/service/llm/llm_service.py`：`LlmService` 持有快照、变化检测、原子替换、手动重载。已完成。
+- `backend/api/routers/llm.py`：`GET /api/llm/providers`、`POST /api/llm/reload`，依赖 T5 的 API 层。`GET/PUT /api/llm/active` 放到 M1 与模型网关一起实现。
 
 **验收**：
 - 缺少 `<P>_BASE_URL` 或 `<P>_API_KEY`、provider 不在 `llm.yaml` 中、默认模型不存在、api_key 值疑似密钥字面量时，启动或重载失败并给出明确错误。
@@ -254,13 +253,13 @@ sequenceDiagram
 
 ### T14. LLM 三种接口范式（T-014）
 
-**目的**：基于 LangChain 提供 OpenAI 兼容 chat、OpenAI Responses、Anthropic messages 三种调用方式，供 provider 的模型按 `api` 字段选择。
+**目的**：基于 LangChain 提供三种接口范式：`chat_completions`、`responses`、`messages`，供 provider 的模型按 `api` 字段选择。
 
-**状态**：已完成。
+**状态**：已完成。范式名称已统一为三个值（见 T15）。
 
 **范围**：
 - 依赖：新增 `langchain-anthropic`（`uv add`），`langchain-openai` 已在 T2 中引入。
-- `backend/infra/llm/spec.py`：`ApiParadigm` 与 `ModelSpec`（API 密钥不出现在 repr 中）。
+- `backend/infra/llm/spec.py`：`ApiParadigm`（`chat_completions` / `responses` / `messages`）与 `ModelSpec`（API 密钥不出现在 repr 中）。
 - `backend/infra/llm/paradigms.py`：`build_chat_model(spec)` 按范式构造 `ChatOpenAI` 或 `ChatAnthropic`；`anthropic_root_url` 去掉 `/v1`。
 - `backend/config/llm.yaml`：每个模型新增 `api` 字段；opencode 增加 `gpt-5.6-luna`（responses）与 `claude-haiku-5-5`（messages）。
 - `backend/config/README.md` §6.5：范式说明。
@@ -268,6 +267,26 @@ sequenceDiagram
 **验收**：三种范式返回正确的 LangChain 类型，请求头与 base_url 正确传入；密钥不出现在 repr 中。
 
 **验证结果**：`uv run pytest` 9 项通过（含 `tests/infra/test_paradigms.py`）；`ruff check` 通过。已用 opencode Go 地址确认三条接口路径可达（带 `x-opencode-session` 时返回服务端错误而非路由错误），未做带密钥的真实调用。
+
+### T15. model_settings 解析与 LLM 服务装配（T-015）
+
+**目的**：`settings.py` 把 `.env` 与 `llm.yaml` 解析为 `model_settings`；服务层用 `model_settings` 装配 client，并支持热更新。
+
+**状态**：已完成。
+
+**范围**：
+- `backend/config/settings.py`：`load_model_settings()` 与 `ModelSettingsSource`（变化检测用的文件戳）。包括 `.env` 解析、provider 与模型校验、默认模型解析、版本哈希。
+- `backend/service/llm/llm_service.py`：`LlmService` 持有 `ModelSettings` 快照；`client_for(capability)` 按快照装配并缓存 client；`reload()` 手动重载；文件变化在下一次调用时自动重载；解析失败保留旧快照。
+- 范式名称统一为 `chat_completions`、`responses`、`messages`（`backend/infra/llm/spec.py`、`paradigms.py`、`config/llm.yaml`、`config/README.md`）。
+- 依赖：无新增。
+
+**验收**：
+- 解析错误（密钥写入 `.env`、provider 未定义、base_url 缺失、范式名非法、roles 非法、温度越界、模型 id 重复、默认模型歧义或角色不符）全部报错，错误一次性汇总。
+- 密钥缺失为警告，对应 provider 不可用，调用时返回明确错误。
+- `ModelSettings` 与 `repr` 中不出现密钥值。
+- 文件变化后下一次调用重新装配；重载失败时旧 client 与旧配置仍可用。
+
+**验证结果**：`uv run pytest` 37 项通过（`tests/config/test_settings.py` 19 项，`tests/service/test_llm_service.py` 9 项，`tests/infra/test_paradigms.py` 9 项）；`ruff check` 通过。装配使用注入的假 builder 测试，未做真实模型调用。
 
 ## 八、推荐执行顺序
 

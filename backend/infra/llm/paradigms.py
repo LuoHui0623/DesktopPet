@@ -9,12 +9,12 @@ from infra.llm.spec import ApiParadigm, ModelSpec
 
 def build_chat_model(spec: ModelSpec) -> BaseChatModel:
     match spec.api:
-        case ApiParadigm.OPENAI_CHAT:
-            return _openai_chat(spec)
-        case ApiParadigm.OPENAI_RESPONSES:
-            return _openai_responses(spec)
-        case ApiParadigm.ANTHROPIC_MESSAGES:
-            return _anthropic_messages(spec)
+        case ApiParadigm.CHAT_COMPLETIONS:
+            return _chat_completions(spec)
+        case ApiParadigm.RESPONSES:
+            return _responses(spec)
+        case ApiParadigm.MESSAGES:
+            return _messages(spec)
         case _:
             assert_never(spec.api)
 
@@ -26,7 +26,7 @@ def anthropic_root_url(base_url: str) -> str:
     return root
 
 
-def _openai_chat(spec: ModelSpec) -> ChatOpenAI:
+def _chat_completions(spec: ModelSpec) -> ChatOpenAI:
     return ChatOpenAI(
         model=spec.model,
         base_url=spec.base_url,
@@ -37,7 +37,7 @@ def _openai_chat(spec: ModelSpec) -> ChatOpenAI:
     )
 
 
-def _openai_responses(spec: ModelSpec) -> ChatOpenAI:
+def _responses(spec: ModelSpec) -> ChatOpenAI:
     return ChatOpenAI(
         model=spec.model,
         base_url=spec.base_url,
@@ -49,7 +49,7 @@ def _openai_responses(spec: ModelSpec) -> ChatOpenAI:
     )
 
 
-def _anthropic_messages(spec: ModelSpec) -> ChatAnthropic:
+def _messages(spec: ModelSpec) -> ChatAnthropic:
     return ChatAnthropic(
         model=spec.model,
         base_url=anthropic_root_url(spec.base_url),

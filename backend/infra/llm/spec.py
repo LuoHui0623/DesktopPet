@@ -4,9 +4,9 @@ from enum import StrEnum
 
 
 class ApiParadigm(StrEnum):
-    OPENAI_CHAT = "openai_chat"
-    OPENAI_RESPONSES = "openai_responses"
-    ANTHROPIC_MESSAGES = "anthropic_messages"
+    CHAT_COMPLETIONS = "chat_completions"
+    RESPONSES = "responses"
+    MESSAGES = "messages"
 
 
 @dataclass(frozen=True)

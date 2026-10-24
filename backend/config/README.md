@@ -11,8 +11,8 @@
 | `.env.example` | 是 | `.env` 的模板，不含真实值 |
 | `llm.yaml` | 是 | 模型预设：provider、模型、角色、温度、最大 token、请求头 |
 | `persona.yaml` | 是 | 人设 |
-| `settings.py` | 是 | 通用配置（`PET_*`）的加载与校验 |
-| `llm/` | 是 | LLM 配置的解析、校验与热更新代码 |
+| `settings.py` | 是 | 解析入口：读取 `.env` 与 `llm.yaml`，产出 `model_settings`（见 §10）；通用配置 `PET_*` 的加载与校验 |
+
 
 ## 2. `.env` 解析规则
 
@@ -134,7 +134,7 @@ providers:                      # 必需，映射
 ### 6.2 校验规则
 
 - 未知字段报错，用于发现拼写错误。
-- `api` 只能取 `openai_chat`、`openai_responses`、`anthropic_messages` 之一。
+- `api` 只能取 `chat_completions`、`responses`、`messages` 之一。
 - `roles` 中的值只能是 `chat` 或 `consolidate`，不允许重复。
 - 同一 provider 下 `id` 不得重复。
 - `request_header` 的键必须匹配 `^[A-Za-z0-9-]+$`，值必须是非空字符串。
@@ -163,9 +163,9 @@ opencode:
 
 | `api` 取值 | 对应接口 | 适用 | `base_url` 处理 |
 |---|---|---|---|
-| `openai_chat` | OpenAI 兼容 `POST {base}/chat/completions` | 大多数 provider | 原样使用，如 `https://api.deepseek.com/v1` |
-| `openai_responses` | OpenAI Responses `POST {base}/responses` | GPT 等支持 Responses 的模型 | 原样使用，同上 |
-| `anthropic_messages` | Anthropic `POST {base}/v1/messages` | Claude 等 | 去掉末尾的 `/v1` 后使用，如 `https://opencode.ai/zen/go/v1` → `https://opencode.ai/zen/go` |
+| `chat_completions` | OpenAI 兼容 `POST {base}/chat/completions` | 大多数 provider | 原样使用，如 `https://api.deepseek.com/v1` |
+| `responses` | OpenAI Responses `POST {base}/responses` | GPT 等支持 Responses 的模型 | 原样使用，同上 |
+| `messages` | Anthropic `POST {base}/v1/messages` | Claude 等 | 去掉末尾的 `/v1` 后使用，如 `https://opencode.ai/zen/go/v1` → `https://opencode.ai/zen/go` |
 
 - 同一 provider 下的不同模型可以使用不同的范式（例如 opencode 同时提供 chat 模型与 Claude 模型）。
 - 范式由 `api` 字段决定，不根据模型名猜测。
@@ -187,7 +187,7 @@ opencode:
 ## 8. 配置版本与热更新
 
 - 每份成功解析的配置生成一个 `version`，为规范化内容的哈希值。
-- 参与哈希计算的内容：`.env` 中与 LLM 相关的键值、`llm.yaml` 的规范化结构。
+- 参与哈希计算的内容：解析后的 `providers`（名称、base_url、密钥环境变量名、请求头、模型列表）与 `defaults`。不含密钥值，也不含 `warnings`。
 - **不参与**哈希计算：进程环境变量中的密钥值。因此密钥变化不会触发版本变化，需要重启后端才能生效（见 `Arch.md` §8.3.4）。
 - 检测变化的方式：比较 `.env` 与 `llm.yaml` 的修改时间与文件大小。变化后重新解析。
 
@@ -204,3 +204,19 @@ opencode:
 | `llm.yaml` 中 `request_header` 的值为空字符串 | 启动失败：请求头值不能为空 |
 | `llm.yaml` 中 `temperature: 3` | 启动失败：temperature 必须在 0 到 2 之间 |
 | 密钥环境变量未设置 | 启动成功，该 provider 标记为不可用 |
+
+## 10. 解析产物：model_settings
+
+`config/settings.py` 的 `load_model_settings()` 是唯一的解析入口，返回不可变的 `ModelSettings`：
+
+| 字段 | 内容 |
+|---|---|
+| `version` | 解析结果的哈希，内容变化时改变 |
+| `providers` | 启用的 provider：`name`、`display_name`、`base_url`、`api_key_env`（密钥环境变量名）、`request_header`、`models` |
+| `models` | 每个模型：`id`、`name`、`api`（`chat_completions` / `responses` / `messages`）、`roles`、`temperature`、`max_tokens` |
+| `defaults` | 按能力（`chat`、`consolidate`）给出的默认 `provider` 与 `model` |
+| `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
+
+- `ModelSettings` 中不包含密钥值，只包含密钥的环境变量名。
+- 服务层（`backend/service/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` §8.3.4。
+- 解析失败时抛出 `ModelSettingsError`，其 `errors` 为收集到的全部错误。
