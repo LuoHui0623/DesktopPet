@@ -29,6 +29,7 @@ def bind_socket(host: str, port: int) -> socket.socket:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.bind((host, port))
+        sock.listen(socket.SOMAXCONN)
     except OSError:
         sock.close()
         raise

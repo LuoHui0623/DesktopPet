@@ -217,13 +217,29 @@ sequenceDiagram
 
 **目的**：由桌面端统一拉起与关闭后端。
 
-**状态**：待办。依赖 T1（已完成）、T4。
+**状态**：已完成。依赖 T1（已完成）、T4。
 
-**范围**：`frontend/` 使用 electron-vite；主进程 `frontend/electron/main/backend/launcher.ts` 启动后端、读取端口；`supervisor.ts` 监控退出并联动关闭；`frontend/electron/preload/index.ts` 通过 contextBridge 暴露后端地址与令牌。
+**范围**：
+- `frontend/`：electron-vite 6、Electron 45、Vite 8、React 19、TypeScript、Vitest。`electron.vite.config.ts` 分别构建 main、preload、renderer。
+- `frontend/electron/main/backend/launcher.ts`：`launchBackend()` 以 `stdio: pipe` 拉起 `backend/.venv` 中的 Python（可用 `PET_PYTHON` 覆盖），生成随机令牌（`PET_TOKEN`），读取首行 `PET_PORT=<端口>`；超时或启动前退出时报错，并附带 stderr 末尾内容。
+- `frontend/electron/main/backend/supervisor.ts`：`BackendSupervisor.stop()` 通过 stdin 发送 `shutdown` 指令，超时后强制结束；意外退出时回调通知。
+- `frontend/electron/main/index.ts`：启动后端 → 注册 IPC → 创建窗口；`before-quit` 时先优雅停止后端再退出；后端意外退出时提示并关闭应用。
+- `frontend/electron/preload/index.ts`：contextBridge 暴露 `window.petBackend.getInfo()`，仅返回端口与令牌。
+- `frontend/src/app/entries/pet.html` / `pet.tsx`：最小窗口，显示后端连接状态。
 
 **验收**：`npm run dev` 启动时自动拉起后端；关闭 Electron 后后端进程随之结束。
 
-**验证结果**：未执行。
+**验证结果**：已验证。
+- `npx tsc --noEmit` 通过；`electron-vite build` 通过。
+- `npx vitest run` 共 11 项通过，包括对真实 Python 后端的集成测试：带令牌的 `/api/health` 返回 200，不带令牌返回 401，`stop()` 后退出码为 0。
+- 真实 Electron 运行：后端随应用启动，日志写入“后端已启动”；关闭主窗口（等同用户关闭）后，Electron 通过 stdin 发送 `shutdown`，后端经优雅退出写完日志（退出原因：stdin 指令），后端与 Electron 进程均结束。
+
+**过程中发现并修复的问题**：
+1. 端口竞争：原先先打印 `PET_PORT` 再 `listen`，客户端可能在 listen 之前连接而被拒绝。修复：绑定后立即 `sock.listen()`，再打印端口。
+2. 渲染产物位置错误：`outDir` 使用相对路径，输出到了仓库根目录的 `out/`。改为基于配置文件的绝对路径。
+3. Electron 二进制未随 `npm install` 下载，手动执行 `node node_modules/electron/install.js` 后正常。
+
+**已知限制（Windows 进程模型）**：父进程被异常结束（任务管理器、崩溃）时，仍在运行的子进程会被系统一并结束，后端无法完成优雅退出，未写入的日志会丢失（最多一个未满批次）。已用对照实验验证：普通子进程在收到 EOF 后若尚未结束，父进程退出即被结束。正常关闭路径不受影响。单实例锁由系统在进程结束时释放，因此异常退出后仍可立即重新启动。
 
 ### T10. 前端调通健康检查（T-010）
 
