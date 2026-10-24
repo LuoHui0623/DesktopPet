@@ -1,9 +1,6 @@
 # 模型预设。不含密钥，可入 Git。
 # provider 名须与 .env 中 LLM_PROVIDERS 一致。
-# 默认模型在 .env 中通过 DEFAULT_<能力>_MODEL 指定，见 Arch.md §8.3。
-#
-# 注意：opencode 的免费模型（*-free）只能在 OpenCode 客户端中使用，
-# 此处只列出付费模型，且为 OpenAI 兼容的 chat/completions 接口可用的模型。
+# 解析规则见 backend/config/README.md。
 
 providers:
   deepseek:
@@ -21,15 +18,23 @@ providers:
         max_tokens: 2048
 
   opencode:
-    display_name: OpenCode
+    display_name: OpenCode Go
+    # 每个请求附带的固定请求头。x-opencode-session 用于标识会话，便于服务端路由与缓存。
+    request_header:
+      x-opencode-session: ec50d820-8c4d-497f-a79b-7645b217eb87
     models:
       - id: deepseek-v4.1-flash
-        name: DeepSeek V4.1 Flash（OpenCode）
+        name: DeepSeek V4.1 Flash（OpenCode Go）
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
+      - id: deepseek-v4-pro
+        name: DeepSeek V4 Pro（OpenCode Go）
+        roles: [chat]
+        temperature: 0.7
+        max_tokens: 2048
       - id: glm-5.3-flash
-        name: GLM 5.3 Flash（OpenCode）
+        name: GLM 5.3 Flash（OpenCode Go）
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024

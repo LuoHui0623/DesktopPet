@@ -83,7 +83,7 @@ sequenceDiagram
 - 运行：使用项目虚拟环境直接运行，暂不打包。
 - 版本：Git 管理，里程碑打 tag（如 `m0-skeleton`）。
 - 代码检查：ruff（格式化与检查），由 pre-commit 在提交前自动运行。
-- LLM 配置：`.env` 提供 `LLM_PROVIDERS`（当前为 `deepseek,opencode`）、`<PROVIDER>_BASE_URL`、`DEFAULT_CHAT_MODEL`、`DEFAULT_CONSOLIDATE_MODEL`（当前为 `deepseek-flash`）；密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，不写入文件；`llm.yaml` 提供模型预设；配置支持热更新（变化检测 + 手动重载 + 原子替换）。详见 Arch §8.3。
+- LLM 配置：`.env` 提供 `LLM_PROVIDERS`（当前为 `deepseek,opencode`）、`<PROVIDER>_BASE_URL`、`DEFAULT_CHAT_MODEL`、`DEFAULT_CONSOLIDATE_MODEL`（当前为 `deepseek-flash`）；opencode 使用 OpenCode Go 地址 `https://opencode.ai/zen/go/v1`，`llm.yaml` 中为其配置 `request_header`（`x-opencode-session`）；解析规则见 `backend/config/README.md`；密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，不写入文件；`llm.yaml` 提供模型预设；配置支持热更新（变化检测 + 手动重载 + 原子替换）。详见 Arch §8.3。
 - 提交信息前缀：`feat:`、`fix:`、`docs:`、`refactor:`、`chore:`、`test:`。
 
 ## 七、实施任务与依赖

@@ -90,7 +90,7 @@ copy .env.example .env
 
 设置后需重新打开终端或重启后端才能读取到。
 
-模型预设写在 `backend/config/llm.yaml`，可直接修改。修改 `.env` 或 `llm.yaml` 后，无需重启，可调用 `POST /api/llm/reload` 立即生效。
+模型预设写在 `backend/config/llm.yaml`，可直接修改。配置的解析规则见 `backend/config/README.md`。修改 `.env` 或 `llm.yaml` 后，无需重启，可调用 `POST /api/llm/reload` 立即生效。
 
 所有变量说明见 `Arch.md` §8。`.env` 含配置，不要提交到 Git。
 

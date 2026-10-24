@@ -185,6 +185,7 @@ backend/
 │  ├─ .env.example           # 环境变量模板，入 Git
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
 │  ├─ persona.yaml           # 人设文件，入 Git（不含密钥）
+│  ├─ README.md              # 配置目录说明与解析规则（.env、llm.yaml、默认模型、错误汇总）
 │  ├─ settings.py            # 通用配置 PET_*：pydantic-settings 读取，启动时校验
 │  └─ llm/                   # LLM 配置：解析、校验、热更新
 │     ├─ models.py           # LlmConfig 等不可变快照结构
@@ -533,6 +534,7 @@ scheduler（03:00，或开机补跑）
 | 环境变量模板 | `backend/config/.env.example` | 是 | 与 `.env` 结构一致，不含真实值 |
 | 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设 |
 | 人设 | `backend/config/persona.yaml` | 是（不含密钥） | 人设与语气 |
+| 解析规则 | `backend/config/README.md` | 是 | `.env`、`llm.yaml`、默认模型的解析与校验规则 |
 
 读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。
 
@@ -584,7 +586,7 @@ LLM 配置由 `.env` 与 `llm.yaml` 共同实现，两者分工如下：
 LLM_PROVIDERS=deepseek,opencode
 
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-OPENCODE_BASE_URL=https://opencode.ai/inference/openai/v1
+OPENCODE_BASE_URL=https://opencode.ai/zen/go/v1
 
 DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
@@ -614,10 +616,22 @@ providers:
         temperature: 0.7
         max_tokens: 2048
   opencode:
-    display_name: OpenCode
+    display_name: OpenCode Go
+    request_header:
+      x-opencode-session: ec50d820-8c4d-497f-a79b-7645b217eb87
     models:
       - id: deepseek-v4.1-flash
-        name: DeepSeek V4.1 Flash（OpenCode）
+        name: DeepSeek V4.1 Flash（OpenCode Go）
+        roles: [chat, consolidate]
+        temperature: 0.7
+        max_tokens: 1024
+      - id: deepseek-v4-pro
+        name: DeepSeek V4 Pro（OpenCode Go）
+        roles: [chat]
+        temperature: 0.7
+        max_tokens: 2048
+      - id: glm-5.3-flash
+        name: GLM 5.3 Flash（OpenCode Go）
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
@@ -626,13 +640,18 @@ providers:
 - `roles` 取值为 `chat`、`consolidate`，表示该模型可用于哪种用途。
 - `llm.yaml` 只保存预设，不保存默认选择。默认选择由 `.env` 的 `DEFAULT_<能力>_MODEL` 指定。
 - `llm.yaml` 不含任何密钥或密钥引用，可入 Git。
-- **opencode 的限制**：opencode 的免费模型（`*-free`）只能在 OpenCode 客户端中使用；Claude、Gemini 等模型使用 Anthropic / Google 原生接口，不是 OpenAI 兼容的 `chat/completions`，当前设计不支持。预设中只列出付费且为 `chat/completions` 接口的模型。
+- `request_header` 为 provider 级别的固定请求头，每次请求都会附带。opencode 要求发送稳定的会话 ID（`x-opencode-session`）。
+- **opencode 的限制**：
+  - 免费模型（`*-free`）只能在 OpenCode 客户端中使用，后端不能调用。
+  - Claude（如 `claude-haiku-5-5`）、Gemini、MiniMax M3 等模型在 Go 中使用 Anthropic / Google 原生接口，不是 OpenAI 兼容的 `chat/completions`，当前设计不支持。
+  - 预设中只列出 `chat/completions` 接口的模型。
+- 解析规则的完整说明见 `backend/config/README.md`。
 
 #### 8.3.3 校验规则
 
 启动与每次重载时执行，任一失败即整体拒绝该配置：
 
-1. `LLM_PROVIDERS` 中的每个 provider，必须同时有 `<P>_BASE_URL` 与 `<P>_API_KEY`。
+1. `LLM_PROVIDERS` 中的每个 provider，必须有 `<P>_BASE_URL`。密钥缺失不属于配置错误，见下文。
 2. 每个启用的 provider 必须在 `llm.yaml` 中有预设。
 3. 同一 provider 下的 model id 不得重复。
 4. `DEFAULT_<能力>_MODEL` 必须解析到已启用 provider 下、且 `roles` 包含对应能力的模型：
