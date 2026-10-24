@@ -37,7 +37,7 @@
 
 | 编号 | 任务 | 层 | 状态 | 产出 / 备注 |
 |---|---|---|---|---|
-| T-001 | 确定前端渲染框架（React 或 Vue） | 前端 | ⏸ | 等待用户决策，见下方待决策 |
+| T-001 | 确定前端技术栈：React + Vite + Tailwind + Zustand | 前端 | ✅ | 决策 D-1 已确认，见 Arch §1.2 |
 | T-002 | 创建 `backend/pyproject.toml`，`uv sync` 通过（Python 3.12） | 后端 | ⬜ | 依赖：FastAPI、uvicorn、pydantic-settings、langchain、langchain-openai、httpx、pyyaml、pytest |
 | T-003 | `config.py`：Settings 读取环境变量，校验 `PET_HOST` 只能是 `127.0.0.1` | 后端 | ⬜ | 对应 Arch §7 |
 | T-004 | `__main__.py` 与 `app.py`：启动 uvicorn，首行 stdout 输出端口 | 后端 | ⬜ | 端口握手，`PET_PORT=0` 随机 |
@@ -45,7 +45,7 @@
 | T-006 | `storage/db.py` 与 `migrate.py`，`0001_init.sql` | 后端 | ⬜ | WAL、外键；表结构见 PRD §7.7 |
 | T-007 | `logging_setup.py`：日志写入 `data/logs` | 后端 | ⬜ | |
 | T-008 | 单实例锁 `data/backend.lock` | 后端 | ⬜ | |
-| T-009 | `app/` Electron 骨架：主进程拉起后端、读取端口、退出联动 | 前端 | ⏸ | 依赖 T-001 |
+| T-009 | `app/` Electron 骨架（electron-vite）：主进程拉起后端、读取端口、退出联动 | 前端 | ⬜ | 依赖 T-001（已完成） |
 | T-010 | `app/src/api/rest.ts` 调通 `/api/health` | 前端 | ⬜ | 依赖 T-005、T-009 |
 | T-011 | 决定是否引入 `ruff` 与 `pre-commit` | 工程 | ⏸ | 等待用户决策 |
 | T-012 | 完成后打 tag `m0-skeleton` | 工程 | ⬜ | 依赖以上全部 |
@@ -68,7 +68,6 @@
 
 | 序号 | 问题 | 影响任务 | 备注 |
 |---|---|---|---|
-| D-1 | 前端渲染框架：React 还是 Vue？ | T-001、T-009 | 建议 React + Vite |
 | D-2 | 是否引入 `ruff` 与 `pre-commit` | T-011 | 建议引入 `ruff` |
 | D-3 | 和风天气的鉴权方式与凭据格式 | M3 | 不阻塞 M0 |
 | D-4 | `config/persona.yaml` 是否入 Git | 无 | 不阻塞，可先入 Git |
@@ -77,6 +76,6 @@
 
 ## 下一步
 
-1. 你确认 D-1（前端框架）与 D-2（ruff）。
-2. 确认后执行 T-002 至 T-008，完成后端骨架。
+1. 你确认 D-2（是否引入 ruff）。
+2. 执行 T-002 至 T-008，完成后端骨架。
 3. 后端骨架验证通过后，执行 T-009 与 T-010，完成端到端连通。

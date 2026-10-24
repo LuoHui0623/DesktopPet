@@ -48,7 +48,9 @@
 | 层 | 技术 |
 |---|---|
 | 桌面壳 | Electron（主进程 TypeScript） |
-| 界面 | TypeScript + 渲染框架（React 或 Vue，待定） |
+| 界面 | TypeScript + React + Vite（electron-vite 统一构建主进程、preload、渲染进程） |
+| 样式 | Tailwind CSS |
+| 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
 | 模型 | LangChain（`langchain-openai`，OpenAI 兼容接口） |
@@ -93,6 +95,7 @@
 │     │
 │     ├─ renderer/                  # 界面层（渲染进程，只展示与转发）
 │     │  ├─ index.html              # 页面入口模板（各窗口共用基础结构）
+│     │  ├─ stores/                 # Zustand store，每个窗口一份展示缓存（数据源为后端）
 │     │  ├─ pet/                    # 悬浮形象
 │     │  │  ├─ PetView.tsx         # 形象占位图与状态标签
 │     │  │  └─ state.ts            # 状态枚举到展示样式的映射（待机/思考/说话/执行中/休眠）
@@ -411,7 +414,6 @@ scheduler（03:00，或开机补跑）
 
 ## 9. 待定
 
-1. 前端渲染框架：React 或 Vue。
 2. 和风天气鉴权方式与凭据格式。
 3. `config/persona.yaml` 是否入 Git（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
 4. 是否在 M0 引入 `ruff` 与 `pre-commit`。
