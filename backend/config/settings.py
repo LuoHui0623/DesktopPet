@@ -174,22 +174,22 @@ def _resolve_default(
     errors: list[str],
 ) -> DefaultModel | None:
     if "/" in raw:
-        provider, _, model_id = raw.partition("/")
-        candidates = [(provider, model_id)]
+        provider, _, label = raw.partition("/")
+        candidates = [(provider, label)]
     else:
         candidates = [
-            (p.name, m.id) for p in providers.values() for m in p.models.values() if m.id == raw
+            (p.name, m.name) for p in providers.values() for m in p.models.values() if m.name == raw
         ]
     matches = [
-        (provider, model_id)
-        for provider, model_id in candidates
+        (provider, label)
+        for provider, label in candidates
         if provider in providers
-        and model_id in providers[provider].models
-        and capability in providers[provider].models[model_id].roles
+        and label in providers[provider].models
+        and capability in providers[provider].models[label].roles
     ]
     if len(matches) == 1:
-        provider, model_id = matches[0]
-        return DefaultModel(provider=provider, model=model_id)
+        provider, label = matches[0]
+        return DefaultModel(provider=provider, model=label)
     if not matches:
         errors.append(
             f"{variable}={raw} 无法解析：没有已启用的 provider 提供支持 {capability} 的该模型"
@@ -245,10 +245,10 @@ def load_model_settings(
         definition = yaml_providers[name]
         models: dict[str, ModelItem] = {}
         for model in definition.models:
-            if model.id in models:
-                errors.append(f"provider {name} 中模型 id {model.id} 重复")
+            if model.name in models:
+                errors.append(f"provider {name} 中模型标签 name {model.name} 重复")
                 continue
-            models[model.id] = ModelItem(
+            models[model.name] = ModelItem(
                 id=model.id,
                 name=model.name,
                 api=model.api,

@@ -10,8 +10,8 @@ providers:
   deepseek:
     display_name: DeepSeek
     models:
-      - id: deepseek-flash
-        name: DeepSeek V4.1 Flash
+      - name: deepseek-flash
+        id: deepseek-flash
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7

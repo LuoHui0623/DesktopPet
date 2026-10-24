@@ -275,13 +275,13 @@ sequenceDiagram
 **状态**：已完成。
 
 **范围**：
-- `backend/config/settings.py`：`load_model_settings()` 与 `ModelSettingsSource`（变化检测用的文件戳）。包括 `.env` 解析、provider 与模型校验、默认模型解析、版本哈希。
+- `backend/config/settings.py`：`load_model_settings()` 与 `ModelSettingsSource`（变化检测用的文件戳）。包括 `.env` 解析、provider 与模型校验、默认模型解析（按模型标签 `name` 查找，`id` 为上游标识）、版本哈希。
 - `backend/service/llm/llm_service.py`：`LlmService` 持有 `ModelSettings` 快照；`client_for(capability)` 按快照装配并缓存 client；`reload()` 手动重载；文件变化在下一次调用时自动重载；解析失败保留旧快照。
 - 范式名称统一为 `chat_completions`、`responses`、`messages`（`backend/infra/llm/spec.py`、`paradigms.py`、`config/llm.yaml`、`config/README.md`）。
 - 依赖：无新增。
 
 **验收**：
-- 解析错误（密钥写入 `.env`、provider 未定义、base_url 缺失、范式名非法、roles 非法、温度越界、模型 id 重复、默认模型歧义或角色不符）全部报错，错误一次性汇总。
+- 解析错误（密钥写入 `.env`、provider 未定义、base_url 缺失、范式名非法、roles 非法、温度越界、模型标签 name 在 provider 内重复、默认模型歧义或角色不符）全部报错，错误一次性汇总。
 - 密钥缺失为警告，对应 provider 不可用，调用时返回明确错误。
 - `ModelSettings` 与 `repr` 中不出现密钥值。
 - 文件变化后下一次调用重新装配；重载失败时旧 client 与旧配置仍可用。

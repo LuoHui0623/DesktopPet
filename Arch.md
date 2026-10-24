@@ -551,7 +551,7 @@ scheduler（03:00，或开机补跑）
 | `PET_PROACTIVE_MAX_PER_DAY` | `15` | 主动消息每天上限 |
 | `LLM_PROVIDERS` | 空 | 启用的 provider 列表，逗号分隔，见 §8.3 |
 | `<PROVIDER>_BASE_URL` | 无 | 某 provider 的 Base URL（OpenAI 兼容），如 `DEEPSEEK_BASE_URL` |
-| `DEFAULT_CHAT_MODEL` | 无 | 对话默认模型，`<model id>` 或 `<provider>/<model id>` |
+| `DEFAULT_CHAT_MODEL` | 无 | 对话默认模型，`<name>` 或 `<provider>/<name>`（`name` 为 llm.yaml 中的模型标签） |
 | `DEFAULT_CONSOLIDATE_MODEL` | 无 | 整理默认模型，格式同上 |
 
 密钥不在此表中：每个 provider 的密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，见 §8.3.1。
@@ -573,7 +573,7 @@ LLM 配置由 `.env` 与 `llm.yaml` 共同实现，两者分工如下：
 | 来源 | 提供什么 | 示例 |
 |---|---|---|
 | `.env` | 启用哪些 provider；每个 provider 的 base_url；每个能力的默认模型 `DEFAULT_<能力>_MODEL` | `LLM_PROVIDERS=deepseek,opencode`、`DEFAULT_CHAT_MODEL=deepseek-flash` |
-| `llm.yaml` | 每个 provider 的预设模型（id、名称、可用角色、温度、最大 token） | `deepseek.models[0].id: deepseek-flash` |
+| `llm.yaml` | 每个 provider 的预设模型：标签 `name`（provider 内唯一）、上游标识 `id`、范式、可用角色、温度、最大 token | `deepseek.models[0].name: deepseek-flash` |
 | 系统环境变量 | 每个 provider 的密钥，变量名固定为 `<PROVIDER>_API_KEY` | `DEEPSEEK_API_KEY=sk-…` |
 | 运行时（数据库 `app_setting`） | 用户在设置页切换后的当前模型，优先级最高 | `llm.active.chat = deepseek/deepseek-flash` |
 
@@ -591,7 +591,7 @@ DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 
 - **密钥不在 `.env` 中出现**。每个 provider 的密钥从系统环境变量读取，变量名固定为 `<PROVIDER>_API_KEY`（大写）。例如 provider `deepseek` 读取 `DEEPSEEK_API_KEY`，provider `opencode` 读取 `OPENCODE_API_KEY`。
 - 密钥只存在系统环境变量中，不写入任何文件，也不写入数据库。
-- `DEFAULT_<能力>_MODEL` 的值为模型 id，可写为 `<provider>/<model id>`。能力目前有 `CHAT`（对话）与 `CONSOLIDATE`（整理）；后续新增能力（如摘要、主动文案）时同样新增对应变量。
+- `DEFAULT_<能力>_MODEL` 的值为模型标签 `name`，可写为 `<provider>/<name>`。`.env` 不使用上游 `id`。能力目前有 `CHAT`（对话）与 `CONSOLIDATE`（整理）；后续新增能力（如摘要、主动文案）时同样新增对应变量。
 - provider 名只允许小写字母、数字、下划线；对应的环境变量前缀为大写（`-` 视为 `_`）。
 - `.env` 中若出现 `<PROVIDER>_API_KEY` 这类键，启动时报错，提示“密钥应放在系统环境变量中，不应写入 .env”。这是为了避免密钥误入文件。
 
@@ -602,14 +602,14 @@ providers:
   deepseek:
     display_name: DeepSeek
     models:
-      - id: deepseek-flash
-        name: DeepSeek V4.1 Flash
+      - name: deepseek-flash
+        id: deepseek-flash
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: deepseek-v4-pro
-        name: DeepSeek V4 Pro
+      - name: deepseek-v4-pro
+        id: deepseek-v4-pro
         api: chat_completions
         roles: [chat]
         temperature: 0.7
@@ -619,20 +619,20 @@ providers:
     request_header:
       x-opencode-session: ec50d820-8c4d-497f-a79b-7645b217eb87
     models:
-      - id: deepseek-v4.1-flash
-        name: DeepSeek V4.1 Flash（OpenCode Go）
+      - name: deepseek-v4.1-flash
+        id: deepseek-v4.1-flash
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: gpt-5.6-luna
-        name: GPT 5.6 Luna（OpenCode Go）
+      - name: gpt-5.6-luna
+        id: gpt-5.6-luna
         api: responses
         roles: [chat]
         temperature: 0.7
         max_tokens: 1024
-      - id: claude-haiku-5-5
-        name: Claude Haiku 5.5（OpenCode Go）
+      - name: claude-haiku-5-5
+        id: claude-haiku-5-5
         api: messages
         roles: [chat, consolidate]
         temperature: 0.7
@@ -656,10 +656,10 @@ providers:
 
 1. `LLM_PROVIDERS` 中的每个 provider，必须有 `<P>_BASE_URL`。密钥缺失不属于配置错误，见下文。
 2. 每个启用的 provider 必须在 `llm.yaml` 中有预设。
-3. 同一 provider 下的 model id 不得重复。
-4. `DEFAULT_<能力>_MODEL` 必须解析到已启用 provider 下、且 `roles` 包含对应能力的模型：
-   - 写成 `<provider>/<model id>` 时直接按此查找；
-   - 写成裸的 `<model id>` 时，要求在所有已启用 provider 中唯一，否则报错，提示改用 `provider/model` 形式。
+3. 同一 provider 下的模型 `name`（标签）不得重复。`id` 不要求唯一。
+4. `DEFAULT_<能力>_MODEL` 必须解析到已启用 provider 下、且 `roles` 包含对应能力的模型（按 `name` 查找）：
+   - 写成 `<provider>/<name>` 时直接按此查找；
+   - 写成裸的 `<name>` 时，要求在所有已启用 provider 中唯一，否则报错，提示改用 `provider/name` 形式。
    - 变量未设置时，该能力视为未配置默认模型：启动仍成功，调用该能力时返回明确错误。
 5. `temperature` 在 0–2 之间，`max_tokens` 大于 0。
 

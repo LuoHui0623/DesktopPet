@@ -2,7 +2,11 @@
 # provider 名须与 .env 中 LLM_PROVIDERS 一致。
 # 解析规则见 backend/config/README.md。
 #
-# api 为每个模型的接口范式，只能取以下三个值：
+# 每个模型两个标识：
+#   name  标签，在同一 provider 内唯一。.env 的 DEFAULT_*_MODEL 按此查找。
+#   id    发给上游 API 的模型标识，不要求唯一。
+#
+# api 为接口范式，只能取以下三个值：
 #   chat_completions  OpenAI 兼容 chat/completions 接口
 #   responses         OpenAI Responses 接口
 #   messages          Anthropic messages 接口
@@ -11,14 +15,14 @@ providers:
   deepseek:
     display_name: DeepSeek
     models:
-      - id: deepseek-flash
-        name: DeepSeek V4.1 Flash
+      - name: deepseek-flash
+        id: deepseek-flash
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: deepseek-v4-pro
-        name: DeepSeek V4 Pro
+      - name: deepseek-v4-pro
+        id: deepseek-v4-pro
         api: chat_completions
         roles: [chat]
         temperature: 0.7
@@ -30,20 +34,20 @@ providers:
     request_header:
       x-opencode-session: ec50d820-8c4d-497f-a79b-7645b217eb87
     models:
-      - id: deepseek-v4.1-flash
-        name: DeepSeek V4.1 Flash（OpenCode Go）
+      - name: deepseek-v4.1-flash
+        id: deepseek-v4.1-flash
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: gpt-5.6-luna
-        name: GPT 5.6 Luna（OpenCode Go）
+      - name: gpt-5.6-luna
+        id: gpt-5.6-luna
         api: responses
         roles: [chat]
         temperature: 0.7
         max_tokens: 1024
-      - id: claude-haiku-5-5
-        name: Claude Haiku 5.5（OpenCode Go）
+      - name: claude-haiku-5-5
+        id: claude-haiku-5-5
         api: messages
         roles: [chat, consolidate]
         temperature: 0.7

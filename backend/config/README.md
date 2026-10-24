@@ -93,13 +93,15 @@ provider 名转为大写后作为前缀：
 
 ### 5.2 取值格式
 
-- `<model id>`：裸模型名。
-- `<provider>/<model id>`：带 provider 前缀。
+- `<name>`：模型标签，即 `llm.yaml` 中模型的 `name`。
+- `<provider>/<name>`：带 provider 前缀。
+
+`.env` 中的模型值只按 `name` 查找，不使用 `id`。`name` 是标签，在同一 provider 内唯一。
 
 ### 5.3 解析步骤
 
-1. 若值包含 `/`，按第一个 `/` 拆分为 provider 与 model id。provider 必须在启用列表中，model id 必须存在于该 provider 的 `models` 中，且 `roles` 包含该能力对应的 role。
-2. 若值不包含 `/`，在所有启用的 provider 中查找 model id 相同、且 `roles` 包含对应 role 的模型：
+1. 若值包含 `/`，按第一个 `/` 拆分为 provider 与 name。provider 必须在启用列表中，name 必须存在于该 provider 的 `models` 中，且 `roles` 包含该能力对应的 role。
+2. 若值不包含 `/`，在所有启用的 provider 中查找 name 相同、且 `roles` 包含对应 role 的模型：
    - 恰好一个：使用它；
    - 多个：报错，提示改用 `provider/model` 形式；
    - 没有：报错。
@@ -123,9 +125,9 @@ providers:                      # 必需，映射
     request_header:             # 可选，映射：请求头名 -> 字符串值
       <header-name>: <value>
     models:                     # 必需，列表，可以为空
-      - id: <字符串>            # 必需，同一 provider 内唯一
-        name: <字符串>          # 必需
-        api: openai_chat        # 必需，接口范式，见 §6.5
+      - name: <字符串>          # 必需，模型标签，同一 provider 内唯一；.env 按此引用
+        id: <字符串>            # 必需，发给上游 API 的模型标识，不要求唯一
+        api: chat_completions   # 必需，接口范式，见 §6.5
         roles: [chat, consolidate]   # 必需，非空，只能取 chat / consolidate
         temperature: 0.7        # 必需，0 到 2 之间的数字
         max_tokens: 1024        # 必需，大于 0 的整数
@@ -136,7 +138,7 @@ providers:                      # 必需，映射
 - 未知字段报错，用于发现拼写错误。
 - `api` 只能取 `chat_completions`、`responses`、`messages` 之一。
 - `roles` 中的值只能是 `chat` 或 `consolidate`，不允许重复。
-- 同一 provider 下 `id` 不得重复。
+- 同一 provider 下 `name` 不得重复。`id` 可以与其他模型相同，例如同一上游模型配置两套参数，使用两个不同的 `name`。
 - `request_header` 的键必须匹配 `^[A-Za-z0-9-]+$`，值必须是非空字符串。
 - `request_header` 只能出现在 provider 层级，不能出现在模型层级。
 
@@ -213,7 +215,7 @@ opencode:
 |---|---|
 | `version` | 解析结果的哈希，内容变化时改变 |
 | `providers` | 启用的 provider：`name`、`display_name`、`base_url`、`api_key_env`（密钥环境变量名）、`request_header`、`models` |
-| `models` | 每个模型：`id`、`name`、`api`（`chat_completions` / `responses` / `messages`）、`roles`、`temperature`、`max_tokens` |
+| `models` | 以 `name`（标签）为键。每个模型：`name`、`id`（上游模型标识）、`api`（`chat_completions` / `responses` / `messages`）、`roles`、`temperature`、`max_tokens` |
 | `defaults` | 按能力（`chat`、`consolidate`）给出的默认 `provider` 与 `model` |
 | `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
 
