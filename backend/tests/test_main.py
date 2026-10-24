@@ -180,3 +180,32 @@ def test_error_level_suppresses_info_and_access_logs(tmp_path: Path):
     finally:
         process.terminate()
         process.wait(timeout=10)
+
+
+def test_logs_are_written_to_database(tmp_path: Path):
+    import sqlite3
+
+    process = run_backend({"PET_DATA_DIR": str(tmp_path), "PET_LOG_LEVEL": "INFO"})
+    try:
+        port = int(process.stdout.readline().strip().split("=", 1)[1])
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{port}/api/health", headers={"X-Pet-Token": TOKEN}
+        )
+        with urllib.request.urlopen(request, timeout=5):
+            pass
+
+        db_file = tmp_path / "pet.db"
+
+        def stored_messages() -> list[str]:
+            conn = sqlite3.connect(db_file)
+            try:
+                return [row[0] for row in conn.execute("SELECT message FROM log_record")]
+            finally:
+                conn.close()
+
+        assert wait_for(lambda: any("后端已启动" in m for m in stored_messages()), timeout=10)
+        assert wait_for(lambda: any("/api/health" in m for m in stored_messages()), timeout=10)
+        assert all(TOKEN not in m for m in stored_messages())
+    finally:
+        process.terminate()
+        process.wait(timeout=10)

@@ -22,6 +22,7 @@ EXPECTED_TABLES = {
     "chat_import",
     "weather_cache",
     "app_setting",
+    "log_record",
     "schema_version",
 }
 
@@ -59,7 +60,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1]
+    assert applied == [1, 2]
     assert EXPECTED_TABLES <= tables(conn)
 
 
@@ -67,7 +68,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
     migrate(conn)
     assert migrate(conn) == []
     rows = conn.execute("SELECT version, name FROM schema_version").fetchall()
-    assert [tuple(row) for row in rows] == [(1, "init")]
+    assert [tuple(row) for row in rows] == [(1, "init"), (2, "log_record")]
 
 
 def test_schema_version_records_checksum(conn: sqlite3.Connection):

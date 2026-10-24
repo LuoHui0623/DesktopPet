@@ -7,7 +7,7 @@ import uvicorn
 
 from api.app import create_app
 from config.settings import ServiceSettingsError, load_service_settings
-from infra.logging import setup_logging
+from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 
@@ -59,6 +59,7 @@ def main() -> int:
         logger.info("数据库迁移完成，已应用版本：%s", applied)
     else:
         logger.info("数据库已是最新版本，无需迁移")
+    db_log = attach_db_logging(settings.data_dir / "pet.db")
 
     try:
         sock = bind_socket(settings.host, settings.port)
@@ -78,6 +79,7 @@ def main() -> int:
     )
     uvicorn.Server(config).run(sockets=[sock])
     logger.info("后端已退出")
+    db_log.close()
     return 0
 
 

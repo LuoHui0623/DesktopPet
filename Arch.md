@@ -256,7 +256,8 @@ backend/
 │  │  ├─ db.py               # SQLite 连接：WAL、外键、事务封装
 │  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version
 │  │  ├─ migrations/         # 迁移 SQL，只增不改
-│  │  │  └─ 0001_init.sql    # 初始表结构（PRD §7.7）
+│  │  │  ├─ 0001_init.sql    # 初始表结构（PRD §7.7）
+│  │  │  └─ 0002_log_record.sql # 日志入库表
 │  │  └─ repositories/       # 各表的增删改查，只返回数据，不做规则判断
 │  ├─ llm/
 │  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
@@ -707,6 +708,15 @@ providers:
 - 迁移编号必须从 `0001` 开始连续。
 - 数据库连接启用 WAL、外键约束与 5 秒忙等待；连接使用 autocommit 模式，事务由 `transaction()` 显式管理。
 - 时间字段存 ISO 8601 文本（带时区），日期字段存 `YYYY-MM-DD`。
+
+### 9.6 日志入库
+- 文件日志与数据库日志由 `infra/logging.py` 提供：`setup_logging()` 写文件，`attach_db_logging()` 挂载 `DbLogHandler` 写入 `log_record` 表（迁移 `0002_log_record.sql`）。
+- `DbLogHandler.emit` 只格式化记录并放入有界队列（默认 10000 条），不访问数据库，因此调用方不会因写库而阻塞。
+- 后台线程 `pet-log-writer` 持有自己的数据库连接，按批写入（默认每批 100 条，或每 1 秒）。
+- 队列满时丢弃新记录并计数（`handler.dropped`），不阻塞、不抛异常。
+- 数据库不可用时，线程输出到 stderr 并丢弃记录，日志调用本身不受影响。
+- `close()` 会写完队列中剩余的记录后返回；关闭之后的记录被忽略。
+- 注意：进程被强制结束（如 Windows 上的 `TerminateProcess`）时，队列中尚未写入的记录会丢失，最多约 1 秒的记录。
 
 ### 9.3 测试
 - `pytest`，放在 `backend/tests/`，以 service 与 capabilities 的纯逻辑为主。
