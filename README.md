@@ -78,12 +78,14 @@ copy .env.example .env
   python -c "import secrets; print(secrets.token_urlsafe(32))"
   ```
 
-- `LLM_PROVIDERS`：启用的 provider，如 `deepseek,openai`。每个 provider 需要 `<NAME>_BASE_URL` 与 `<NAME>_API_KEY`。
+- `LLM_PROVIDERS`：启用的 provider，如 `deepseek,opencode`。每个 provider 需要 `<NAME>_BASE_URL`。
+- `DEFAULT_CHAT_MODEL`、`DEFAULT_CONSOLIDATE_MODEL`：默认模型，如 `deepseek-flash`。
 
-`<NAME>_API_KEY` 的值是**系统环境变量名**，不是密钥本身。例如 `DEEPSEEK_API_KEY=DEEPSEEK_KEY`，则需要在系统中设置名为 `DEEPSEEK_KEY` 的环境变量：
+密钥不写在 `.env` 中。每个 provider 的密钥从同名的系统环境变量读取，变量名为 `<PROVIDER>_API_KEY`（大写）。例如需要设置 `DEEPSEEK_API_KEY` 与 `OPENCODE_API_KEY`：
 
 ```powershell
-[Environment]::SetEnvironmentVariable("DEEPSEEK_KEY", "你的密钥", "User")
+[Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "你的密钥", "User")
+[Environment]::SetEnvironmentVariable("OPENCODE_API_KEY", "你的密钥", "User")
 ```
 
 设置后需重新打开终端或重启后端才能读取到。

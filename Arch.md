@@ -183,7 +183,7 @@ backend/
 ├─ config/                   # 【配置】.env、llm.yaml、人设、Settings 与 LLM 配置加载
 │  ├─ .env                   # 本机配置：provider 列表、base_url、api_key 引用名，不入 Git
 │  ├─ .env.example           # 环境变量模板，入 Git
-│  ├─ llm.yaml               # 模型预设与默认选择，入 Git（不含密钥）
+│  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
 │  ├─ persona.yaml           # 人设文件，入 Git（不含密钥）
 │  ├─ settings.py            # 通用配置 PET_*：pydantic-settings 读取，启动时校验
 │  └─ llm/                   # LLM 配置：解析、校验、热更新
@@ -531,7 +531,7 @@ scheduler（03:00，或开机补跑）
 |---|---|---|---|
 | 本机配置 | `backend/config/.env` | 否 | 通用配置、provider 列表、各 provider 的 base_url 与 api_key 引用名 |
 | 环境变量模板 | `backend/config/.env.example` | 是 | 与 `.env` 结构一致，不含真实值 |
-| 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设、默认选择 |
+| 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设 |
 | 人设 | `backend/config/persona.yaml` | 是（不含密钥） | 人设与语气 |
 
 读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。
@@ -552,7 +552,10 @@ scheduler（03:00，或开机补跑）
 | `PET_PROACTIVE_MAX_PER_DAY` | `15` | 主动消息每天上限 |
 | `LLM_PROVIDERS` | 空 | 启用的 provider 列表，逗号分隔，见 §8.3 |
 | `<PROVIDER>_BASE_URL` | 无 | 某 provider 的 Base URL（OpenAI 兼容），如 `DEEPSEEK_BASE_URL` |
-| `<PROVIDER>_API_KEY` | 无 | 某 provider 的密钥**环境变量名**，如 `DEEPSEEK_API_KEY=DEEPSEEK_KEY`，见 §8.3 |
+| `DEFAULT_CHAT_MODEL` | 无 | 对话默认模型，`<model id>` 或 `<provider>/<model id>` |
+| `DEFAULT_CONSOLIDATE_MODEL` | 无 | 整理默认模型，格式同上 |
+
+密钥不在此表中：每个 provider 的密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，见 §8.3.1。
 | `WEATHER_SOURCE` | `qweather` | 天气数据源 |
 | `WEATHER_LOCATION_MODE` | `auto` | `auto` 定位，或 `manual` 手动城市 |
 | `WEATHER_MANUAL_CITY` | `上海` | 手动城市 |
@@ -570,25 +573,28 @@ LLM 配置由 `.env` 与 `llm.yaml` 共同实现，两者分工如下：
 
 | 来源 | 提供什么 | 示例 |
 |---|---|---|
-| `.env` | 启用哪些 provider；每个 provider 的 base_url；每个 provider 的 api_key **引用名** | `LLM_PROVIDERS=deepseek,openai` |
-| `llm.yaml` | 每个 provider 的预设模型（id、名称、角色、温度、最大 token）；默认的对话模型与整理模型 | `deepseek.models[0].id: deepseek-chat` |
-| 运行时（数据库 `app_setting`） | 用户在设置页切换后的当前对话模型与整理模型 | `llm.active.chat = deepseek/deepseek-chat` |
+| `.env` | 启用哪些 provider；每个 provider 的 base_url；每个能力的默认模型 `DEFAULT_<能力>_MODEL` | `LLM_PROVIDERS=deepseek,opencode`、`DEFAULT_CHAT_MODEL=deepseek-flash` |
+| `llm.yaml` | 每个 provider 的预设模型（id、名称、可用角色、温度、最大 token） | `deepseek.models[0].id: deepseek-flash` |
+| 系统环境变量 | 每个 provider 的密钥，变量名固定为 `<PROVIDER>_API_KEY` | `DEEPSEEK_API_KEY=sk-…` |
+| 运行时（数据库 `app_setting`） | 用户在设置页切换后的当前模型，优先级最高 | `llm.active.chat = deepseek/deepseek-flash` |
 
 #### 8.3.1 `.env` 写法
 
 ```
-LLM_PROVIDERS=deepseek,openai
+LLM_PROVIDERS=deepseek,opencode
 
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
-DEEPSEEK_API_KEY=DEEPSEEK_KEY        # 值是系统环境变量名；真正的密钥写在系统环境变量 DEEPSEEK_KEY 中
+OPENCODE_BASE_URL=https://opencode.ai/inference/openai/v1
 
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_API_KEY=OPENAI_KEY
+DEFAULT_CHAT_MODEL=deepseek-flash
+DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 ```
 
-- `<PROVIDER>_API_KEY` 的值是**系统环境变量名**，不是密钥本身。密钥只存在系统环境变量中，不写入任何文件。
+- **密钥不在 `.env` 中出现**。每个 provider 的密钥从系统环境变量读取，变量名固定为 `<PROVIDER>_API_KEY`（大写）。例如 provider `deepseek` 读取 `DEEPSEEK_API_KEY`，provider `opencode` 读取 `OPENCODE_API_KEY`。
+- 密钥只存在系统环境变量中，不写入任何文件，也不写入数据库。
+- `DEFAULT_<能力>_MODEL` 的值为模型 id，可写为 `<provider>/<model id>`。能力目前有 `CHAT`（对话）与 `CONSOLIDATE`（整理）；后续新增能力（如摘要、主动文案）时同样新增对应变量。
 - provider 名只允许小写字母、数字、下划线；对应的环境变量前缀为大写（`-` 视为 `_`）。
-- 环境变量名必须匹配 `^[A-Z_][A-Z0-9_]*$`。若值不符合（例如 `sk-` 开头的密钥被误填），启动时报错，提示“疑似直接写入了密钥”。
+- `.env` 中若出现 `<PROVIDER>_API_KEY` 这类键，启动时报错，提示“密钥应放在系统环境变量中，不应写入 .env”。这是为了避免密钥误入文件。
 
 #### 8.3.2 `llm.yaml` 写法
 
@@ -597,32 +603,30 @@ providers:
   deepseek:
     display_name: DeepSeek
     models:
-      - id: deepseek-chat
-        name: DeepSeek Chat
+      - id: deepseek-flash
+        name: DeepSeek V4.1 Flash
         roles: [chat, consolidate]
         temperature: 0.7
         max_tokens: 1024
-      - id: deepseek-reasoner
-        name: DeepSeek Reasoner
+      - id: deepseek-v4-pro
+        name: DeepSeek V4 Pro
         roles: [chat]
         temperature: 0.7
         max_tokens: 2048
-  openai:
-    display_name: OpenAI
+  opencode:
+    display_name: OpenCode
     models:
-      - id: gpt-4o-mini
-        name: GPT-4o mini
-        roles: [consolidate]
-        temperature: 0.5
+      - id: deepseek-v4.1-flash
+        name: DeepSeek V4.1 Flash（OpenCode）
+        roles: [chat, consolidate]
+        temperature: 0.7
         max_tokens: 1024
-
-defaults:
-  chat: deepseek/deepseek-chat
-  consolidate: openai/gpt-4o-mini
 ```
 
 - `roles` 取值为 `chat`、`consolidate`，表示该模型可用于哪种用途。
+- `llm.yaml` 只保存预设，不保存默认选择。默认选择由 `.env` 的 `DEFAULT_<能力>_MODEL` 指定。
 - `llm.yaml` 不含任何密钥或密钥引用，可入 Git。
+- **opencode 的限制**：opencode 的免费模型（`*-free`）只能在 OpenCode 客户端中使用；Claude、Gemini 等模型使用 Anthropic / Google 原生接口，不是 OpenAI 兼容的 `chat/completions`，当前设计不支持。预设中只列出付费且为 `chat/completions` 接口的模型。
 
 #### 8.3.3 校验规则
 
@@ -631,7 +635,10 @@ defaults:
 1. `LLM_PROVIDERS` 中的每个 provider，必须同时有 `<P>_BASE_URL` 与 `<P>_API_KEY`。
 2. 每个启用的 provider 必须在 `llm.yaml` 中有预设。
 3. 同一 provider 下的 model id 不得重复。
-4. `defaults.chat`、`defaults.consolidate` 必须指向已启用 provider 下、且 `roles` 包含对应角色的模型。
+4. `DEFAULT_<能力>_MODEL` 必须解析到已启用 provider 下、且 `roles` 包含对应能力的模型：
+   - 写成 `<provider>/<model id>` 时直接按此查找；
+   - 写成裸的 `<model id>` 时，要求在所有已启用 provider 中唯一，否则报错，提示改用 `provider/model` 形式。
+   - 变量未设置时，该能力视为未配置默认模型：启动仍成功，调用该能力时返回明确错误。
 5. `temperature` 在 0–2 之间，`max_tokens` 大于 0。
 
 **api_key 引用的环境变量缺失时**不属于配置错误：该 provider 标记为“不可用”，启动仍成功，调用时返回明确错误，并在 `GET /api/llm/providers` 中显示原因。
@@ -648,7 +655,7 @@ defaults:
   3. 切换模型：设置页修改当前对话模型或整理模型，写入 `app_setting`，立即生效。
 - **进行中的请求**：继续使用发起时的快照；新请求使用新快照。
 - **客户端缓存**：`infra/llm` 按 `(provider, model, version)` 缓存 LangChain 模型实例，版本切换后淘汰旧实例。
-- **可热更新**：`LLM_PROVIDERS`、`*_BASE_URL`、`*_API_KEY` 引用名、`llm.yaml` 中的模型预设与默认选择、温度与最大 token。
+- **可热更新**：`LLM_PROVIDERS`、`*_BASE_URL`、`llm.yaml` 中的模型预设、`DEFAULT_<能力>_MODEL`、温度与最大 token。
 - **不可热更新**（需重启）：`PET_HOST`、`PET_PORT`、`PET_TOKEN`、`PET_DATA_DIR`。
 - **已知限制**：`*_API_KEY` 指向的密钥值来自进程环境变量，进程启动后不会自动读取注册表。修改 Windows 系统环境变量后，需重启后端才能生效。
 
@@ -694,4 +701,4 @@ defaults:
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
 5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
 6. **Windows 系统环境变量的热读取**：当前设计为修改后需重启后端。若希望免重启，可在重载时通过 `winreg` 读取用户与系统环境变量，但要额外处理优先级，待确认。
-7. **对话模型与整理模型的当前选择**存于数据库 `app_setting`，未设置时使用 `llm.yaml` 的 `defaults`。是否需要在 `.env` 中也能指定默认值（当前不支持）。
+7. **当前模型选择的优先级**：数据库 `app_setting`（设置页切换） > `.env` 的 `DEFAULT_<能力>_MODEL`。两者都未设置时，该能力不可用。是否需要为 `DEFAULT_*` 增加“设置页恢复默认”的入口，待确认。
