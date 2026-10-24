@@ -222,3 +222,23 @@ opencode:
 - `ModelSettings` 中不包含密钥值，只包含密钥的环境变量名。
 - 服务层（`backend/service/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` §8.3.4。
 - 解析失败时抛出 `ModelSettingsError`，其 `errors` 为收集到的全部错误。
+
+## 11. 通用配置 PET_*
+
+`config/settings.py` 的 `load_service_settings()` 解析 `PET_*` 变量，返回不可变的 `ServiceSettings`。读取方式与 LLM 配置相同，同样遵循 §2 的 `.env` 规则和 §2.2 的优先级。
+
+| 变量 | 默认值 | 规则 |
+|---|---|---|
+| `PET_HOST` | `127.0.0.1` | 只允许 `127.0.0.1`，其他值（包括 `localhost`、`0.0.0.0`）启动失败 |
+| `PET_PORT` | `0` | 0 到 65535 的整数，`0` 表示随机端口 |
+| `PET_TOKEN` | 无（必填） | 不能为空；`ServiceSettings` 中以 `SecretStr` 保存，不出现在 repr 或 JSON 中 |
+| `PET_DATA_DIR` | `backend/data` | 相对路径按项目根目录解析 |
+| `PET_PERSONA_FILE` | `backend/config/persona.yaml` | 相对路径按项目根目录解析 |
+| `PET_TIMEZONE` | `Asia/Shanghai` | 必须是有效的 IANA 时区名 |
+| `PET_LOG_LEVEL` | `INFO` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 之一，大小写不敏感 |
+| `PET_QUIET_HOURS` | `23:00-08:00` | `HH:MM-HH:MM` 格式，小时 00–23，分钟 00–59 |
+| `PET_PROACTIVE_MAX_PER_HOUR` | `2` | 0 到 1000 的整数 |
+| `PET_PROACTIVE_MAX_PER_DAY` | `15` | 0 到 1000 的整数 |
+
+- 所有错误一次性汇总，抛出 `ServiceSettingsError`。
+- 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。

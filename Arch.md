@@ -533,7 +533,7 @@ scheduler（03:00，或开机补跑）
 | 人设 | `backend/config/persona.yaml` | 是（不含密钥） | 人设与语气 |
 | 解析规则 | `backend/config/README.md` | 是 | `.env`、`llm.yaml`、默认模型的解析与校验规则 |
 
-读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。
+读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。`PET_*` 相对路径按项目根目录解析。完整解析规则见 `backend/config/README.md`。
 
 ### 8.2 变量
 

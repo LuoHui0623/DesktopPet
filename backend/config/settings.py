@@ -5,11 +5,15 @@ import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
 CONFIG_DIR = Path(__file__).resolve().parent
+ROOT_DIR = CONFIG_DIR.parent.parent
+LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+QUIET_HOURS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
 
 PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]+$")
@@ -290,6 +294,103 @@ def load_model_settings(
         providers=providers,
         defaults=defaults,
         warnings=tuple(warnings),
+    )
+
+
+class ServiceSettingsError(Exception):
+    def __init__(self, errors: list[str]) -> None:
+        self.errors = errors
+        super().__init__("; ".join(errors))
+
+
+class ServiceSettings(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    host: str
+    port: int
+    token: SecretStr
+    data_dir: Path
+    persona_file: Path
+    timezone: str
+    log_level: str
+    quiet_hours: str
+    proactive_max_per_hour: int
+    proactive_max_per_day: int
+
+
+def _int_value(
+    values: Mapping[str, str], key: str, default: int, low: int, high: int, errors: list[str]
+) -> int:
+    raw = values.get(key)
+    if raw is None:
+        return default
+    try:
+        number = int(raw)
+    except ValueError:
+        errors.append(f"{key} 必须是整数，当前为 {raw!r}")
+        return default
+    if not low <= number <= high:
+        errors.append(f"{key} 必须在 {low} 到 {high} 之间，当前为 {number}")
+        return default
+    return number
+
+
+def _path_value(values: Mapping[str, str], key: str, default: str) -> Path:
+    path = Path(values.get(key, default))
+    return path if path.is_absolute() else ROOT_DIR / path
+
+
+def load_service_settings(
+    config_dir: Path = CONFIG_DIR,
+    environ: Mapping[str, str] | None = None,
+) -> ServiceSettings:
+    file_values, _ = read_dotenv(config_dir / ".env")
+    source: Mapping[str, str] = os.environ if environ is None else environ
+    values = {key: value for key, value in file_values.items() if value}
+    values.update({key: value for key, value in source.items() if value})
+    errors: list[str] = []
+
+    host = values.get("PET_HOST", "127.0.0.1")
+    if host != "127.0.0.1":
+        errors.append(f"PET_HOST 只允许 127.0.0.1，当前为 {host!r}")
+
+    port = _int_value(values, "PET_PORT", 0, 0, 65535, errors)
+
+    token = values.get("PET_TOKEN", "")
+    if not token:
+        errors.append("缺少 PET_TOKEN，请在 backend/config/.env 或系统环境变量中设置")
+
+    timezone = values.get("PET_TIMEZONE", "Asia/Shanghai")
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError):
+        errors.append(f"PET_TIMEZONE 无效：{timezone!r}")
+
+    log_level = values.get("PET_LOG_LEVEL", "INFO").upper()
+    if log_level not in LOG_LEVELS:
+        errors.append(f"PET_LOG_LEVEL 必须是 {' / '.join(LOG_LEVELS)} 之一，当前为 {log_level!r}")
+
+    quiet_hours = values.get("PET_QUIET_HOURS", "23:00-08:00")
+    if not QUIET_HOURS.match(quiet_hours):
+        errors.append(f"PET_QUIET_HOURS 格式应为 HH:MM-HH:MM，当前为 {quiet_hours!r}")
+
+    per_hour = _int_value(values, "PET_PROACTIVE_MAX_PER_HOUR", 2, 0, 1000, errors)
+    per_day = _int_value(values, "PET_PROACTIVE_MAX_PER_DAY", 15, 0, 1000, errors)
+
+    if errors:
+        raise ServiceSettingsError(errors)
+
+    return ServiceSettings(
+        host=host,
+        port=port,
+        token=SecretStr(token),
+        data_dir=_path_value(values, "PET_DATA_DIR", "backend/data"),
+        persona_file=_path_value(values, "PET_PERSONA_FILE", "backend/config/persona.yaml"),
+        timezone=timezone,
+        log_level=log_level,
+        quiet_hours=quiet_hours,
+        proactive_max_per_hour=per_hour,
+        proactive_max_per_day=per_day,
     )
 
 

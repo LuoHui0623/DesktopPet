@@ -116,13 +116,13 @@ sequenceDiagram
 
 **目的**：统一读取与校验环境变量，防止误配置为对外地址。
 
-**状态**：待办。依赖 T2。
+**状态**：已完成。依赖 T2。
 
-**范围**：`backend/config/settings.py` 中的 `Settings`，读取 `backend/config/.env` 与环境变量；`PET_HOST` 只允许 `127.0.0.1`，其他值启动报错。
+**范围**：`backend/config/settings.py` 的 `load_service_settings()` 与 `ServiceSettings`，读取 `backend/config/.env` 与环境变量（环境变量优先）；`PET_HOST` 只允许 `127.0.0.1`；`PET_TOKEN` 必填；其余 `PET_*` 变量按 `backend/config/README.md` §11 校验。新增依赖 `tzdata`（Windows 缺少系统时区库，`zoneinfo` 无法解析 `Asia/Shanghai`）。
 
 **验收**：`PET_HOST=0.0.0.0` 时启动失败并给出明确错误；缺少 `PET_TOKEN` 时启动失败。
 
-**验证结果**：未执行。
+**验证结果**：已验证。`tests/config/test_service_settings.py` 新增 25 项，覆盖默认值、非回环地址拒绝、令牌缺失与空值、优先级、端口、时区、日志级别、勿扰时段、多错误汇总、令牌不出现在 repr 中。`uv run pytest` 共 64 项通过，`ruff check` 通过。
 
 ### T4. 启动入口与端口握手（T-004）
 
