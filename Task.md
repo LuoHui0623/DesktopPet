@@ -245,13 +245,29 @@ sequenceDiagram
 
 **目的**：验证前后端端到端连通。
 
-**状态**：待办。依赖 T5、T9。
+**状态**：已完成。依赖 T5、T9。
 
-**范围**：`backend/scripts/export_openapi.py` 导出 `backend/openapi.json`；`frontend/scripts/gen-api-contracts.ts`（`npm run gen:api`）生成 `frontend/src/api/api-contracts.json`；`frontend/src/api/client.ts` 调用 `/api/health`，在窗口中显示结果。
+**范围**：
+- `backend/scripts/export_openapi.py`：导出 `backend/openapi.json`（`python -m scripts.export_openapi`，输出确定性排序）。
+- `frontend/scripts/gen-api-contracts.mts`：先调用后端导出，再把 OpenAPI 的每个 path+method 解析为 `operations`（operationId、方法、路径、请求与各状态码响应的 schema，`$ref` 保留）及 `components`，写入 `frontend/src/api/api-contracts.json`。`npm run gen:api` 生成，`npm run gen:api:check` 检查契约是否与后端一致（不一致时退出码为 1）。
+- `frontend/src/api/client.ts`：`createApiClient()` 附带 `X-Pet-Token`，把后端统一错误结构映射为 `ApiError`（含 status、code）。
+- `frontend/src/api/endpoints.ts`：`getHealth()`。
+- `frontend/src/service/backend.service.ts`：从 preload 取得端口与令牌，调用 `getHealth()`。
+- `frontend/src/app/entries/pet.tsx`：窗口显示“后端正常（端口，状态）”或“后端错误：代码：信息”。
 
 **验收**：窗口显示后端健康状态；令牌错误时显示错误信息。
 
-**验证结果**：未执行。
+**验证结果**：已验证。
+- 单元测试（`tests/api/client.test.ts`，11 项）：令牌头、错误结构映射、非 JSON 错误、网络错误、契约中 health 操作与请求路径一致、不以客户端为 this 调用 fetch。
+- 集成测试（`tests/api/real-backend.test.ts`，2 项）：真实后端返回 `{"status":"ok"}`；错误令牌返回 401 与 `unauthorized`。
+- `npm run gen:api:check` 通过；`tsc --noEmit` 通过；`npx vitest run` 共 20 项通过。
+- 真实 Electron：渲染进程请求 `/api/health`，后端访问日志为 200；关闭窗口后后端经 stdin 指令优雅退出，应用与后端进程均结束。
+
+**过程中发现并修复的问题**：
+1. `createApiClient` 直接保存 `window.fetch` 并以 `client.fetch(...)` 调用，浏览器抛出 `Illegal invocation`。修复：包装一层调用，并增加对应测试。
+2. 渲染产物位置错误（同 T9，已修复）。
+
+**已知项**：Electron 提示缺少 Content-Security-Policy（开发模式下的安全警告）。打包前需在 `pet.html` 中加入 CSP，并限制 `connect-src` 为 `http://127.0.0.1:*`。
 
 ### T11. 代码检查工具（T-011）
 

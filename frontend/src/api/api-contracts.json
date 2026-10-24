@@ -1,0 +1,43 @@
+{
+  "operations": [
+    {
+      "operationId": "health",
+      "method": "GET",
+      "path": "/api/health",
+      "tags": [
+        "system"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Response Health",
+          "type": "object"
+        }
+      }
+    },
+    {
+      "operationId": "shutdown",
+      "method": "POST",
+      "path": "/api/shutdown",
+      "tags": [
+        "system"
+      ],
+      "request": null,
+      "responses": {
+        "202": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Response Shutdown",
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "components": {
+    "schemas": {}
+  }
+}

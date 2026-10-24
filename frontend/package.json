@@ -9,7 +9,9 @@
     "build": "electron-vite build",
     "start": "electron .",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run",
+    "gen:api": "node scripts/gen-api-contracts.mts",
+    "gen:api:check": "node scripts/gen-api-contracts.mts --check"
   },
   "devDependencies": {
     "@types/node": "^26.6.5",
