@@ -10,8 +10,15 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
-CONFIG_DIR = Path(__file__).resolve().parent
-ROOT_DIR = CONFIG_DIR.parent.parent
+from constants.path import (
+    CONFIG_DIR,
+    DATA_DIR,
+    ENV_FILE_NAME,
+    LLM_CONFIG_FILE_NAME,
+    PERSONA_FILE,
+    resolve_from_root,
+)
+
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 QUIET_HOURS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
 
@@ -210,7 +217,7 @@ def load_model_settings(
     errors: list[str] = []
     warnings: list[str] = []
 
-    file_values, dotenv_warnings = read_dotenv(config_dir / ".env")
+    file_values, dotenv_warnings = read_dotenv(config_dir / ENV_FILE_NAME)
     warnings.extend(dotenv_warnings)
     for key in file_values:
         if key.endswith("_API_KEY"):
@@ -220,7 +227,7 @@ def load_model_settings(
     values = {key: value for key, value in file_values.items() if value}
     values.update({key: value for key, value in source.items() if value})
 
-    yaml_providers = _read_llm_yaml(config_dir / "llm.yaml", errors)
+    yaml_providers = _read_llm_yaml(config_dir / LLM_CONFIG_FILE_NAME, errors)
 
     for key in file_values:
         if (
@@ -335,16 +342,16 @@ def _int_value(
     return number
 
 
-def _path_value(values: Mapping[str, str], key: str, default: str) -> Path:
-    path = Path(values.get(key, default))
-    return path if path.is_absolute() else ROOT_DIR / path
+def _path_value(values: Mapping[str, str], key: str, default: Path) -> Path:
+    raw = values.get(key)
+    return default if raw is None else resolve_from_root(raw)
 
 
 def load_service_settings(
     config_dir: Path = CONFIG_DIR,
     environ: Mapping[str, str] | None = None,
 ) -> ServiceSettings:
-    file_values, _ = read_dotenv(config_dir / ".env")
+    file_values, _ = read_dotenv(config_dir / ENV_FILE_NAME)
     source: Mapping[str, str] = os.environ if environ is None else environ
     values = {key: value for key, value in file_values.items() if value}
     values.update({key: value for key, value in source.items() if value})
@@ -384,8 +391,8 @@ def load_service_settings(
         host=host,
         port=port,
         token=SecretStr(token),
-        data_dir=_path_value(values, "PET_DATA_DIR", "backend/data"),
-        persona_file=_path_value(values, "PET_PERSONA_FILE", "backend/config/persona.yaml"),
+        data_dir=_path_value(values, "PET_DATA_DIR", DATA_DIR),
+        persona_file=_path_value(values, "PET_PERSONA_FILE", PERSONA_FILE),
         timezone=timezone,
         log_level=log_level,
         quiet_hours=quiet_hours,
@@ -410,7 +417,9 @@ class ModelSettingsSource:
         self._environ = environ
 
     def stamp(self) -> tuple[tuple[int, int] | None, ...]:
-        return tuple(_file_stamp(self._config_dir / name) for name in (".env", "llm.yaml"))
+        return tuple(
+            _file_stamp(self._config_dir / name) for name in (ENV_FILE_NAME, LLM_CONFIG_FILE_NAME)
+        )
 
     def load(self) -> ModelSettings:
         return load_model_settings(self._config_dir, self._environ)

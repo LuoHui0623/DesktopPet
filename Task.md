@@ -268,6 +268,21 @@ sequenceDiagram
 
 **验证结果**：`uv run pytest` 9 项通过（含 `tests/infra/test_paradigms.py`）；`ruff check` 通过。已用 opencode Go 地址确认三条接口路径可达（带 `x-opencode-session` 时返回服务端错误而非路由错误），未做带密钥的真实调用。
 
+### T16. 常数层与路径定义（T-016）
+
+**目的**：路径不再散落在各模块中，统一由常数层定义。
+
+**状态**：已完成。
+
+**范围**：
+- `backend/constants/path.py`：`BACKEND_DIR`、`ROOT_DIR`、`FRONTEND_DIR`，配置目录与文件（`ENV_FILE`、`LLM_CONFIG_FILE`、`PERSONA_FILE`，以及对应的文件名），数据目录（`DATA_DIR`、`DB_FILE`、`LOG_DIR`、`EXPORT_DIR`、`LOCK_FILE`），`MIGRATIONS_DIR`、`OPENAPI_FILE`、`API_CONTRACTS_FILE`，以及 `resolve_from_root()`。
+- `backend/config/settings.py` 改为引用常数层，不再自行定义路径。
+- 测试改为从常数层导入路径。
+
+**验收**：所有路径只在 `constants/path.py` 中定义；`config/settings.py` 中不再出现路径的字面量定义。
+
+**验证结果**：`uv run pytest` 65 项通过，`ruff check` 通过。
+
 ### T15. model_settings 解析与 LLM 服务装配（T-015）
 
 **目的**：`settings.py` 把 `.env` 与 `llm.yaml` 解析为 `model_settings`；服务层用 `model_settings` 装配 client，并支持热更新。

@@ -2,7 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from config.settings import ROOT_DIR, ServiceSettingsError, load_service_settings
+from config.settings import ServiceSettingsError, load_service_settings
+from constants.path import DATA_DIR, PERSONA_FILE, ROOT_DIR
 
 TOKEN = "test-token-value"
 
@@ -33,8 +34,17 @@ def test_defaults_when_only_token_is_set(config_dir: Path):
     assert settings.token.get_secret_value() == TOKEN
 
 
-def test_relative_paths_resolve_against_repo_root(config_dir: Path):
+def test_default_paths_come_from_constants(config_dir: Path):
     settings = load(config_dir)
+    assert settings.data_dir == DATA_DIR
+    assert settings.persona_file == PERSONA_FILE
+
+
+def test_relative_paths_resolve_against_repo_root(config_dir: Path):
+    settings = load(
+        config_dir,
+        {"PET_DATA_DIR": "backend/data", "PET_PERSONA_FILE": "backend/config/persona.yaml"},
+    )
     assert settings.data_dir == ROOT_DIR / "backend" / "data"
     assert settings.persona_file == ROOT_DIR / "backend" / "config" / "persona.yaml"
 
