@@ -16,7 +16,7 @@ __pycache__/
 htmlcov/
 
 # Node / Electron
-frontend/node_modules/
+node_modules/
 frontend/dist/
 frontend/out/
 frontend/release/
