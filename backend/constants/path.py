@@ -9,6 +9,7 @@ DATA_DIR = BACKEND_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 EXPORT_DIR = DATA_DIR / "exports"
 MIGRATIONS_DIR = BACKEND_DIR / "infra" / "store" / "migrations"
+PROMPTS_DIR = BACKEND_DIR / "service" / "agent" / "prompts"
 
 
 def resolve_from_root(value: str | Path) -> Path:
