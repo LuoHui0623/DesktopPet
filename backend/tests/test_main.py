@@ -106,6 +106,16 @@ def test_missing_token_exits_with_error():
     assert "PET_TOKEN" in stderr
 
 
+def test_invalid_persona_exits_with_error(tmp_path: Path):
+    persona_file = tmp_path / "persona.yaml"
+    persona_file.write_text("role: [unclosed\n", encoding="utf-8")
+    process = run_backend({"PET_PERSONA_FILE": str(persona_file)})
+    stdout, stderr = process.communicate(timeout=20)
+    assert process.returncode == 1
+    assert stdout == ""
+    assert "角色卡配置错误" in stderr
+
+
 def test_occupied_port_exits_with_error():
     with socket.socket() as occupied:
         occupied.bind(("127.0.0.1", 0))

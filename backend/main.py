@@ -6,6 +6,7 @@ from pathlib import Path
 import uvicorn
 
 from api.app import create_app
+from config.persona import PersonaError, load_persona
 from config.settings import (
     ModelSettingsError,
     ModelSettingsSource,
@@ -121,6 +122,15 @@ def main() -> int:
             print(f"LLM 配置错误：{error}", file=sys.stderr)
         return 1
     logger.info("LLM 配置已加载，版本：%s", llm_service.current().version)
+
+    try:
+        load_persona(settings.persona_file)
+    except PersonaError as exc:
+        for error in exc.errors:
+            logger.error("角色卡配置错误：%s", error)
+            print(f"角色卡配置错误：{error}", file=sys.stderr)
+        return 1
+    logger.info("角色卡已加载")
 
     lock = SingleInstanceLock(settings.data_dir / "backend.lock")
     try:
