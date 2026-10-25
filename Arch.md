@@ -1,7 +1,7 @@
 # 桌面宠物 · 架构设计
 
-- 版本：v0.3
-- 对应需求与技术选型：`桌面宠物PRD.md`（v0.6）
+- 版本：v0.4
+- 对应需求与技术选型：`桌面宠物PRD.md`（v0.7）
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD，行动计划见 `Task.md`。
 
 ---
@@ -33,7 +33,7 @@
 ┌──────────────── backend/（Python 3.12 · FastAPI）──────────────┴───────────────┐
 │  api           接口层：路由、鉴权、请求与响应转换                                 │
 │  service       服务层：业务规则与用例编排                                        │
-│  capabilities  受限能力层：动作注册、校验、执行                                  │
+│  capabilities  原子能力层：天气等复杂原子能力、受限动作注册、校验、执行           │
 │  infra         基础设施层：存储、模型客户端、外部接口、系统调用、事件、文件          │
 │  config        配置：.env、persona.yaml、Settings 加载                         │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -199,13 +199,14 @@ backend/
 │
 ├─ constants/                # 【常数】不随运行变化的常量；不依赖任何其他层
 │  ├─ __init__.py
-│  └─ path.py                # 目录常量：项目根、后端根、前端根、配置、数据、日志、导出、迁移；resolve_from_root()。文件路径由使用处用目录拼接
+│  └─ path.py                # 目录常量：项目根、后端根、前端根、配置、数据、日志、导出、迁移、资源库（RESOURCE_DIR）；resolve_from_root()。文件路径由使用处用目录拼接
 │
-├─ config/                   # 【配置】.env、llm.yaml、人设；settings.py 解析为 model_settings
+├─ config/                   # 【配置】.env、llm.yaml、角色卡；settings.py 解析为 model_settings
 │  ├─ .env                   # 本机配置：provider 列表、base_url、默认模型，不入 Git
 │  ├─ .env.example           # 环境变量模板，入 Git
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
-│  ├─ persona.yaml           # 人设文件，入 Git（不含密钥）
+│  ├─ persona.yaml           # 角色卡：role 结构化，其余属性为无序列表，入 Git
+│  ├─ persona.py             # 角色卡读取、校验与规范化（列表排序），产出 PersonaConfig
 │  ├─ README.md              # 配置目录说明与解析规则
 │  └─ settings.py            # 解析入口：读取 .env 与 llm.yaml，产出 ModelSettings（model_settings）；PET_* 通用配置
 │
@@ -231,19 +232,21 @@ backend/
 │
 ├─ service/                  # 【服务层】业务规则与用例编排
 │  ├─ chat/
-│  │  ├─ chat_service.py     # 对话用例：取记忆 → 组装上下文 → 调模型 → 写日志
-│  │  └─ context.py          # 上下文组装：人设 → 核心典藏 → 检索记忆 → 近期对话
+│  │  ├─ chat_service.py     # 对话用例：组装 → 调模型 → 句长校验 → 写 daily_log
+│  │  └─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检查点记忆片段 → 近期对话
 │  ├─ llm/
 │  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、触发重载、连通性测试
 │  ├─ memory/
-│  │  ├─ memory_service.py   # 记忆用例：增删改查、即时记住 / 忘掉
-│  │  ├─ retrieval.py        # 按关键词与类别检索有效记忆，按重要性排序
-│  │  ├─ validity.py         # 有效期规则：覆盖、失效、事件到期
-│  │  └─ consolidate.py      # 日整理：候选记忆比对，生成新增 / 更新 / 失效动作
-│  ├─ persona/
-│  │  ├─ persona_service.py  # 人设用例：读取、校验、版本记录
-│  │  └─ compiler.py         # 人设编译为系统提示词
-│  ├─ prompts/               # 提示词模板：对话、整理、摘要、主动文案
+│  │  ├─ memory_service.py   # 记忆用例：结构化记忆增删改、daily_memory 行号视图、行号 helper（仅供 sub agent）
+│  │  └─ index.py            # 记忆索引生成：由代码根据 JSON 文件与 daily_log 生成，不手工编辑
+│  ├─ agent/
+│  │  ├─ orchestrator.py     # 主 agent：输出执行计划，派发任务，接收检查点结果
+│  │  ├─ subagent.py         # ReAct 执行循环（提示词中不出现 sub agent 概念）
+│  │  ├─ skills.py           # 能力描述注册与关键词触发
+│  │  ├─ prompt.py           # 提示词构建、拼接、注入：角色卡、资源库、发言规则
+│  │  ├─ prompts/            # 提示词模板（.md，string.Template 占位）
+│  │  └─ tools/
+│  │     └─ file.py          # agent 文件工具：读取、写入、编辑、清空（调用 infra/files）
 │  ├─ proactive/
 │  │  ├─ proactive_service.py# 主动消息用例：判定 → 生成文案 → 推送
 │  │  ├─ rules.py            # 触发源、勿扰、每小时 / 每天上限、降频与抑制
@@ -258,15 +261,16 @@ backend/
 │     ├─ normalize.py        # 统一为标准结构，时间转本地 ISO 8601，去重排序
 │     └─ split.py            # 按天切分
 │
-├─ capabilities/             # 【受限能力层】模型可提议，但只能通过本层执行
-│  ├─ registry.py            # 动作注册表，声明风险等级（L0–L2）
-│  ├─ validator.py           # 白名单、路径规范化、防 .. 穿越
+├─ capabilities/             # 【原子能力层】复杂原子能力与受限动作，模型可提议，但只能通过本层执行
+│  ├─ registry.py            # 能力注册表，声明描述、风险等级（L0–L2）
+│  ├─ validator.py           # 白名单校验（应用、域名）；路径权限由 infra/files/access.py 提供
 │  ├─ executor.py            # 逐步执行、写执行日志、失败即停、支持撤销
-│  └─ actions/               # 具体动作（只能由 executor 调用）
+│  └─ actions/               # 具体能力（只能由 executor 调用）
+│     ├─ weather.py          # 天气查询（L0）
 │     ├─ open_app.py         # 启动白名单应用（L1）
 │     ├─ open_url.py         # 打开白名单域名（L1）
-│     ├─ file_ops.py         # 授权目录内移动、重命名、新建（L2）
-│     └─ append_text.py      # 授权文本追加（L2）
+│     ├─ file_ops.py         # 授权目录内移动、重命名、新建（L2，调用 infra/files）
+│     └─ append_text.py      # 授权文本追加（L2，调用 infra/files）
 │
 ├─ infra/                    # 【基础设施层】技术适配，不含业务规则
 │  ├─ store/
@@ -290,6 +294,8 @@ backend/
 │  │  ├─ process.py          # 启动应用进程
 │  │  └─ fs.py               # 文件系统操作（移动、重命名、写入）
 │  ├─ files/
+│  │  ├─ io.py               # 文件读写：读取、按行读取、写入、替换段落、清空（只做 IO）
+│  │  ├─ access.py           # 文件权限：允许根目录、路径规范化、拒绝穿越与符号链接逃逸
 │  │  ├─ yaml_io.py          # 读写 YAML
 │  │  └─ export.py           # 导出 Markdown 等文件
 │  ├─ events/
@@ -302,7 +308,9 @@ backend/
 │  └─ export_openapi.py      # 导出 OpenAPI 到 backend/openapi.json，供前端生成契约
 │
 ├─ data/                     # 运行数据，不入 Git
-│  ├─ pet.db                 # SQLite 数据库
+│  ├─ pet.db                 # SQLite 数据库（daily_log 等）
+│  ├─ memory/                # 结构化记忆 JSON（structured/<id>.json）与记忆索引 index.json（由代码生成）
+│  ├─ resources/             # 资源库（草稿本、表情包），内容不入库，路径由 constants/path.py 定义
 │  ├─ logs/                  # 后端日志
 │  ├─ exports/               # 导出的整理文件
 │  └─ backend.lock           # 单实例锁
@@ -394,7 +402,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.ts）
 |---|---|---|---|
 | 接口层 | `api/` | 路由、鉴权、请求与响应转换 | 直接访问 `infra`，写业务规则 |
 | 服务层 | `service/` | 业务规则、用例编排 | 依赖 FastAPI，直接写 SQL 或调用第三方 SDK |
-| 受限能力层 | `capabilities/` | 动作注册、白名单校验、执行、撤销 | 被模型直接调用，绕过 validator |
+| 原子能力层 | `capabilities/` | 复杂原子能力（如天气）、受限动作注册、白名单校验、执行、撤销 | 被模型直接调用，绕过 validator |
 | 基础设施层 | `infra/` | 存储、模型客户端、外部接口、系统调用、事件、文件 | 包含业务规则，被 `api/` 直接调用 |
 | 配置 | `config/` | 读取并校验配置 | 在其他模块中读取环境变量 |
 | 常数 | `constants/` | 定义目录常量，`path.py` 为所有目录路径的唯一来源；文件路径在使用处由目录拼接 | 依赖任何其他层，写入运行时状态 |
@@ -433,26 +441,29 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | 组件 | 归属 | 说明 |
 |---|---|---|
 | **LLM 接口范式**（ChatOpenAI / ChatAnthropic 的构造） | `infra/llm/paradigms.py` | 技术适配，三种范式，换 SDK 只改这里 |
-| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测，写入 store |
+| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量与起止时间，写入 `llm_usage` |
 | **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
 | **LLM 客户端装配、缓存、热更新** | `service/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
 | **当前模型选择** | `service/llm/llm_service.py`（待 M1 接入数据库的 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
-| **提示词模板** | `service/prompts/` | 内容属于产品设计，与人设、记忆相关 |
-| **上下文组装** | `service/chat/context.py` | 决定哪些记忆进入对话，是业务规则 |
-| **结构化输出的数据模型**（如记忆候选） | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
+| **提示词构建与注入** | `service/agent/prompt.py`，模板在 `service/agent/prompts/` | 决定模型看到什么，属于业务 |
+| **上下文组装** | `service/chat/context.py` | 决定哪些记忆片段进入对话，是业务规则 |
+| **结构化输出的数据模型** | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
 | **SQLite 连接与迁移** | `infra/store/db.py`、`migrate.py` | 技术细节 |
-| **仓储（CRUD）** | `infra/store/repositories/` | 只返回数据，不判断有效性 |
-| **记忆有效期与覆盖规则** | `service/memory/validity.py` | 业务规则，即使底层是 SQL 也在 service 判断 |
+| **仓储（CRUD）** | `infra/store/repositories/` | 只返回数据，不做业务判断 |
+| **结构化记忆读写、行号 helper、索引生成** | `service/memory/` | 记忆是 Pet 自身的数据，业务用例；JSON 的文件 IO 在 `infra/files/` |
+| **文件读写与权限** | `infra/files/io.py`、`infra/files/access.py` | IO 与路径白名单、穿越防护，供 agent 工具与 capabilities 共用 |
+| **sub agent 编排与 ReAct 循环** | `service/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
 | **天气 HTTP 客户端** | `infra/weather/qweather.py` | 外部接口适配 |
 | **天气缓存策略、失败降级文案** | `service/weather/` | 业务规则 |
 | **Windows 定位、空闲、前台窗口** | `infra/system/` | 操作系统适配 |
 | **离开 / 回来、久坐的判断** | `service/perception/` | 由原始元数据推导的业务事件 |
 | **勿扰、频率上限、降频规则** | `service/proactive/rules.py` | 业务规则 |
 | **调度 tick 循环** | `service/proactive/scheduler.py` | 编排规则的运行时，业务相关 |
-| **人设 YAML 读写** | 读写在 `infra/files/yaml_io.py`，编译为提示词在 `service/persona/` | 文件与业务分开 |
+| **角色卡解析与校验** | `config/persona.py` | 配置层，启动时执行；YAML 读取复用 `infra/files/yaml_io.py` |
 | **聊天记录解析** | 文件读取在 `infra/files/`，格式解析与标准化在 `service/chat_import/` | 格式标准由业务定义 |
 | **事件总线** | `infra/events/bus.py` | 技术机制，业务层只发布事件 |
-| **能力校验** | `capabilities/validator.py` | 安全规则，单独成层便于审查 |
+| **能力校验（应用、域名白名单）** | `capabilities/validator.py` | 安全规则，单独成层便于审查 |
+| **文件路径权限** | `infra/files/access.py` | 允许根目录与穿越防护，由 IO 与 capabilities 共用 |
 | **文件移动、进程启动** | `infra/system/fs.py`、`process.py` | 由 capabilities 的 actions 调用 |
 
 ### 5.5 常见疑问
@@ -461,8 +472,10 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
   能力执行是安全边界，需要独立审查：白名单、路径规则、风险等级都在这一层。单独成层后，即使 `service` 出错，也无法绕过校验直接执行系统操作。
 - **为什么仓储不放 `service`？**
   仓储只负责存取数据，不判断业务含义。规则（如“这条记忆是否有效”）放在 `service`，仓储只提供按条件查询的方法。
-- **为什么 `prompts` 不放 `infra`？**
+- **为什么提示词放在 `service/agent/`，而不放 `infra`？**
   提示词决定宠物说什么，是产品内容，会随需求改动，属于业务。换模型时提示词通常不变。
+- **为什么 `capabilities` 只放复杂原子能力，文件读写不放这里？**
+  文件读写是 Pet 自身数据的操作（草稿本、记忆库），不是独立的外部能力。IO 与权限放在 `infra/files/`，供 agent 工具直接使用；`capabilities` 只放天气这类需要单独注册与校验的能力。
 
 ---
 
@@ -473,10 +486,12 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 ```
 前端 chat 模块 ─► service/chat.service.ts ─► api（POST /api/chat）
 后端 api/routers/chat.py ─► service/chat/chat_service.py
-   ├─ service/memory/retrieval   取当前有效记忆
-   ├─ service/chat/context       组装：人设 → 核心典藏 → 检索结果 → 近期对话
-   ├─ infra/llm/client           调用对话模型（流式）
-   ├─ infra/store/repositories   写入当日卷宗（临时模式下不写）
+   ├─ service/agent/prompt       构建系统提示词：角色卡 + 资源库 + 发言规则
+   ├─ service/agent/orchestrator （需要时）派发 sub agent 读取记忆，返回检查点结果
+   ├─ service/chat/context       组装：系统提示词 → 核心典藏 → 检查点记忆片段 → 近期对话
+   ├─ infra/llm/client           调用对话模型（流式），记录用量
+   ├─ 句长校验                    单句 ≤ 40 字符，超限重新生成一次
+   ├─ infra/store/repositories   写入 daily_log（临时模式下不写）
    └─ infra/events/bus           推送流式片段
 前端 api/ws.ts ─► service/events.ts ─► stores/chat.store.ts ─► modules/chat 渲染
 ```
@@ -491,16 +506,27 @@ service/proactive/scheduler（tick）
   ─► 反馈 POST /api/proactive/{id}/feedback ─► service 调整规则，infra/store 记录
 ```
 
-### 6.3 日整理
+### 6.3 结构化记忆写入
+
+日常对话每天完整保留在 `daily_log`，不做日终摘要。结构化记忆由关键词触发或用户明确要求时写入：
 
 ```
-scheduler（03:00，或开机补跑）
-  ─► service/memory/consolidate
-       ├─ infra/store 读取昨日 daily_log
-       ├─ infra/llm（整理模型）抽取候选记忆（结构化输出，Pydantic 校验）
-       ├─ service/memory/validity 比对：新增 / 更新 / 失效
-       ├─ infra/store 写入结果，超过 30 天的原文只保留摘要
-       └─ 写入 consolidation_run
+对话消息命中关键词（或用户明确要求）
+  ─► service/agent/skills 匹配能力描述
+  ─► service/agent/orchestrator 派发 sub agent（consolidate 角色模型，ReAct）
+       ├─ service/agent/tools/file 与 service/memory 读取索引、行号区间片段
+       ├─ service/memory 写入 data/memory/structured/<id>.json（经 infra/files/io）
+       └─ service/memory/index 重新生成记忆索引
+  ─► agent_run 记录行为路径与输出；检查点只保留能力名与输出结果
+```
+
+### 6.3.1 记忆读取（翻阅记忆）
+
+```
+主 agent：读取记忆索引的“描述”，输出执行计划，派发任务
+sub agent（ReAct）：打开记忆图书馆 → 查看记忆索引 → 读取 <类型><id> → 获取记忆片段（行号区间 from-to）
+  ─► 行号 helper 在每行开头补填行号（仅 sub agent 使用）
+  ─► 返回结果，检查点记录为“执行：<能力>”加输出结果
 ```
 
 ### 6.4 能力执行
@@ -588,7 +614,6 @@ scheduler（03:00，或开机补跑）
 | `QWEATHER_CREDENTIAL` | 无 | 和风天气鉴权凭据（待确认格式） |
 | `CAPABILITY_ALLOWED_APPS` | 空 | 允许启动的应用，逗号分隔，绝对路径 |
 | `CAPABILITY_ALLOWED_DOMAINS` | 空 | 允许打开的域名，逗号分隔 |
-| `CAPABILITY_ALLOWED_DIRS` | 空 | 文件操作授权目录，逗号分隔，绝对路径 |
 
 `.env.example` 与本表保持一致，新增变量时两处同步修改。
 
@@ -717,7 +742,7 @@ providers:
 - 模型参数与 provider 信息只来自 `LlmConfig` 快照，业务代码不读取 `.env` 或 `llm.yaml`。
 - 每次调用前获取当前快照（`LlmService.current()`），同一次调用内始终使用同一快照。
 - 结构化输出使用 Pydantic 模型校验，校验失败则丢弃并记录，不无限重试。
-- 每次调用写入用量记录（token、耗时、是否失败）。
+- 每个 client 记录每次调用的结构化用量（token、用途、开始与结束时间、是否失败），写入 `llm_usage`；token 不可得时记为 NULL。
 
 ### 9.2 数据库与迁移
 - `sqlite3`，开启 WAL 与外键约束。
@@ -763,7 +788,7 @@ providers:
 
 1. **infra 与 service 的划分标准**（§5.3）是否认可；存在争议的组件以 §5.4 为准。
 2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。当前设计为集中放在 `service/`。
-3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 是唯一解析入口，产出 `model_settings`；client 装配由 `service/llm` 负责。
+3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 是 LLM 与通用配置的解析入口，产出 `model_settings`；`persona.py` 负责角色卡；client 装配由 `service/llm` 负责。
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
 5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
 6. **Windows 系统环境变量的热读取**：当前设计为修改后需重启后端。若希望免重启，可在重载时通过 `winreg` 读取用户与系统环境变量，但要额外处理优先级，待确认。
