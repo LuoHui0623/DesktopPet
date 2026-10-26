@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { openSettingsWindow } from "../../service/window.service";
 import { ConversationPanel } from "./ConversationPanel";
 import { HistoryPanel } from "./HistoryPanel";
 
@@ -44,6 +45,22 @@ export function ChatWindow() {
             {item.label}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            openSettingsWindow().catch((error: unknown) => {
+              console.error("打开设置窗口失败", error);
+            });
+          }}
+          style={{
+            padding: "0 12px",
+            border: "none",
+            background: "transparent",
+            cursor: "pointer",
+          }}
+        >
+          设置
+        </button>
       </nav>
       {tab === "conversation" ? <ConversationPanel /> : <HistoryPanel />}
     </div>

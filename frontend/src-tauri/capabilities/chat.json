@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "chat-window",
-  "description": "对话窗口：只读取后端连接信息，不开放文件系统、进程执行与网络插件",
+  "description": "对话窗口：读取后端连接信息、打开设置窗口；不开放文件系统、进程执行与网络插件",
   "windows": ["chat"],
-  "permissions": ["core:default", "allow-get-backend-info"]
+  "permissions": ["core:default", "allow-get-backend-info", "allow-open-settings-window"]
 }

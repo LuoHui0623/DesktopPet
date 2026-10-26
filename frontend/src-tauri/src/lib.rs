@@ -35,12 +35,21 @@ fn open_chat_window(app: AppHandle) -> Result<(), String> {
     window::open_chat_window(&app).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn open_settings_window(app: AppHandle) -> Result<(), String> {
+    window::open_settings_window(&app).map_err(|error| error.to_string())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(BackendSlot::default())
-        .invoke_handler(tauri::generate_handler![get_backend_info, open_chat_window])
+        .invoke_handler(tauri::generate_handler![
+            get_backend_info,
+            open_chat_window,
+            open_settings_window
+        ])
         .setup(|app| {
             start_backend(app.handle().clone());
             Ok(())
@@ -156,9 +165,15 @@ mod tests {
 
     const CAPABILITY: &str = include_str!("../capabilities/default.json");
     const CHAT_CAPABILITY: &str = include_str!("../capabilities/chat.json");
+    const SETTINGS_CAPABILITY: &str = include_str!("../capabilities/settings.json");
     const CONFIG: &str = include_str!("../tauri.conf.json");
 
-    const CHAT_ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
+    const CHAT_ALLOWED_PERMISSIONS: &[&str] = &[
+        "core:default",
+        "allow-get-backend-info",
+        "allow-open-settings-window",
+    ];
+    const SETTINGS_ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
 
     const ALLOWED_PERMISSIONS: &[&str] = &[
         "core:default",
@@ -209,16 +224,15 @@ mod tests {
         }
     }
 
-    #[test]
-    fn chat_window_only_gets_backend_info() {
-        let capability: Value = serde_json::from_str(CHAT_CAPABILITY).expect("capability json");
+    fn assert_window_permissions(capability_json: &str, label: &str, allowed: &[&str]) {
+        let capability: Value = serde_json::from_str(capability_json).expect("capability json");
         let windows: Vec<&str> = capability["windows"]
             .as_array()
             .expect("windows")
             .iter()
             .map(|value| value.as_str().expect("window label"))
             .collect();
-        assert_eq!(windows, vec!["chat"]);
+        assert_eq!(windows, vec![label]);
 
         let permissions: Vec<&str> = capability["permissions"]
             .as_array()
@@ -228,10 +242,20 @@ mod tests {
             .collect();
         for permission in &permissions {
             assert!(
-                CHAT_ALLOWED_PERMISSIONS.contains(permission),
-                "对话窗口不应拥有权限：{permission}"
+                allowed.contains(permission),
+                "{label} 窗口不应拥有权限：{permission}"
             );
         }
+    }
+
+    #[test]
+    fn chat_window_only_gets_its_allowed_commands() {
+        assert_window_permissions(CHAT_CAPABILITY, "chat", CHAT_ALLOWED_PERMISSIONS);
+    }
+
+    #[test]
+    fn settings_window_only_gets_backend_info() {
+        assert_window_permissions(SETTINGS_CAPABILITY, "settings", SETTINGS_ALLOWED_PERMISSIONS);
     }
 
     #[test]

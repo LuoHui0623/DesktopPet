@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 
-import { describeRequestError, searchHistory } from "../../service/chat.service";
+import { searchHistory } from "../../service/chat.service";
+import { describeRequestError } from "../../service/api-client";
 import type { ChatHistoryItem } from "../../api/types";
 
 const PAGE_SIZE = 50;
