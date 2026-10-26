@@ -155,7 +155,10 @@ mod tests {
     use serde_json::Value;
 
     const CAPABILITY: &str = include_str!("../capabilities/default.json");
+    const CHAT_CAPABILITY: &str = include_str!("../capabilities/chat.json");
     const CONFIG: &str = include_str!("../tauri.conf.json");
+
+    const CHAT_ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
 
     const ALLOWED_PERMISSIONS: &[&str] = &[
         "core:default",
@@ -202,6 +205,31 @@ mod tests {
                     .iter()
                     .any(|prefix| permission.starts_with(prefix)),
                 "悬浮窗不应拥有权限：{permission}"
+            );
+        }
+    }
+
+    #[test]
+    fn chat_window_only_gets_backend_info() {
+        let capability: Value = serde_json::from_str(CHAT_CAPABILITY).expect("capability json");
+        let windows: Vec<&str> = capability["windows"]
+            .as_array()
+            .expect("windows")
+            .iter()
+            .map(|value| value.as_str().expect("window label"))
+            .collect();
+        assert_eq!(windows, vec!["chat"]);
+
+        let permissions: Vec<&str> = capability["permissions"]
+            .as_array()
+            .expect("permissions")
+            .iter()
+            .map(|value| value.as_str().expect("permission"))
+            .collect();
+        for permission in &permissions {
+            assert!(
+                CHAT_ALLOWED_PERMISSIONS.contains(permission),
+                "对话窗口不应拥有权限：{permission}"
             );
         }
     }
