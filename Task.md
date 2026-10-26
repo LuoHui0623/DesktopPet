@@ -46,7 +46,7 @@
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 已完成 |
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 已完成 |
 | T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 已完成 |
-| T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 待办 |
+| T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 已完成 |
 | T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 待办 |
 | T-035 | 核心典藏（最多 20 条） | T-030 | 待办 |
 | T-036 | 对话接入记忆（上下文组装、每日 reset） | T-025、T-033、T-035 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-033 sub agent 编排（依赖 T-021、T-029、T-032，已满足；Q-4 已定）
+- 下一步：T-034 结构化记忆写入与编辑（依赖 T-033，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -392,7 +392,7 @@
 
 **依赖**：T-021、T-029、T-032
 
-**任务状态**：待办。是否每轮派发读取由主 agent 根据能力描述决定（Q-4 已定）。
+**任务状态**：已完成。是否每轮派发读取由主 agent 根据能力描述决定（Q-4 已定）。
 
 **范围**：
 - `service/agent/orchestrator.py`：主 agent 输出执行计划（能力名与任务描述），派发 sub agent，接收结果。
@@ -401,11 +401,22 @@
 - 检查点格式：`执行：<能力>` 加输出结果。每次派发写入一行 `agent_run`（行为路径写入 `steps`）。
 - 最大步数为常量，超限返回错误原因（A-21）。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 一次派发产生一行 `agent_run`
-- [ ] 检查点只包含能力名与输出，不包含内部步骤
-- [ ] 工具失败时，错误原因返回给 sub agent 并可继续
-- [ ] 超过最大步数时返回错误原因
+**验收/验证结果**：
+- [x] 一次派发产生一行 `agent_run`（方式：`tests/service/test_orchestrator.py::test_dispatch_writes_one_run_row_and_returns_checkpoint`、`test_unknown_capability_still_writes_one_row`、`test_run_plan_dispatches_in_order`；结果：通过）
+- [x] 检查点只包含能力名与输出，不包含内部步骤（方式：`test_checkpoint_has_capability_and_output_only`；结果：通过）
+- [x] 工具失败时，错误原因返回给 sub agent 并可继续（方式：`tests/service/test_subagent.py::test_tool_failure_is_returned_to_the_agent_and_run_continues`、`test_unknown_tool_name_is_reported_back`；结果：通过）
+- [x] 超过最大步数时返回错误原因（方式：`test_exceeding_max_steps_returns_reason`、`test_failed_dispatch_is_recorded_and_reported`；结果：通过）
+- 备注：
+  - ReAct 采用文本协议：模型每步只输出一个 JSON 对象，`{"action": "tool", "tool": ..., "args": {...}}` 或 `{"action": "finish", "output": ...}`，不依赖各 provider 的 tool-calling 接口；无法解析的回复、未知工具、工具异常都以“观察”的形式返回给模型，循环继续。
+  - 能力（`Skill`）声明自己可用的工具名，sub agent 只能拿到这些工具；缺工具时在调用模型之前报错 `tool_missing`。
+  - sub agent 使用 `consolidate` 角色模型（A-13），用量记录 purpose 为 `subagent`，`run_id` 指向 `agent_run`；提示词模板 `prompts/subagent.md` 不出现“sub agent”概念。
+  - 错误码：`unknown_capability`、`tool_missing`、`model_unavailable`、`model_failed`、`max_steps`；最大步数常量 `SUBAGENT_MAX_STEPS = 8`（`constants/agent.py`）。
+  - 检查点文本：成功为 `执行：<能力>\n<输出>`，失败为 `执行：<能力>\n失败：<原因>`。
+  - `agent_run` 每次派发先写入 running，结束后更新为 succeeded / failed；`session_id` 取派发当天的日期（A-6，检查点每日 reset）；`steps` 记录行为路径（动作、工具名、参数、是否成功）。
+  - `parse_plan` 解析主 agent 输出的 JSON 数组（`capability`、`task`）；主 agent 生成计划的模型调用留给 T-036。
+  - 能力注册表 `SkillRegistry`：注册时检查能力名与关键词的唯一性；`match` 按关键词（大小写不敏感）命中能力；`summaries()` 产出供主 agent 提示词使用的能力描述。
+  - 编排器与注册表尚未接入 `main.py`，也没有注册任何具体能力，留给 T-034 与后续任务。
+  - 全量测试 386 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 cfb4ef1
 
 ### T-034 结构化记忆写入与编辑
 
