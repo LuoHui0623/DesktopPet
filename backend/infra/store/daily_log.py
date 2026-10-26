@@ -25,6 +25,13 @@ class DbDailyLog:
         finally:
             conn.close()
 
+    def dates(self) -> list[str]:
+        conn = connect(self._db_file)
+        try:
+            return daily_log.dates(conn)
+        finally:
+            conn.close()
+
     def search(
         self,
         keyword: str | None = None,

@@ -29,6 +29,11 @@ def by_date(conn: sqlite3.Connection, date: str) -> list[DailyLogRecord]:
     return [_record(row) for row in rows]
 
 
+def dates(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT DISTINCT date FROM daily_log ORDER BY date").fetchall()
+    return [row[0] for row in rows]
+
+
 def search(
     conn: sqlite3.Connection,
     keyword: str | None = None,

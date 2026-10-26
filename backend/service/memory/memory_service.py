@@ -89,6 +89,14 @@ class StructuredMemoryService:
         self._timezone = timezone
         self._clock = clock or (lambda zone: datetime.now(zone))
         self._lock = threading.Lock()
+        self._listeners: list[Callable[[], None]] = []
+
+    def add_listener(self, listener: Callable[[], None]) -> None:
+        self._listeners.append(listener)
+
+    def _notify(self) -> None:
+        for listener in self._listeners:
+            listener()
 
     def create(
         self,
@@ -112,7 +120,8 @@ class StructuredMemoryService:
                 updated_at=now.isoformat(timespec="seconds"),
             )
             self._files.write(memory.id, memory.model_dump(mode="json"))
-            return memory
+        self._notify()
+        return memory
 
     def get(self, memory_id: str) -> StructuredMemory:
         if memory_id not in self._files.names():
@@ -147,7 +156,8 @@ class StructuredMemoryService:
             except ValidationError as exc:
                 raise ValueError(_first_error(exc)) from exc
             self._files.write(memory_id, updated.model_dump(mode="json"))
-            return updated
+        self._notify()
+        return updated
 
     def delete(self, memory_id: str) -> None:
         if not ID_RE.match(memory_id):
@@ -156,6 +166,7 @@ class StructuredMemoryService:
             self._files.delete(memory_id)
         except FileNotFoundError as exc:
             raise MemoryNotFound(f"结构化记忆 {memory_id} 不存在") from exc
+        self._notify()
 
     def _load(self, name: str) -> StructuredMemory:
         try:

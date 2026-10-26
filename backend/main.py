@@ -18,7 +18,9 @@ from config.settings import (
     ServiceSettingsError,
     load_service_settings,
 )
+from constants.path import MEMORY_INDEX_FILE, STRUCTURED_MEMORY_DIR
 from infra.events.bus import EventBus
+from infra.files.json_store import JsonDirectory
 from infra.lifecycle import ShutdownController, watch_stdin
 from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
@@ -31,6 +33,8 @@ from service.agent.prompt import PromptError, PromptTemplates, load_templates
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
+from service.memory.index import MemoryIndexService
+from service.memory.memory_service import StructuredMemoryService
 from service.persona.persona_service import sync_persona_version
 
 logger = logging.getLogger("pet")
@@ -88,6 +92,26 @@ def serve(
         print(f"角色卡版本记录失败：{exc}", file=sys.stderr)
         return 1
     logger.info("角色卡版本：%s", persona_version)
+    db_file = settings.data_dir / "pet.db"
+    daily_log = DailyLogService(
+        DbDailyLog(db_file),
+        DbAppSettings(db_file),
+        ZoneInfo(settings.timezone),
+    )
+    structured_memory = StructuredMemoryService(
+        JsonDirectory(STRUCTURED_MEMORY_DIR),
+        DbAppSettings(db_file),
+        ZoneInfo(settings.timezone),
+    )
+    memory_index = MemoryIndexService(structured_memory, daily_log.dates, MEMORY_INDEX_FILE)
+    structured_memory.add_listener(memory_index.rebuild)
+    try:
+        memory_index.rebuild()
+    except (sqlite3.Error, OSError) as exc:
+        logger.error("记忆索引生成失败：%s", exc)
+        print(f"记忆索引生成失败：{exc}", file=sys.stderr)
+        return 1
+    logger.info("记忆索引已生成")
     db_log = attach_db_logging(
         settings.data_dir / "pet.db",
         queue_size=settings.log_queue_size,
@@ -108,14 +132,9 @@ def serve(
 
     shutdown = ShutdownController()
     event_bus = EventBus()
-    db_file = settings.data_dir / "pet.db"
     chat_service = ChatService(
         llm_service,
-        DailyLogService(
-            DbDailyLog(db_file),
-            DbAppSettings(db_file),
-            ZoneInfo(settings.timezone),
-        ),
+        daily_log,
         persona,
         templates,
         db_usage_sink(db_file),

@@ -12,6 +12,8 @@ class DailyLogStore(Protocol):
 
     def by_date(self, date: str) -> list[DailyLogRecord]: ...
 
+    def dates(self) -> list[str]: ...
+
     def search(
         self,
         keyword: str | None = None,
@@ -63,6 +65,9 @@ class DailyLogService:
             [("user", user_text), ("assistant", assistant_text)],
         )
         return True
+
+    def dates(self) -> list[str]:
+        return self._store.dates()
 
     def read_day(self, day: str) -> list[DailyLogRecord]:
         return self._store.by_date(date.fromisoformat(day).isoformat())
