@@ -15,13 +15,14 @@ class UsageRecord:
     finished_at: str
     latency_ms: int
     success: bool
+    prompt_hash: str | None = None
 
 
 def insert(conn: sqlite3.Connection, record: UsageRecord) -> None:
     conn.execute(
         "INSERT INTO llm_usage (provider, model, purpose, run_id, tokens_in, tokens_out, "
-        "usage_raw, started_at, finished_at, latency_ms, success, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "usage_raw, started_at, finished_at, latency_ms, success, prompt_hash, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             record.provider,
             record.model,
@@ -34,6 +35,7 @@ def insert(conn: sqlite3.Connection, record: UsageRecord) -> None:
             record.finished_at,
             record.latency_ms,
             int(record.success),
+            record.prompt_hash,
             record.finished_at,
         ),
     )

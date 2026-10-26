@@ -23,6 +23,7 @@ from infra.logging import attach_db_logging, setup_logging
 from infra.store.app_settings import DbAppSettings
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
+from service.agent.prompt import PromptError, load_templates
 from service.llm import LlmService
 from service.persona.persona_service import sync_persona_version
 
@@ -156,6 +157,14 @@ def main() -> int:
             print(f"角色卡配置错误：{error}", file=sys.stderr)
         return 1
     logger.info("角色卡已加载")
+
+    try:
+        templates = load_templates()
+    except PromptError as exc:
+        logger.error("提示词模板错误：%s", exc)
+        print(f"提示词模板错误：{exc}", file=sys.stderr)
+        return 1
+    logger.info("提示词模板已加载，哈希：%s", templates.digest)
 
     lock = SingleInstanceLock(settings.data_dir / "backend.lock")
     try:

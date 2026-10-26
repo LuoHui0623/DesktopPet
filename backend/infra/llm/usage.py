@@ -25,14 +25,19 @@ UsageSink = Callable[[UsageRecord], None]
 class UsageScope:
     purpose: str
     run_id: str | None = None
+    prompt_hash: str | None = None
 
 
 _scope: ContextVar[UsageScope | None] = ContextVar("llm_usage_scope", default=None)
 
 
 @contextmanager
-def usage_scope(purpose: str, run_id: str | None = None) -> Iterator[None]:
-    token = _scope.set(UsageScope(purpose=purpose, run_id=run_id))
+def usage_scope(
+    purpose: str,
+    run_id: str | None = None,
+    prompt_hash: str | None = None,
+) -> Iterator[None]:
+    token = _scope.set(UsageScope(purpose=purpose, run_id=run_id, prompt_hash=prompt_hash))
     try:
         yield
     finally:
@@ -105,6 +110,7 @@ class TrackedChatModel:
             finished_at=_now(),
             latency_ms=round((time.perf_counter() - started) * 1000),
             success=success,
+            prompt_hash=scope.prompt_hash if scope else None,
         )
         try:
             self._sink(record)

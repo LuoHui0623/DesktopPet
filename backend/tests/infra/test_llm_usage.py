@@ -161,3 +161,26 @@ def test_db_sink_writes_success_and_failure_rows(tmp_path: Path):
         assert datetime.fromisoformat(row["started_at"]).tzinfo is not None
         assert datetime.fromisoformat(row["finished_at"]).tzinfo is not None
         assert row["latency_ms"] >= 0
+
+
+def test_prompt_hash_from_scope_is_recorded(tmp_path: Path):
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+
+    model = TrackedChatModel(
+        FakeModel(ai_message()),
+        provider="deepseek",
+        model_name="deepseek-flash",
+        sink=db_usage_sink(db_file),
+    )
+    with usage_scope("chat", prompt_hash="abc123"):
+        model.invoke("你好")
+
+    conn = connect(db_file)
+    try:
+        row = conn.execute("SELECT prompt_hash FROM llm_usage").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "abc123"
