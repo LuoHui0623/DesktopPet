@@ -35,7 +35,7 @@
 | T-019 | 角色卡版本记录（`persona_version`） | T-018 | 已完成 |
 | T-020 | 迁移 0003：llm_usage 扩展、agent_run、旧表清理 | — | 已完成 |
 | T-021 | LLM 用量记录（client 包装） | T-020 | 已完成 |
-| T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 待办 |
+| T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 已完成 |
 | T-023 | daily_log 存储与临时模式写入控制 | — | 待办 |
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 进行中 |
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-022 当前模型接口（依赖 T-021，已满足）
+- 下一步：T-023 daily_log 存储与临时模式写入控制（无依赖）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -205,14 +205,15 @@
 
 **依赖**：T-021
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`GET /api/llm/active` 返回当前对话模型与整理模型；`PUT /api/llm/active` 修改，写入 `app_setting`，立即生效。优先级：数据库设置 > `.env` 的 `DEFAULT_*_MODEL`。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 切换后，下一次调用使用新模型
-- [ ] 指定的模型不满足角色要求（roles）时返回 422
-- [ ] 响应不包含密钥
+**验收/验证结果**：
+- [x] 切换后，下一次调用使用新模型（方式：`tests/service/test_llm_service.py::test_switched_model_is_used_by_next_call`、`test_database_selection_persists_and_overrides_env`；结果：通过）
+- [x] 指定的模型不满足角色要求（roles）时返回 422（方式：`tests/api/test_llm_routes.py::test_put_rejects_model_without_required_role`、`test_put_validates_all_selections_before_writing`；结果：通过）
+- [x] 响应不包含密钥（方式：`tests/api/test_llm_routes.py::test_active_response_never_contains_secret_values`；结果：通过）
+- 备注：优先级为 `active` 参数 > 数据库 `app_setting`（键 `llm.active.<能力>`，值 `provider/model`）> `.env` 默认值；每次调用时读取数据库，切换后立即生效；PUT 先校验全部提交的能力，全部通过才写入；响应中的 `source` 字段标明来源（`database` 或 `env`）；全量测试 215 项通过，ruff 检查和格式检查通过；提交号 0143be9
 
 ### T-023 daily_log 存储与临时模式写入控制
 
