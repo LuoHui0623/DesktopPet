@@ -51,7 +51,7 @@
 | T-035 | 核心典藏（最多 20 条） | T-030 | 已完成 |
 | T-036 | 对话接入记忆（上下文组装、每日 reset） | T-025、T-033、T-035 | 已完成 |
 | T-037 | 记忆管理接口：`/api/memories` 与临时模式 | T-023、T-030、T-035 | 已完成 |
-| T-038 | 前端接口层与契约重新生成 | T-022、T-027、T-037 | 待办 |
+| T-038 | 前端接口层与契约重新生成 | T-022、T-027、T-037 | 已完成 |
 | T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 待办 |
 | T-040 | 悬浮窗（占位形象与状态标签） | T-026、T-039 | 待办 |
 | T-041 | 对话窗口（多轮、流式、历史与搜索） | T-038、T-039 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-038 前端接口层与契约重新生成（依赖 T-022、T-027、T-037，已满足）
+- 下一步：T-039 桌面壳迁移到 Tauri 2（无依赖；D-12 已定，需安装 Tauri 工具链与改写 `frontend/electron/`，并保持 M0 行为）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -512,14 +512,23 @@
 
 **依赖**：T-022、T-027、T-037
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：运行 `npm run gen:api` 重新生成契约；`src/api/endpoints.ts` 增加对话、模型、记忆相关的请求函数；`src/api/ws.ts` 实现 WebSocket 连接、断线重连与事件分发。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] `npm run gen:api:check` 通过
-- [ ] 每个新增请求函数的路径与契约一致（测试断言）
-- [ ] WebSocket 断开后自动重连，重连期间的状态以服务端下一次 `status` 事件为准
+**验收/验证结果**：
+- [x] `npm run gen:api:check` 通过（方式：`npm run gen:api:check`；结果：通过）
+- [x] 每个新增请求函数的路径与契约一致（方式：`frontend/tests/api/endpoints.test.ts` 逐一比对 operationId、方法与路径模板，并断言实际请求的 URL 与方法；结果：通过，共 12 个函数）
+- [x] WebSocket 断开后自动重连，重连期间的状态以服务端下一次 `status` 事件为准（方式：`frontend/tests/api/ws.test.ts` 的重连、退避、退避复位、重连期间不推断状态等用例；结果：通过）
+- 备注：
+  - `client.ts`：`request` 支持 JSON 请求体与查询参数，空值不进入查询串；错误结构与后端统一错误结构一致。
+  - `types.ts`：与后端 schema 对应的类型（对话、模型、记忆、事件）。
+  - `endpoints.ts`：对话（`sendChat`、`listChatHistory`）、模型（`listLlmProviders`、`reloadLlmConfig`、`getActiveLlm`、`setActiveLlm`）、记忆（`listMemories`、`getMemory`、`updateMemory`、`deleteMemory`、`setMemoryTemporaryMode`）。路径中的 id 经过 `encodeURIComponent`。
+  - `ws.ts`：`connectEvents` 连接 `/ws`，断线后按 500ms 起、倍增、上限 10 秒退避重连，连接成功后退避复位；关闭后不再重连；未知或格式不合法的事件被忽略；连接状态通过 `onConnectionChange` 通知。
+  - WebSocket 令牌：浏览器无法为 WebSocket 设置自定义请求头，因此令牌放在子协议 `[pet.v1, <token>]` 中，不写入 URL。后端 `TokenAuthMiddleware` 同时接受请求头与子协议两种方式，接受连接时选择 `pet.v1`（`api/auth.py`、`api/routers/ws.py`），后端测试 `tests/api/test_ws.py` 已覆盖。Arch §1.1 已同步。
+  - 类型检查（`npm run typecheck`）、ESLint 与 Prettier（`npm run check`）、前端测试 51 项、后端全量测试 448 项（3 项因符号链接权限跳过，同前）均通过。
+  - 前端接口的运行时校验（例如对响应体做 schema 检查）未做，类型由手写与契约路径测试保证。
+  - 提交号：后端 `63dab6f`（WebSocket 子协议令牌），前端 `fd5e0d5`（接口层与连接）
 
 ### T-039 桌面壳迁移到 Tauri 2
 
