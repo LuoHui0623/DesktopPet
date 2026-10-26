@@ -45,7 +45,7 @@
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 已完成 |
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 已完成 |
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 已完成 |
-| T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 待办 |
+| T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 已完成 |
 | T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 待办 |
 | T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 待办 |
 | T-035 | 核心典藏（最多 20 条） | T-030 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-032 记忆读取工具与行号 helper（依赖 T-030、T-031，已满足）
+- 下一步：T-033 sub agent 编排（依赖 T-021、T-029、T-032，已满足；Q-4 已定）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -376,14 +376,15 @@
 
 **依赖**：T-030、T-031
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`service/memory/memory_service.py` 提供：读取描述、查看索引、读取条目、行号 helper（在每行开头补填行号，从 1 开始，仅供 sub agent 使用）、按 `from-to` 截取片段。通过 `service/agent/tools/` 暴露。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] `from-to` 超出范围时返回错误原因
-- [ ] 行号从 1 开始
-- [ ] 行号 helper 只在返回文本前加前缀，不改变内容
+**验收/验证结果**：
+- [x] `from-to` 超出范围时返回错误原因（方式：`tests/service/test_memory_reader.py::test_section_out_of_range_returns_reason`、`test_daily_range_out_of_bounds_is_reported`、`test_tool_range_error_is_returned_not_raised`；结果：通过）
+- [x] 行号从 1 开始（方式：`test_line_numbers_start_at_one_and_do_not_change_content`、`test_reads_structured_memory_with_line_numbers`；结果：通过）
+- [x] 行号 helper 只在返回文本前加前缀，不改变内容（方式：`test_line_numbers_start_at_one_and_do_not_change_content` 去掉前缀后与原文逐行一致；结果：通过）
+- 备注：`MemoryReader` 提供 `describe()`（读取索引的 `描述`）、`index()`（`记忆索引`）、`read(kind, entry_id, lines)`；`kind` 为 `结构化记忆` 或 `daily_memory`；结构化记忆渲染为标题、类别、重要度、来源、更新时间与正文（每行一条）；每日对话按轮一行，与 T-030 的 `render_daily_turns` 一致；区间格式 `from-to`，从 1 开始、包含两端，超出范围返回原因；工具 `memory_describe`、`memory_index`、`memory_read` 位于 `service/agent/tools/memory.py`，结果结构与 T-029 的文件工具一致，`memory_read` 默认返回带行号的文本，供 sub agent 使用；全量测试 357 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 4c23591
 
 ### T-033 sub agent 编排
 
