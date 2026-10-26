@@ -37,7 +37,7 @@
 | T-021 | LLM 用量记录（client 包装） | T-020 | 已完成 |
 | T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 已完成 |
 | T-023 | daily_log 存储与临时模式写入控制 | — | 已完成 |
-| T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 进行中 |
+| T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 已完成 |
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 待办 |
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 待办 |
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-024 提示词构建（进行中，依赖 T-018、T-019 已满足，剩余资源库段、发言规则段、固定约束、模板哈希、启动校验）
+- 下一步：T-025 对话用例（依赖 T-021、T-023、T-024 已满足；D-8 不影响本任务）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -237,15 +237,16 @@
 
 **依赖**：T-018、T-019
 
-**任务状态**：进行中。已完成：主 agent（`chat`）的系统提示词构建（人设先经 `persona.md` 注入，再与能力段拼接）；模板占位符校验。待完成：资源库段、发言规则段、固定约束、模板哈希记录、启动时校验模板。
+**任务状态**：已完成。
 
 **范围**：`service/agent/prompt.py` 负责构建、拼接、注入。模板位于 `service/agent/prompts/*.md`，使用 `string.Template` 占位。系统提示词段顺序：角色卡 → 资源库（按条拼接，每条一行，路径来自 `constants/path.py`）→ 发言规则（单句 40 字符、人设提示约 20 字，常量）→ 固定约束（如“不编造记忆”，写在模板中）。记录模板哈希。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 同一输入渲染结果稳定
-- [ ] 资源库每条一行
-- [ ] 模板缺失或占位符不匹配时启动失败并给出明确错误
-- [ ] 人设位于最前，不被裁剪
+**验收/验证结果**：
+- [x] 同一输入渲染结果稳定（方式：`tests/service/test_prompt.py::test_same_input_renders_same_prompt`；结果：通过）
+- [x] 资源库每条一行（方式：`test_resources_are_listed_one_per_line`；结果：通过）
+- [x] 模板缺失或占位符不匹配时启动失败并给出明确错误（方式：`test_missing_template_fails_with_file_name`、`test_placeholder_mismatch_fails_with_expected_and_actual`；`main.py` 启动时调用 `load_templates()`，失败打印错误并退出；结果：通过）
+- [x] 人设位于最前，不被裁剪（方式：`test_sections_follow_fixed_order`；结果：通过）
+- 备注：段顺序为 人设 → 能力 → 资源库 → 发言规则 → 固定约束（能力段按 2026-10-26 确认的 persona + 能力 + 资产 放在人设之后）；资源路径相对项目根目录，常量定义于 `constants/path.py`（`RESOURCE_DIR`、`DRAFT_PATH`、`EMOJI_DIR`）；发言规则常量定义于 `constants/speech.py`；模板哈希由 `build_system_prompt` 返回（`template_digest`），由调用方通过 `usage_scope(prompt_hash=...)` 写入 `llm_usage.prompt_hash`；全量测试 236 项通过，ruff 检查和格式检查通过；提交号 1265c97
 
 ### T-025 对话用例：模型调用（非流式）与句长校验
 
