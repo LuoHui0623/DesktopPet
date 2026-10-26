@@ -17,6 +17,7 @@ from config.settings import (
     load_service_settings,
 )
 from infra.lifecycle import ShutdownController, watch_stdin
+from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
@@ -132,7 +133,10 @@ def main() -> int:
         return 1
     logger.info("日志文件：%s，级别：%s", log_file, settings.log_level)
 
-    llm_service = LlmService(ModelSettingsSource())
+    llm_service = LlmService(
+        ModelSettingsSource(),
+        usage_sink=db_usage_sink(settings.data_dir / "pet.db"),
+    )
     try:
         llm_service.start()
     except ModelSettingsError as exc:

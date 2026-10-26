@@ -7,6 +7,7 @@ from langchain_core.language_models import BaseChatModel
 
 from config.settings import DefaultModel, ModelSettings, ModelSettingsError, ModelSettingsSource
 from infra.llm import ApiParadigm, ModelSpec, build_chat_model
+from infra.llm.usage import TrackedChatModel, UsageSink, discard_usage
 
 Builder = Callable[[ModelSpec], BaseChatModel]
 
@@ -37,14 +38,16 @@ class LlmService:
         *,
         builder: Builder = build_chat_model,
         environ: Mapping[str, str] | None = None,
+        usage_sink: UsageSink | None = None,
     ) -> None:
         self._source = source
         self._builder = builder
         self._environ = environ
+        self._usage_sink = usage_sink or discard_usage
         self._lock = threading.RLock()
         self._settings: ModelSettings | None = None
         self._stamp: object = None
-        self._clients: dict[tuple[str, str, str], BaseChatModel] = {}
+        self._clients: dict[tuple[str, str, str], TrackedChatModel] = {}
         self._last_errors: list[str] = []
 
     def start(self) -> None:
@@ -85,7 +88,7 @@ class LlmService:
                 statuses.append(ProviderStatus(provider.name, provider.display_name, False, reason))
         return statuses
 
-    def client_for(self, capability: str, override: DefaultModel | None = None) -> BaseChatModel:
+    def client_for(self, capability: str, override: DefaultModel | None = None) -> TrackedChatModel:
         settings = self.current()
         ref = override or settings.defaults.get(capability)
         if ref is None:
@@ -118,7 +121,12 @@ class LlmService:
                     max_tokens=model.max_tokens,
                     default_headers=provider.request_header,
                 )
-                client = self._builder(spec)
+                client = TrackedChatModel(
+                    self._builder(spec),
+                    provider=provider.name,
+                    model_name=model.id,
+                    sink=self._usage_sink,
+                )
                 self._clients[key] = client
             return client
 

@@ -1,8 +1,10 @@
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from config.settings import DefaultModel, ModelSettingsSource
+from infra.llm.usage import usage_scope
 from service.llm import LlmService, LlmUnavailableError
 
 LLM_YAML = """
@@ -132,3 +134,30 @@ def test_unknown_override_model_is_unavailable(config_dir: Path):
     service = make_service(config_dir)
     with pytest.raises(LlmUnavailableError):
         service.client_for("chat", override=DefaultModel(provider="deepseek", model="unknown"))
+
+
+def test_client_for_records_usage_through_sink(config_dir: Path):
+    records = []
+
+    class UsageModel:
+        def invoke(self, input, config=None, **kwargs):
+            usage = {"input_tokens": 2, "output_tokens": 4, "total_tokens": 6}
+            return AIMessage(content="好的", usage_metadata=usage)
+
+    env = {"DEEPSEEK_API_KEY": "sk-test"}
+    source = ModelSettingsSource(config_dir, environ=env)
+    service = LlmService(
+        source,
+        builder=lambda spec: UsageModel(),
+        environ=env,
+        usage_sink=records.append,
+    )
+    service.start()
+    client = service.client_for("chat")
+    with usage_scope("chat", run_id="run-9"):
+        client.invoke("你好")
+    assert service.client_for("chat") is client
+    assert len(records) == 1
+    assert (records[0].provider, records[0].model) == ("deepseek", "deepseek-flash")
+    assert (records[0].purpose, records[0].run_id) == ("chat", "run-9")
+    assert (records[0].tokens_in, records[0].tokens_out) == (2, 4)
