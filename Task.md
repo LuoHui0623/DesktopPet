@@ -55,7 +55,7 @@
 | T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 已完成 |
 | T-040 | 悬浮窗（占位形象与状态标签） | T-026、T-039 | 已完成 |
 | T-041 | 对话窗口（多轮、流式、历史与搜索） | T-038、T-039 | 已完成 |
-| T-042 | 设置页：模型（列表、可用性、切换、重载） | T-022、T-038、T-039 | 待办 |
+| T-042 | 设置页：模型（列表、可用性、切换、重载） | T-022、T-038、T-039 | 已完成 |
 | T-043 | 设置页：记忆（查看、编辑、删除、临时模式、核心典藏） | T-035、T-037、T-038、T-039 | 待办 |
 | T-044 | 回复中的记忆来源 | T-036、T-041 | 待办 |
 | T-045 | 阶段收尾：端到端验证与文档同步 | T-039 至 T-044 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-042 设置页：模型（依赖 T-022、T-038、T-039，已满足）
+- 下一步：T-043 设置页：记忆（依赖 T-035、T-037、T-038、T-039，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -612,13 +612,20 @@
 
 **依赖**：T-022、T-038、T-039
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`modules/settings/ModelSettings.tsx`：展示 provider 列表与可用性（含不可用原因），切换对话模型与整理模型，手动重载配置。不显示密钥。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 切换后，下一次对话使用新模型
-- [ ] 重载失败时显示错误列表，旧配置仍在使用
+**验收/验证结果**：
+- [x] 切换后，下一次对话使用新模型（方式：后端 `tests/service/test_llm_service.py::test_switched_model_is_used_by_next_call` 通过，切换后下一次 `client_for("chat")` 返回新 provider 与模型；前端切换经 `PUT /api/llm/active` 写入；结果：通过。未用真实模型端到端验证）
+- [x] 重载失败时显示错误列表，旧配置仍在使用（方式：后端 `test_reload_failure_keeps_previous_configuration`、`test_failed_reload_keeps_previous_settings` 通过，并新增断言 `last_errors == errors`；本任务修正了手动重载失败时 `last_reload_errors` 不更新的问题；前端在失败后刷新快照，以 `last_reload_errors` 列表显示错误；结果：通过。界面目视未做）
+- 备注：
+  - 设置窗口 `modules/settings/`：`ModelSettings`（当前模型、provider 列表与可用性、不可用原因、配置提示、重载按钮）；`model-options.ts` 为纯函数（按角色筛选、选项值）。
+  - 设置窗口由对话窗口的"设置"按钮打开（Rust 命令 `open_settings_window`，capability 为 `settings.json`，只授权 `get_backend_info`）。
+  - 不显示密钥：`/api/llm/providers` 与 `/api/llm/active` 的响应中不含密钥，`test_llm_routes` 中有断言。
+  - 不可用的 provider 对应的模型选项禁用，不能被选中；当前选中的模型若不在可选列表中，显示为不可用项。
+  - 验证：`npm run check`、`npm run typecheck`、`npm run lint`、`npx vitest run`（66 项）、`npm run gen:api:check`、`cargo clippy --all-targets -- -D warnings`、`cargo test`（8 项）、`uv run pytest tests/service/test_llm_service.py tests/api/test_llm_routes.py`（30 项）均通过；`settings.html` 与 `settings.tsx` 经 Vite 返回 200。
+  - 提交号：后端修复 `5d977e6`，设置窗口代码 `621b2f4`（含 Rust 命令与 capability）；本任务文档随后续提交记录
 
 ### T-043 设置页：记忆
 
