@@ -24,6 +24,11 @@ CATEGORY_LABELS = {
     "event": "事项",
     "interaction": "互动约定",
 }
+CITATION_RULE = (
+    "回复引用上面【核心典藏】或【检索到的记忆】中的内容时，在该句末尾附加 [引用 ID]。"
+    "ID 取自对应条目的“id”；每日对话条目没有 id，取其日期。"
+    "只引用上面列出的内容，不要编造 ID。"
+)
 
 
 @dataclass(frozen=True)
@@ -43,6 +48,7 @@ class AssembledContext:
     trimmed_turns: int
     dropped_fragments: int
     warnings: tuple[str, ...]
+    injected: tuple[MemoryFragment, ...] = ()
 
 
 def _flatten(text: str) -> str:
@@ -54,7 +60,10 @@ def render_fragment(fragment: MemoryFragment) -> str:
     if fragment.category is not None:
         tags.append(CATEGORY_LABELS.get(fragment.category, fragment.category))
     tags.append(fragment.date)
-    return f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
+    line = f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
+    if fragment.kind == KIND_STRUCTURED and fragment.memory_id:
+        line += f"（id：{fragment.memory_id}）"
+    return line
 
 
 class ContextBuilder:
@@ -85,31 +94,36 @@ class ContextBuilder:
         prompt = build_system_prompt("chat", self._persona, self._templates)
         warnings: list[str] = []
 
-        core_lines = self._core_lines(warnings)
-        core_block = "\n".join(core_lines)
+        core_fragments = self._core_fragments(warnings)
+        core_block = "\n".join(render_fragment(fragment) for fragment in core_fragments)
         if len(core_block) > CORE_MEMORY_TOKEN_BUDGET:
             warnings.append(f"核心典藏超出预算：{len(core_block)} 字符")
         system_text = prompt.text
-        if core_lines:
+        if core_fragments:
             system_text += f"\n\n【核心典藏】\n{core_block}"
 
-        fragment_lines, dropped = self._fit_fragments(fragments)
+        kept, dropped = self._fit_fragments(fragments)
         if dropped:
             warnings.append(f"检索到的记忆超出预算，已舍弃 {dropped} 条")
-        if fragment_lines:
-            system_text += "\n\n【检索到的记忆】\n" + "\n".join(fragment_lines)
+        if kept:
+            fragment_block = "\n".join(render_fragment(fragment) for fragment in kept)
+            system_text += f"\n\n【检索到的记忆】\n{fragment_block}"
+
+        injected = (*core_fragments, *kept)
+        if injected:
+            system_text += f"\n\n{CITATION_RULE}"
 
         fixed = len(system_text) + len(user_text)
         turns = self._recent_turns()
-        kept: list[list[BaseMessage]] = []
+        kept_turns: list[list[BaseMessage]] = []
         used = 0
         for turn in reversed(turns):
             size = sum(len(message.content) for message in turn)
             if fixed + used + size > CONTEXT_TOKEN_BUDGET:
                 break
-            kept.insert(0, turn)
+            kept_turns.insert(0, turn)
             used += size
-        trimmed = len(turns) - len(kept)
+        trimmed = len(turns) - len(kept_turns)
         if trimmed:
             warnings.append(f"近期对话超出预算，已裁剪最早的 {trimmed} 轮")
         if fixed > CONTEXT_TOKEN_BUDGET:
@@ -117,7 +131,7 @@ class ContextBuilder:
 
         messages: list[BaseMessage] = [
             SystemMessage(content=system_text),
-            *[message for turn in kept for message in turn],
+            *[message for turn in kept_turns for message in turn],
             HumanMessage(content=user_text),
         ]
         return AssembledContext(
@@ -127,41 +141,42 @@ class ContextBuilder:
             trimmed_turns=trimmed,
             dropped_fragments=dropped,
             warnings=tuple(warnings),
+            injected=injected,
         )
 
-    def _core_lines(self, warnings: list[str]) -> list[str]:
+    def _core_fragments(self, warnings: list[str]) -> list[MemoryFragment]:
         if self._core is None or self._structured is None:
             return []
-        lines: list[str] = []
+        fragments: list[MemoryFragment] = []
         for memory_id in self._core.ids():
             try:
                 memory = self._structured.get(memory_id)
             except MemoryServiceError:
                 warnings.append(f"核心典藏 {memory_id} 无法读取，已跳过")
                 continue
-            lines.append(
-                render_fragment(
-                    MemoryFragment(
-                        kind=KIND_STRUCTURED,
-                        date=memory.source.date,
-                        text=memory.content,
-                        category=memory.category,
-                        memory_id=memory.id,
-                    )
+            fragments.append(
+                MemoryFragment(
+                    kind=KIND_STRUCTURED,
+                    date=memory.source.date,
+                    text=memory.content,
+                    category=memory.category,
+                    memory_id=memory.id,
                 )
             )
-        return lines
+        return fragments
 
-    def _fit_fragments(self, fragments: Sequence[MemoryFragment]) -> tuple[list[str], int]:
-        lines: list[str] = []
+    def _fit_fragments(
+        self, fragments: Sequence[MemoryFragment]
+    ) -> tuple[list[MemoryFragment], int]:
+        kept: list[MemoryFragment] = []
         used = 0
         for index, fragment in enumerate(fragments):
-            line = render_fragment(fragment)
-            if used + len(line) > FRAGMENT_TOKEN_BUDGET:
-                return lines, len(fragments) - index
-            lines.append(line)
-            used += len(line)
-        return lines, 0
+            size = len(render_fragment(fragment))
+            if used + size > FRAGMENT_TOKEN_BUDGET:
+                return kept, len(fragments) - index
+            kept.append(fragment)
+            used += size
+        return kept, 0
 
     def _recent_turns(self) -> list[list[BaseMessage]]:
         today = self._clock(self._timezone).date().isoformat()

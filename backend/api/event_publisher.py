@@ -1,6 +1,20 @@
+from collections.abc import Sequence
+
+from api.schemas.chat import SourceOut
 from api.schemas.events import ChatChunkEvent, ChatDoneEvent, StatusEvent
 from infra.events.bus import EventBus
 from service.chat.chat_service import PetState
+from service.chat.citations import CitedSource
+
+
+def source_out(source: CitedSource) -> SourceOut:
+    return SourceOut(
+        id=source.id,
+        kind=source.kind,
+        category=source.category,
+        date=source.date,
+        text=source.text,
+    )
 
 
 class BusEventPublisher:
@@ -13,5 +27,11 @@ class BusEventPublisher:
     def chunk(self, message_id: str, text: str) -> None:
         self._bus.publish(ChatChunkEvent(message_id=message_id, text=text))
 
-    def done(self, message_id: str, text: str) -> None:
-        self._bus.publish(ChatDoneEvent(message_id=message_id, text=text))
+    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
+        self._bus.publish(
+            ChatDoneEvent(
+                message_id=message_id,
+                text=text,
+                sources=[source_out(source) for source in sources],
+            )
+        )

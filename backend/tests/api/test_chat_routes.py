@@ -97,6 +97,7 @@ def test_send_chat_returns_final_reply_and_logs_turn(tmp_path: Path):
     body = response.json()
     assert body["text"] == "你好呀。"
     assert body["recorded"] is True
+    assert body["sources"] == []
     assert len(body["message_id"]) == 32
 
     history = client.get("/api/chat/history", headers=AUTH).json()
@@ -133,6 +134,7 @@ def test_websocket_receives_chunks_then_done_in_order(tmp_path: Path):
         "type": "chat.done",
         "message_id": message_id,
         "text": "第一句。第二句！",
+        "sources": [],
     }
     assert events[-1] == {"type": "status", "state": "idle"}
 

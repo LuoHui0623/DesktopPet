@@ -18,6 +18,7 @@ from service.chat.chat_service import (
     overlong_sentences,
     split_sentences,
 )
+from service.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
 
@@ -219,8 +220,8 @@ class RecordingEvents:
     def chunk(self, message_id, text):
         self.log.append(("chunk", message_id, text))
 
-    def done(self, message_id, text):
-        self.log.append(("done", message_id, text))
+    def done(self, message_id, text, sources):
+        self.log.append(("done", message_id, text, list(sources)))
 
 
 def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
@@ -232,7 +233,7 @@ def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
     assert events.log[0] == ("status", "thinking")
     assert events.log[1] == ("status", "speaking")
     assert events.log[-1] == ("status", "idle")
-    assert events.log[4] == ("done", result.message_id, "第一句。第二句！")
+    assert events.log[4] == ("done", result.message_id, "第一句。第二句！", [])
 
 
 def test_chunks_join_back_to_the_reply(tmp_path: Path):
@@ -277,3 +278,49 @@ def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
     assert contents[0] == "第一句"
     assert contents[1] == SHORT
     assert contents[-1] == "第二句"
+
+
+CITED_FRAGMENTS = [
+    MemoryFragment(
+        kind=KIND_STRUCTURED,
+        date="2026-10-18",
+        text="喜欢美式咖啡，不加糖",
+        category="preference",
+        memory_id="m_20261018_001",
+    ),
+    MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶"),
+]
+
+
+def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_path: Path):
+    events = RecordingEvents()
+    reply = (
+        "你上次说过喜欢美式 [引用 m_20261018_001]。"
+        "另外昨天聊过茶 [引用 2026-10-17]，还有编造的 [引用 m_20261018_999]。"
+    )
+    harness = Harness(tmp_path, [reply], events=events)
+    result = harness.chat.reply("你好", CITED_FRAGMENTS)
+    assert result.text == "你上次说过喜欢美式。另外昨天聊过茶，还有编造的。"
+    assert [source.id for source in result.sources] == ["m_20261018_001", "2026-10-17"]
+    assert result.sources[0].text == "喜欢美式咖啡，不加糖"
+    done = next(entry for entry in events.log if entry[0] == "done")
+    assert [source.id for source in done[3]] == ["m_20261018_001", "2026-10-17"]
+    assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [
+        (result.text,)
+    ]
+
+
+def test_injected_fragments_carry_their_ids_and_the_citation_rule(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT])
+    harness.chat.reply("你好", CITED_FRAGMENTS)
+    system = harness.fake.calls[0][0].content
+    assert "（id：m_20261018_001）" in system
+    assert "[引用 ID]" in system
+
+
+def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
+    harness = Harness(tmp_path, ["[引用 m_20261018_001]"])
+    with pytest.raises(ChatError) as exc:
+        harness.chat.reply("你好", CITED_FRAGMENTS)
+    assert exc.value.code == "model_failed"
+    assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0

@@ -15,6 +15,7 @@ from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
 from service.agent.prompt import PromptTemplates
+from service.chat.citations import CitedSource, resolve_sources, split_citations
 from service.chat.context import ContextBuilder, MemoryFragment
 from service.llm import LlmService, LlmUnavailableError
 from service.memory.core_memory import CoreMemoryService
@@ -41,7 +42,7 @@ class ChatEvents(Protocol):
 
     def chunk(self, message_id: str, text: str) -> None: ...
 
-    def done(self, message_id: str, text: str) -> None: ...
+    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None: ...
 
 
 class NoChatEvents:
@@ -51,7 +52,7 @@ class NoChatEvents:
     def chunk(self, message_id: str, text: str) -> None:
         return None
 
-    def done(self, message_id: str, text: str) -> None:
+    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
         return None
 
 
@@ -60,6 +61,7 @@ class ChatReply:
     message_id: str
     text: str
     recorded: bool
+    sources: tuple[CitedSource, ...] = ()
 
 
 def split_sentences(text: str) -> list[str]:
@@ -130,16 +132,18 @@ class ChatService:
 
         self._events.status("thinking")
         try:
-            reply = self._generate(client, messages, digest)
+            raw = self._generate(client, messages, digest)
+            reply, cited = split_citations(raw)
             recorded = self._daily_log.record_turn(text, reply)
             message_id = uuid4().hex
+            sources = tuple(resolve_sources(cited, assembled.injected))
             self._events.status("speaking")
             for segment in split_segments(reply):
                 self._events.chunk(message_id, segment)
-            self._events.done(message_id, reply)
+            self._events.done(message_id, reply, sources)
         finally:
             self._events.status("idle")
-        return ChatReply(message_id=message_id, text=reply, recorded=recorded)
+        return ChatReply(message_id=message_id, text=reply, recorded=recorded, sources=sources)
 
     def history(
         self,
@@ -168,7 +172,8 @@ class ChatService:
     ) -> str:
         for _ in range(MAX_ATTEMPTS):
             content = self._invoke(client, messages, digest)
-            if not overlong_sentences(content):
+            body, _ = split_citations(content)
+            if not overlong_sentences(body):
                 return content
         raise ChatError(
             "sentence_too_long",
@@ -182,7 +187,8 @@ class ChatService:
             except Exception as exc:
                 raise ChatError("model_failed", f"模型调用失败：{exc}") from exc
         content = _text_of(response.content).strip()
-        if not content:
+        body, _ = split_citations(content)
+        if not body:
             raise ChatError("model_failed", "模型返回了空回复")
         return content
 

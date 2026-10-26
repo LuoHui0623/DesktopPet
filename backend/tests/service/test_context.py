@@ -170,7 +170,7 @@ def test_over_budget_trims_oldest_turns_and_keeps_persona_and_core(parts, monkey
             f"2026-10-18T09:0{index}:00+08:00",
             [("user", f"第{index}轮" + "问" * 80), ("assistant", "答" * 80)],
         )
-    monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", 500)
+    monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", 700)
     result = parts["builder"]().build("现在")
     system = result.messages[0].content
     assert "【人设】" in system
@@ -214,3 +214,27 @@ def test_result_reports_template_digest_and_size(parts):
     result = parts["builder"]().build("你好")
     assert len(result.template_digest) == 64
     assert result.chars == sum(len(message.content) for message in result.messages)
+
+
+def test_injected_lists_core_and_kept_fragments_only(parts):
+    memory = add_memory(parts["structured"], "喜欢美式咖啡，不加糖")
+    parts["core"].add(memory.id)
+    fragments = [
+        MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20),
+        MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="字" * 2000),
+    ]
+    result = parts["builder"]().build("你好", fragments)
+    assert [fragment.memory_id or fragment.date for fragment in result.injected] == [
+        memory.id,
+        "2026-10-18",
+    ]
+    assert result.dropped_fragments == 1
+    system = result.messages[0].content
+    assert f"（id：{memory.id}）" in system
+    assert context_module.CITATION_RULE in system
+
+
+def test_citation_rule_is_omitted_when_nothing_is_injected(parts):
+    result = parts["builder"]().build("你好")
+    assert result.injected == ()
+    assert context_module.CITATION_RULE not in result.messages[0].content

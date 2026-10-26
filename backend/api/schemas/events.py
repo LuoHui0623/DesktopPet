@@ -2,6 +2,8 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from api.schemas.chat import SourceOut
+
 EVENT_SCHEMA_NAME = "ServerEvent"
 
 
@@ -20,6 +22,7 @@ class ChatDoneEvent(BaseModel):
     type: Literal["chat.done"] = "chat.done"
     message_id: str
     text: str
+    sources: list[SourceOut] = Field(default_factory=list)
 
 
 ServerEvent = Annotated[

@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from api.errors import error_response
+from api.event_publisher import source_out
 from api.schemas.chat import (
     ChatHistoryItem,
     ChatHistoryResponse,
@@ -44,7 +45,12 @@ def send_chat(request: Request, body: ChatRequest) -> Response | ChatReplyRespon
     except ChatError as exc:
         status = CHAT_ERROR_STATUS.get(exc.code, 500)
         return error_response(status, exc.code, str(exc))
-    return ChatReplyResponse(message_id=reply.message_id, text=reply.text, recorded=reply.recorded)
+    return ChatReplyResponse(
+        message_id=reply.message_id,
+        text=reply.text,
+        recorded=reply.recorded,
+        sources=[source_out(source) for source in reply.sources],
+    )
 
 
 @router.get(

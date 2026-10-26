@@ -7,10 +7,19 @@ class ChatRequest(BaseModel):
     text: str = Field(min_length=1)
 
 
+class SourceOut(BaseModel):
+    id: str
+    kind: str
+    category: str | None = None
+    date: str
+    text: str
+
+
 class ChatReplyResponse(BaseModel):
     message_id: str
     text: str
     recorded: bool
+    sources: list[SourceOut] = Field(default_factory=list)
 
 
 class ChatHistoryItem(BaseModel):
