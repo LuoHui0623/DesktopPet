@@ -33,6 +33,21 @@
       }
     },
     {
+      "operationId": "list_chat_history",
+      "method": "GET",
+      "path": "/api/chat/history",
+      "tags": [
+        "chat"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ChatHistoryResponse"
+        },
+        "422": null
+      }
+    },
+    {
       "operationId": "list_llm_providers",
       "method": "GET",
       "path": "/api/llm/providers",
@@ -59,6 +74,25 @@
           "$ref": "#/components/schemas/ReloadResponse"
         },
         "422": null
+      }
+    },
+    {
+      "operationId": "send_chat",
+      "method": "POST",
+      "path": "/api/chat",
+      "tags": [
+        "chat"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ChatRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ChatReplyResponse"
+        },
+        "422": null,
+        "502": null,
+        "503": null
       }
     },
     {
@@ -250,6 +284,98 @@
           "text"
         ],
         "title": "ChatDoneEvent",
+        "type": "object"
+      },
+      "ChatHistoryItem": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "date",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ChatHistoryItem",
+        "type": "object"
+      },
+      "ChatHistoryResponse": {
+        "properties": {
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ChatHistoryItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items",
+          "has_more"
+        ],
+        "title": "ChatHistoryResponse",
+        "type": "object"
+      },
+      "ChatReplyResponse": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "recorded": {
+            "title": "Recorded",
+            "type": "boolean"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "text",
+          "recorded"
+        ],
+        "title": "ChatReplyResponse",
+        "type": "object"
+      },
+      "ChatRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ChatRequest",
         "type": "object"
       },
       "DefaultInfo": {

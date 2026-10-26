@@ -6,9 +6,10 @@ from fastapi.openapi.utils import get_openapi
 
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
-from api.routers import llm, system, ws
+from api.routers import chat, llm, system, ws
 from api.schemas.events import event_component_schemas
 from infra.events.bus import EventBus
+from service.chat.chat_service import ChatService
 from service.llm import LlmService
 
 
@@ -17,14 +18,17 @@ def create_app(
     request_shutdown: Callable[[str], bool] | None = None,
     llm_service: LlmService | None = None,
     event_bus: EventBus | None = None,
+    chat_service: ChatService | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Desktop Pet Backend")
     app.state.request_shutdown = request_shutdown or (lambda reason: False)
     app.state.llm_service = llm_service
     app.state.event_bus = event_bus or EventBus()
+    app.state.chat_service = chat_service
     register_error_handlers(app)
     app.include_router(system.router)
     app.include_router(llm.router)
+    app.include_router(chat.router)
     app.include_router(ws.router)
     app.add_middleware(TokenAuthMiddleware, token=token)
     _include_event_schemas(app)

@@ -17,6 +17,10 @@ class DailyLogStore(Protocol):
         keyword: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        *,
+        newest_first: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DailyLogRecord]: ...
 
 
@@ -68,7 +72,18 @@ class DailyLogService:
         keyword: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        *,
+        newest_first: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DailyLogRecord]:
         start = date.fromisoformat(date_from).isoformat() if date_from else None
         end = date.fromisoformat(date_to).isoformat() if date_to else None
-        return self._store.search(keyword or None, start, end)
+        return self._store.search(
+            keyword or None,
+            start,
+            end,
+            newest_first=newest_first,
+            limit=limit,
+            offset=offset,
+        )

@@ -4,10 +4,12 @@ import sqlite3
 import sys
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import uvicorn
 
 from api.app import create_app
+from api.event_publisher import BusEventPublisher
 from config.persona import PersonaConfig, PersonaError, load_persona
 from config.settings import (
     ModelSettingsError,
@@ -16,15 +18,19 @@ from config.settings import (
     ServiceSettingsError,
     load_service_settings,
 )
+from infra.events.bus import EventBus
 from infra.lifecycle import ShutdownController, watch_stdin
 from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.app_settings import DbAppSettings
+from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
-from service.agent.prompt import PromptError, load_templates
+from service.agent.prompt import PromptError, PromptTemplates, load_templates
+from service.chat.chat_service import ChatService
 from service.llm import LlmService
+from service.memory.daily_log_service import DailyLogService
 from service.persona.persona_service import sync_persona_version
 
 logger = logging.getLogger("pet")
@@ -59,7 +65,12 @@ def bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def serve(settings: ServiceSettings, llm_service: LlmService, persona: PersonaConfig) -> int:
+def serve(
+    settings: ServiceSettings,
+    llm_service: LlmService,
+    persona: PersonaConfig,
+    templates: PromptTemplates,
+) -> int:
     try:
         applied = initialize_database(settings.data_dir)
     except (MigrationError, OSError) as exc:
@@ -96,10 +107,26 @@ def serve(settings: ServiceSettings, llm_service: LlmService, persona: PersonaCo
     logger.info("后端已启动，监听 %s:%s", settings.host, port)
 
     shutdown = ShutdownController()
+    event_bus = EventBus()
+    db_file = settings.data_dir / "pet.db"
+    chat_service = ChatService(
+        llm_service,
+        DailyLogService(
+            DbDailyLog(db_file),
+            DbAppSettings(db_file),
+            ZoneInfo(settings.timezone),
+        ),
+        persona,
+        templates,
+        db_usage_sink(db_file),
+        BusEventPublisher(event_bus),
+    )
     app = create_app(
         settings.token.get_secret_value(),
         request_shutdown=shutdown.request,
         llm_service=llm_service,
+        event_bus=event_bus,
+        chat_service=chat_service,
     )
     config = uvicorn.Config(
         app,
@@ -178,7 +205,7 @@ def main() -> int:
         return 1
 
     try:
-        return serve(settings, llm_service, persona)
+        return serve(settings, llm_service, persona, templates)
     finally:
         lock.release()
 

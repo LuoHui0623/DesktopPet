@@ -34,9 +34,13 @@ def search(
     keyword: str | None = None,
     date_from: str | None = None,
     date_to: str | None = None,
+    *,
+    newest_first: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> list[DailyLogRecord]:
     clauses: list[str] = []
-    params: list[str] = []
+    params: list[str | int] = []
     if keyword:
         clauses.append("content LIKE ? ESCAPE '\\'")
         params.append(_like_pattern(keyword))
@@ -47,8 +51,13 @@ def search(
         clauses.append("date <= ?")
         params.append(date_to)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    order = "DESC" if newest_first else "ASC"
+    paging = ""
+    if limit is not None:
+        paging = "LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
     rows = conn.execute(
-        f"SELECT {COLUMNS} FROM daily_log {where} ORDER BY created_at, id",
+        f"SELECT {COLUMNS} FROM daily_log {where} ORDER BY created_at {order}, id {order} {paging}",
         params,
     ).fetchall()
     return [_record(row) for row in rows]

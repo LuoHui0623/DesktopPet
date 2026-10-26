@@ -2,13 +2,15 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal, Protocol
+from uuid import uuid4
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 
 from config.persona import PersonaConfig
 from constants.speech import SENTENCE_MAX_CHARS
 from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
+from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
 from service.agent.prompt import PromptTemplates, build_system_prompt
 from service.llm import LlmService, LlmUnavailableError
@@ -19,6 +21,8 @@ logger = logging.getLogger("pet")
 SENTENCE = re.compile(r"[^。！？!?…\n]*[。！？!?…]+|[^。！？!?…\n]+|\n")
 MAX_ATTEMPTS = 2
 
+PetState = Literal["idle", "thinking", "speaking", "executing", "sleeping"]
+
 
 class ChatError(Exception):
     def __init__(self, code: str, message: str) -> None:
@@ -26,14 +30,38 @@ class ChatError(Exception):
         super().__init__(message)
 
 
+class ChatEvents(Protocol):
+    def status(self, state: PetState) -> None: ...
+
+    def chunk(self, message_id: str, text: str) -> None: ...
+
+    def done(self, message_id: str, text: str) -> None: ...
+
+
+class NoChatEvents:
+    def status(self, state: PetState) -> None:
+        return None
+
+    def chunk(self, message_id: str, text: str) -> None:
+        return None
+
+    def done(self, message_id: str, text: str) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class ChatReply:
+    message_id: str
     text: str
     recorded: bool
 
 
 def split_sentences(text: str) -> list[str]:
     return [match.group().strip() for match in SENTENCE.finditer(text) if match.group().strip()]
+
+
+def split_segments(text: str) -> list[str]:
+    return [match.group() for match in SENTENCE.finditer(text) if match.group()]
 
 
 def overlong_sentences(text: str) -> list[str]:
@@ -60,12 +88,14 @@ class ChatService:
         persona: PersonaConfig,
         templates: PromptTemplates,
         usage_sink: UsageSink,
+        events: ChatEvents | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
         self._persona = persona
         self._templates = templates
         self._usage_sink = usage_sink
+        self._events = events or NoChatEvents()
 
     def reply(self, user_text: str) -> ChatReply:
         text = user_text.strip()
@@ -82,9 +112,37 @@ class ChatService:
             self._record_unavailable(prompt.template_digest)
             raise ChatError("model_unavailable", str(exc)) from exc
 
-        reply = self._generate(client, messages, prompt.template_digest)
-        recorded = self._daily_log.record_turn(text, reply)
-        return ChatReply(text=reply, recorded=recorded)
+        self._events.status("thinking")
+        try:
+            reply = self._generate(client, messages, prompt.template_digest)
+            recorded = self._daily_log.record_turn(text, reply)
+            message_id = uuid4().hex
+            self._events.status("speaking")
+            for segment in split_segments(reply):
+                self._events.chunk(message_id, segment)
+            self._events.done(message_id, reply)
+        finally:
+            self._events.status("idle")
+        return ChatReply(message_id=message_id, text=reply, recorded=recorded)
+
+    def history(
+        self,
+        *,
+        keyword: str | None,
+        date_from: str | None,
+        date_to: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[DailyLogRecord], bool]:
+        records = self._daily_log.search(
+            keyword,
+            date_from,
+            date_to,
+            newest_first=True,
+            limit=limit + 1,
+            offset=offset,
+        )
+        return records[:limit], len(records) > limit
 
     def _generate(
         self,

@@ -63,7 +63,14 @@ class FakeChat:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, outcomes: list, env: str = ENV, keys: dict | None = None):
+    def __init__(
+        self,
+        tmp_path: Path,
+        outcomes: list,
+        env: str = ENV,
+        keys: dict | None = None,
+        events=None,
+    ):
         self.db_file = tmp_path / "pet.db"
         conn = connect(self.db_file)
         migrate(conn)
@@ -88,6 +95,7 @@ class Harness:
             PERSONA,
             load_templates(),
             db_usage_sink(self.db_file),
+            events,
         )
 
     def query(self, sql: str) -> list[tuple]:
@@ -199,3 +207,62 @@ def test_sentence_length_counts_punctuation():
     assert overlong_sentences("a" * 39 + "。") == []
     assert overlong_sentences("a" * 40 + "。") == ["a" * 40 + "。"]
     assert overlong_sentences("短句一。" + "字" * 41) == ["字" * 41]
+
+
+class RecordingEvents:
+    def __init__(self) -> None:
+        self.log: list[tuple] = []
+
+    def status(self, state):
+        self.log.append(("status", state))
+
+    def chunk(self, message_id, text):
+        self.log.append(("chunk", message_id, text))
+
+    def done(self, message_id, text):
+        self.log.append(("done", message_id, text))
+
+
+def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
+    events = RecordingEvents()
+    harness = Harness(tmp_path, ["第一句。第二句！"], events=events)
+    result = harness.chat.reply("你好")
+    kinds = [entry[0] for entry in events.log]
+    assert kinds == ["status", "status", "chunk", "chunk", "done", "status"]
+    assert events.log[0] == ("status", "thinking")
+    assert events.log[1] == ("status", "speaking")
+    assert events.log[-1] == ("status", "idle")
+    assert events.log[4] == ("done", result.message_id, "第一句。第二句！")
+
+
+def test_chunks_join_back_to_the_reply(tmp_path: Path):
+    events = RecordingEvents()
+    reply = "你好。\n今天\n\n天气不错……真的！"
+    harness = Harness(tmp_path, [reply], events=events)
+    harness.chat.reply("你好")
+    chunks = [entry[2] for entry in events.log if entry[0] == "chunk"]
+    assert "".join(chunks) == reply
+
+
+def test_failed_reply_still_returns_status_to_idle(tmp_path: Path):
+    events = RecordingEvents()
+    harness = Harness(tmp_path, [RuntimeError("down")], events=events)
+    with pytest.raises(ChatError):
+        harness.chat.reply("你好")
+    assert events.log == [("status", "thinking"), ("status", "idle")]
+
+
+def test_history_returns_newest_first_with_has_more(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    harness.chat.reply("一")
+    harness.chat.reply("二")
+    records, has_more = harness.chat.history(
+        keyword=None, date_from=None, date_to=None, limit=3, offset=0
+    )
+    assert [record.content for record in records] == [SHORT, "二", SHORT]
+    assert has_more is True
+    records, has_more = harness.chat.history(
+        keyword=None, date_from=None, date_to=None, limit=3, offset=3
+    )
+    assert [record.content for record in records] == ["一"]
+    assert has_more is False

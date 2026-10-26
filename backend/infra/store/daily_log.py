@@ -30,9 +30,21 @@ class DbDailyLog:
         keyword: str | None = None,
         date_from: str | None = None,
         date_to: str | None = None,
+        *,
+        newest_first: bool = False,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[DailyLogRecord]:
         conn = connect(self._db_file)
         try:
-            return daily_log.search(conn, keyword, date_from, date_to)
+            return daily_log.search(
+                conn,
+                keyword,
+                date_from,
+                date_to,
+                newest_first=newest_first,
+                limit=limit,
+                offset=offset,
+            )
         finally:
             conn.close()
