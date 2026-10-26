@@ -5,6 +5,7 @@ import type {
   ChatHistoryQuery,
   ChatHistoryResponse,
   ChatReplyResponse,
+  CoreMemoriesResponse,
   DeleteMemoryResponse,
   LlmProvidersResponse,
   MemoriesQuery,
@@ -80,6 +81,32 @@ export function deleteMemory(client: ApiClient, memoryId: string): Promise<Delet
     "DELETE",
     `/api/memories/${encodeURIComponent(memoryId)}`,
   );
+}
+
+export function addCoreMemory(client: ApiClient, memoryId: string): Promise<CoreMemoriesResponse> {
+  return request<CoreMemoriesResponse>(client, "POST", "/api/memories/core", {
+    body: { memory_id: memoryId },
+  });
+}
+
+export function removeCoreMemory(
+  client: ApiClient,
+  memoryId: string,
+): Promise<CoreMemoriesResponse> {
+  return request<CoreMemoriesResponse>(
+    client,
+    "DELETE",
+    `/api/memories/core/${encodeURIComponent(memoryId)}`,
+  );
+}
+
+export function reorderCoreMemory(
+  client: ApiClient,
+  memoryIds: string[],
+): Promise<CoreMemoriesResponse> {
+  return request<CoreMemoriesResponse>(client, "PUT", "/api/memories/core/order", {
+    body: { memory_ids: memoryIds },
+  });
 }
 
 export function setMemoryTemporaryMode(

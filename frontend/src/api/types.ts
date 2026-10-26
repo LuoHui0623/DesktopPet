@@ -147,3 +147,7 @@ export interface DeleteMemoryResponse {
 export interface TemporaryModeResponse {
   temporary_mode: boolean;
 }
+
+export interface CoreMemoriesResponse {
+  core_ids: string[];
+}

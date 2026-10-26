@@ -23,7 +23,7 @@ pub fn open_chat_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {
-    open_or_focus(app, SETTINGS_WINDOW_LABEL, SETTINGS_PAGE, "设置", (480.0, 600.0))
+    open_or_focus(app, SETTINGS_WINDOW_LABEL, SETTINGS_PAGE, "设置", (560.0, 680.0))
 }
 
 fn open_or_focus(

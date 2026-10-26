@@ -1,6 +1,23 @@
 {
   "operations": [
     {
+      "operationId": "add_core_memory",
+      "method": "POST",
+      "path": "/api/memories/core",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/CoreAddRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/CoreMemoriesResponse"
+        },
+        "422": null
+      }
+    },
+    {
       "operationId": "delete_memory",
       "method": "DELETE",
       "path": "/api/memories/{memory_id}",
@@ -125,6 +142,38 @@
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ReloadResponse"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "remove_core_memory",
+      "method": "DELETE",
+      "path": "/api/memories/core/{memory_id}",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/CoreMemoriesResponse"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "reorder_core_memory",
+      "method": "PUT",
+      "path": "/api/memories/core/order",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/CoreOrderRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/CoreMemoriesResponse"
         },
         "422": null
       }
@@ -468,6 +517,53 @@
           "text"
         ],
         "title": "ChatRequest",
+        "type": "object"
+      },
+      "CoreAddRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_id": {
+            "title": "Memory Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_id"
+        ],
+        "title": "CoreAddRequest",
+        "type": "object"
+      },
+      "CoreMemoriesResponse": {
+        "properties": {
+          "core_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Core Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "core_ids"
+        ],
+        "title": "CoreMemoriesResponse",
+        "type": "object"
+      },
+      "CoreOrderRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "memory_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Memory Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "memory_ids"
+        ],
+        "title": "CoreOrderRequest",
         "type": "object"
       },
       "DailyRecordOut": {
