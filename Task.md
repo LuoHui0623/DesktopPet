@@ -47,7 +47,7 @@
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 已完成 |
 | T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 已完成 |
 | T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 已完成 |
-| T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 待办 |
+| T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 已完成 |
 | T-035 | 核心典藏（最多 20 条） | T-030 | 待办 |
 | T-036 | 对话接入记忆（上下文组装、每日 reset） | T-025、T-033、T-035 | 待办 |
 | T-037 | 记忆管理接口：`/api/memories` 与临时模式 | T-023、T-030、T-035 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-034 结构化记忆写入与编辑（依赖 T-033，已满足）
+- 下一步：T-035 核心典藏（依赖 T-030，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -424,15 +424,24 @@
 
 **依赖**：T-033
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：关键词在 `skills.py` 中绑定一条能力描述；命中后由 sub agent 写入结构化记忆 JSON，写入后告知用户。编辑直接覆盖内容，不保留历史，不设有效期。敏感信息（证件号、银行卡、密码、健康细节）拒绝写入并给出原因。临时模式下不写入。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 关键词命中后写入一条并告知用户
-- [ ] 敏感信息被拒绝，并返回原因
-- [ ] 临时模式下不写入
-- [ ] 编辑后索引更新
+**验收/验证结果**：
+- [x] 关键词命中后写入一条并告知用户（方式：`tests/service/test_memory_capture.py::test_keyword_writes_one_memory_and_tells_the_user`；结果：通过）
+- [x] 敏感信息被拒绝，并返回原因（方式：`tests/service/test_memory_writer.py::test_sensitive_information_is_rejected_with_reason`、`tests/service/test_memory_capture.py::test_sensitive_text_is_refused_without_calling_the_model`；结果：通过）
+- [x] 临时模式下不写入（方式：`tests/service/test_memory_writer.py::test_temporary_mode_blocks_creating_and_editing`、`tests/service/test_memory_capture.py::test_temporary_mode_refuses_without_calling_the_model`；结果：通过）
+- [x] 编辑后索引更新（方式：`tests/service/test_memory_writer.py::test_revise_overwrites_content_without_history_and_refreshes_index`、`tests/service/test_memory_capture.py::test_editing_overwrites_existing_memory_and_updates_index`；结果：通过）
+- 备注：
+  - 关键词为 `记住`、`记一下`、`我喜欢`，绑定在 `memory_write_skill()`（`service/agent/skills.py`），能力名 `记忆写入`，可用工具为 `memory_index`、`memory_read`、`memory_create`、`memory_update`。
+  - `MemoryCapture`（`service/agent/memory_capture.py`）的顺序：未命中关键词则不触发；临时模式开启则直接拒绝；敏感信息在服务端规则检测，直接拒绝，不调用模型；通过后派发 sub agent。
+  - 写入分两层检查：服务端 `MemoryWriter` 在新增和编辑时都检查临时模式与敏感信息，工具调用也经过它，因此模型无法绕过。
+  - 工具失败时以失败返回，并附具体原因，不依赖 sub agent 的措辞；通知文本取 sub agent 的最终输出，失败时取拒绝原因。
+  - 敏感规则（`service/memory/sensitive.py`）：证件号（18 位身份证号，或护照、身份证、驾驶证、社保卡后接字母数字串）、银行卡号（16–19 位数字）、密码与口令、健康细节（确诊、诊断、病历、过敏、抑郁、癌症、糖尿病、高血压、化疗、手术、住院）。这是基于关键词的保守规则，可能误伤普通语句，后续可按实际使用调整。
+  - `source.type` 取 `keyword` 或 `explicit`，`source.date` 取写入当天；编辑直接覆盖，不保留历史，不设有效期。
+  - 尚未接入 `main.py`，由 T-036 的对话流程调用。
+  - 全量测试 407 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 46c424f
 
 ### T-035 核心典藏
 
