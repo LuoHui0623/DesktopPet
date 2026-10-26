@@ -42,7 +42,7 @@
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 已完成 |
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 已完成 |
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 已完成 |
-| T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 待办 |
+| T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 已完成 |
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 待办 |
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 待办 |
 | T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-029 agent 文件工具（依赖 T-028，已满足）
+- 下一步：T-030 结构化记忆存储（依赖 T-023，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -328,14 +328,15 @@
 
 **依赖**：T-028
 
-**任务状态**：待办。草稿本写入不需要用户确认（Q-6 已定，权限由 T-028 的 `access.py` 承担）。
+**任务状态**：已完成。草稿本写入不需要用户确认（Q-6 已定，权限由 T-028 的 `access.py` 承担）。
 
 **范围**：`service/agent/tools/file.py` 暴露读取、写入、编辑、清空四个工具，内部调用 T-028 的 IO 与权限。失败时返回错误原因（A-21）。草稿本文件名在使用处与 `RESOURCE_DIR` 拼接。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 工具返回结构化结果
-- [ ] 失败时返回可读的错误原因
-- [ ] 不允许的路径不会触发写入
+**验收/验证结果**：
+- [x] 工具返回结构化结果（方式：`tests/service/test_agent_file_tools.py::test_write_then_read_returns_structured_results`；结果：通过）
+- [x] 失败时返回可读的错误原因（方式：`test_missing_file_returns_readable_reason`、`test_out_of_range_edit_returns_reason`；结果：通过）
+- [x] 不允许的路径不会触发写入（方式：`test_path_traversal_is_denied_and_does_not_write`、`test_absolute_path_outside_root_is_denied_and_does_not_write`、`test_denied_edit_and_clear_do_not_touch_existing_file`；结果：通过）
+- 备注：四个工具为 `file_read`、`file_write`、`file_edit`、`file_clear`，用 LangChain `@tool` 装饰，供 T-033 的 sub agent 绑定；工具接收资源库内的相对路径，在使用处与 `RESOURCE_DIR` 拼接，之后经 T-028 的权限检查；结果为 `{ok, action, path, content, error}`；`file_edit` 按段落序号替换，与 T-028 一致；工厂函数 `make_file_tools(root)` 便于测试注入临时目录；全量测试 305 项通过，3 项因环境限制跳过（见 T-028），ruff 检查和格式检查通过；提交号 b2e9cfb
 
 ### T-030 结构化记忆存储
 
