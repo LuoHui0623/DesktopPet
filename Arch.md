@@ -58,7 +58,7 @@
 
 退出过程：停止接收新连接 → 等待在途请求（最多 5 秒，`GRACEFUL_SHUTDOWN_SECONDS`）→ 记录退出原因 → 关闭数据库日志处理器，写完所有未满批次。
 - 重复的退出请求被忽略，保留第一次的原因。
-- Tauri 核心应以带可写 stdin 的方式启动后端（`tauri-plugin-shell` 的 spawn，并保持 stdin 管道打开），不要关闭或忽略 stdin，否则后端会马上退出。
+- Tauri 核心应以带可写 stdin 的方式启动后端（标准库 `std::process`，stdin、stdout、stderr 均为管道），并保持 stdin 打开，不要关闭或忽略 stdin，否则后端会马上退出。选择标准库而非 `tauri-plugin-shell`，是因为它不需要任何 shell 权限。
 - 强制结束（`TerminateProcess`）不经过上述路径，仍会丢失未写入的日志，因此正常退出应使用上述通道。
 - **父进程异常结束的限制**：Windows 上父进程（Tauri 核心）被异常结束（崩溃、任务管理器结束）时，仍在运行的子进程会被系统一并结束，后端无法完成优雅退出。这由进程模型决定，无法在后端内避免。影响是未写入的日志丢失（最多一个未满批次），单实例锁由系统释放，之后可立即重新启动。
 - Tauri 应用正常退出时，Rust 核心先向后端 stdin 写入 `shutdown` 指令，等待后端完成退出后再结束应用。
@@ -69,7 +69,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 桌面壳 | Tauri 2（Rust 核心），`tauri-plugin-shell` 拉起后端 |
+| 桌面壳 | Tauri 2（Rust 核心），标准库 `std::process` 拉起后端 |
 | 界面 | React + TypeScript + Vite |
 | 样式 | Tailwind CSS |
 | 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
@@ -125,17 +125,15 @@ frontend/
 │
 ├─ src-tauri/                 # Tauri 核心（Rust）
 │  ├─ Cargo.toml              # Rust 依赖
-│  ├─ tauri.conf.json         # 窗口、打包与插件配置
-│  ├─ capabilities/           # 权限白名单：界面可调用的命令与插件
+│  ├─ build.rs                # 构建脚本：声明应用命令（get_backend_info）
+│  ├─ tauri.conf.json         # 应用配置、CSP、打包；窗口由代码在后端就绪后创建
+│  ├─ capabilities/           # 权限白名单：悬浮窗只能调用 get_backend_info
 │  └─ src/
-│     ├─ main.rs              # 入口：应用生命周期
-│     ├─ windows.rs           # 窗口创建与管理：悬浮形象（透明、置顶、记住位置）、对话窗口、设置窗口
-│     ├─ tray.rs              # 托盘图标与菜单
-│     ├─ shortcuts.rs         # 全局快捷键（紧急停止等）
-│     ├─ autostart.rs         # 开机自启
-│     └─ backend/             # 后端进程管理
-│        ├─ launcher.rs       # 启动后端，读取端口握手
-│        └─ supervisor.rs     # 监控存活、退出联动、异常提示
+│     ├─ main.rs              # 入口
+│     ├─ lib.rs               # 应用装配、应用命令、退出联动、启动失败与意外退出的提示
+│     ├─ backend.rs           # 后端进程：拉起（端口握手、令牌）、监控、stdin 退出
+│     └─ window.rs            # 悬浮窗创建（透明、置顶、无边框）
+│     # 托盘、快捷键、开机自启尚未实现，由后续任务补充
 │
 └─ src/                       # 渲染进程（React）
    ├─ app/                    # 【应用层】入口与装配，不含业务

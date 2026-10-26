@@ -50,9 +50,9 @@
 
 **M0「骨架」已完成**（标签 `m0-skeleton`）。当前可以运行的内容：
 
-- Electron 启动后自动拉起 Python 后端，读取端口并建立连接，窗口显示后端健康状态。（壳当前仍为 Electron，待迁移到 Tauri 2，见 Task.md D-12。）
+- Tauri 启动后自动拉起 Python 后端，读取端口并建立连接，窗口显示后端健康状态。
 - 后端：配置解析（`.env`、`llm.yaml`、`PET_*`）、LLM 三种接口范式的装配与热更新、SQLite 连接与迁移、文件日志与数据库日志（批量写入）、单实例锁、三种安全退出通道（stdin、HTTP、信号）、令牌鉴权与健康检查。
-- 前端：Electron 骨架、preload 白名单、接口契约生成（`npm run gen:api`）、api 层与健康检查。
+- 前端：Tauri 壳（后端拉起与退出联动、悬浮窗、最小权限的应用命令）、接口契约生成（`npm run gen:api`）、api 层、WebSocket 连接与健康检查。
 - 代码检查：ruff（后端），ESLint 与 Prettier（前端），pre-commit 钩子覆盖两者。
 
 尚未实现：对话、记忆、天气、主动消息、能力扩展、聊天记录导入等功能，见 PRD §8 的 M1–M6。
@@ -127,7 +127,7 @@ npm install
 npm run dev
 ```
 
-开发模式下，Electron 会自动拉起后端，无需单独启动。
+开发模式下，Tauri 会自动拉起后端，无需单独启动。运行前需要安装 Rust 工具链（stable，MSVC 版）。
 
 ### 5. 运行测试
 

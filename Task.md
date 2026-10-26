@@ -52,7 +52,7 @@
 | T-036 | 对话接入记忆（上下文组装、每日 reset） | T-025、T-033、T-035 | 已完成 |
 | T-037 | 记忆管理接口：`/api/memories` 与临时模式 | T-023、T-030、T-035 | 已完成 |
 | T-038 | 前端接口层与契约重新生成 | T-022、T-027、T-037 | 已完成 |
-| T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 待办 |
+| T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 已完成 |
 | T-040 | 悬浮窗（占位形象与状态标签） | T-026、T-039 | 待办 |
 | T-041 | 对话窗口（多轮、流式、历史与搜索） | T-038、T-039 | 待办 |
 | T-042 | 设置页：模型（列表、可用性、切换、重载） | T-022、T-038、T-039 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-039 桌面壳迁移到 Tauri 2（无依赖；D-12 已定，需安装 Tauri 工具链与改写 `frontend/electron/`，并保持 M0 行为）
+- 下一步：T-040 悬浮窗（占位形象与状态标签）（依赖 T-026、T-039，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -536,7 +536,7 @@
 
 **依赖**：无（M0 已完成）
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：
 - 工具链：Rust stable（MSVC）与 Tauri CLI；Rust 核心位于 `frontend/src-tauri/`。
@@ -545,13 +545,22 @@
 - 窗口：悬浮窗（透明、置顶）与对话、设置窗口的创建入口；托盘、开机自启、全局快捷键按 Arch 保留，可在对应功能任务中补全。
 - 删除 `frontend/electron/`、`electron.vite.config.ts` 及 Electron 相关依赖；`dev` / `build` / `start` 脚本改为 Tauri 命令；`tests/main/` 按新结构重写。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 启动后自动拉起后端，窗口显示健康状态，行为与 M0 一致
-- [ ] 正常退出时后端经 stdin 收到 `shutdown` 并完成日志写入
-- [ ] 界面不能直接访问文件系统与进程执行（权限配置检查）
-- [ ] 令牌不出现在 URL 与日志中
-- [ ] `cargo clippy` 与 `npm run check` 通过
-- [ ] 旧 `frontend/electron/` 目录已删除
+**验收/验证结果**：
+- [x] 启动后自动拉起后端，窗口显示健康状态，行为与 M0 一致（方式：冒烟运行 `cargo run`，后端在 20:36:21 启动并监听端口，窗口创建成功；启动后 Vite 控制台无健康检查报错；结果：通过。界面上健康文字未做截图目视核验，待 T-044 端到端验证时补充）
+- [x] 正常退出时后端经 stdin 收到 `shutdown` 并完成日志写入（方式：冒烟运行中关闭窗口，后端日志记录"后端已退出，退出原因：stdin 指令"（20:36:55）；Rust 测试 `real_backend_starts_serves_with_token_and_shuts_down_gracefully` 同样验证；结果：通过）
+- [x] 界面不能直接访问文件系统与进程执行（方式：Rust 测试 `pet_window_only_gets_the_backend_info_command`，检查悬浮窗的权限仅为 `core:default` 与 `allow-get-backend-info`，不含 fs、shell、process 等；结果：通过）
+- [x] 令牌不出现在 URL 与日志中（方式：Rust 测试检查后端日志不含令牌；令牌经环境变量传给后端、经 `invoke` 传给界面，WebSocket 经子协议传递（T-038）；结果：通过）
+- [x] `cargo clippy` 与 `npm run check` 通过（方式：`cargo clippy --all-targets -- -D warnings` 退出码 0；`npm run check` 通过；另有 `cargo test` 6 项、`npx vitest run` 38 项、`npm run typecheck` 通过；结果：通过）
+- [x] 旧 `frontend/electron/` 目录已删除（方式：目录与 electron 相关依赖、脚本、测试均已移除；结果：通过）
+- 备注：
+  - 后端拉起与退出逻辑（`src-tauri/src/backend.rs`）沿用 M0：`PET_PORT=0` 与随机令牌经环境变量传入，首行 `PET_PORT=` 握手，启动超时 15 秒，退出时写入 `shutdown` 并等待，8 秒后强制结束；意外退出弹出错误框并关闭应用。
+  - 拉起使用标准库 `std::process` 而非 `tauri-plugin-shell`（已同步 Arch），不需要任何 shell 权限。
+  - 窗口在后端就绪后由代码创建（`window.rs`），tauri.conf.json 的 `windows` 为空，避免界面早于后端启动。
+  - 应用命令 `get_backend_info` 经 `build.rs` 声明，只在 `capabilities/default.json` 中授权给悬浮窗。
+  - 冒烟测试中发现并修复一个问题：界面请求后端时被浏览器的跨域策略拦截（后端未配置 CORS）。`api/app.py` 增加 CORS 中间件，只允许桌面壳页面的来源（Tauri 各平台来源与 `http://localhost:1420`），令牌校验不变，测试见 `tests/api/test_cors.py`。
+  - Vite 配置与 vitest 配置改为 `.mjs`，消除 `configLoader` 警告；vitest 的根目录单独配置，避免被 Vite 的 `root: src` 影响。
+  - 托盘、全局快捷键、开机自启不在 M0 范围内，Arch 中保留，由后续任务补充；打包（`tauri build`）未在本任务中执行。
+  - 提交号：后端 CORS `0babd2c`，桌面壳迁移 `1f07e39`，文档随本次提交记录
 
 ### T-040 悬浮窗（占位形象与状态标签）
 
