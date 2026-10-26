@@ -3,6 +3,7 @@ from typing import Any
 
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
+from starlette.middleware.cors import CORSMiddleware
 
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
@@ -36,8 +37,22 @@ def create_app(
     app.include_router(memory_routes.router)
     app.include_router(ws.router)
     app.add_middleware(TokenAuthMiddleware, token=token)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(RENDERER_ORIGINS),
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+        allow_headers=["Content-Type", "X-Pet-Token"],
+    )
     _include_event_schemas(app)
     return app
+
+
+RENDERER_ORIGINS = (
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+    "http://localhost:1420",
+)
 
 
 def _include_event_schemas(app: FastAPI) -> None:
