@@ -36,7 +36,7 @@
 | T-020 | 迁移 0003：llm_usage 扩展、agent_run、旧表清理 | — | 已完成 |
 | T-021 | LLM 用量记录（client 包装） | T-020 | 已完成 |
 | T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 已完成 |
-| T-023 | daily_log 存储与临时模式写入控制 | — | 待办 |
+| T-023 | daily_log 存储与临时模式写入控制 | — | 已完成 |
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 进行中 |
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 待办 |
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-023 daily_log 存储与临时模式写入控制（无依赖）
+- 下一步：T-024 提示词构建（进行中，依赖 T-018、T-019 已满足，剩余资源库段、发言规则段、固定约束、模板哈希、启动校验）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -221,14 +221,15 @@
 
 **依赖**：无
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`infra/store/repositories/daily_log.py` 提供写入、按日期读取完整记录、按日期与关键词查询（仓储只返回数据）。临时模式状态来自 `app_setting`（键 `memory.temporary_mode`），开关与写入控制在服务层判断。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 每轮对话写入两条记录，时间为带时区的 ISO 8601
-- [ ] 临时模式开启时不写入
-- [ ] 按日期读取返回该日完整记录，按时间正序
+**验收/验证结果**：
+- [x] 每轮对话写入两条记录，时间为带时区的 ISO 8601（方式：`tests/service/test_daily_log_service.py::test_each_turn_writes_user_and_assistant_records`、`tests/infra/test_daily_log.py::test_timestamps_are_stored_with_timezone`；结果：通过）
+- [x] 临时模式开启时不写入（方式：`test_temporary_mode_blocks_writes`、`test_temporary_mode_is_stored_in_app_setting`；结果：通过）
+- [x] 按日期读取返回该日完整记录，按时间正序（方式：`tests/infra/test_daily_log.py::test_by_date_is_ascending_and_limited_to_the_day`；结果：通过）
+- 备注：日期按 `PET_TIMEZONE` 计算；临时模式状态存于 `app_setting`（键 `memory.temporary_mode`）；每轮两条记录在同一事务中写入；搜索（关键词与日期范围）已提供，供 T-027 使用；全量测试 228 项通过，ruff 检查和格式检查通过；提交号 a6f5fa8
 
 ### T-024 提示词构建
 
