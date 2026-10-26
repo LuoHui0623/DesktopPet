@@ -41,7 +41,7 @@
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 已完成 |
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 已完成 |
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 已完成 |
-| T-028 | 文件 IO 与权限（`infra/files`） | — | 待办 |
+| T-028 | 文件 IO 与权限（`infra/files`） | — | 已完成 |
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 待办 |
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 待办 |
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-028 文件 IO 与权限（无依赖）
+- 下一步：T-029 agent 文件工具（依赖 T-028，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -309,16 +309,18 @@
 
 **依赖**：无
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：
 - `infra/files/io.py`：读取、按行读取、写入、替换段落、清空。只负责读写，不判断权限。
 - `infra/files/access.py`：允许根目录来自 `constants/path.py` 的 `RESOURCE_DIR`；路径规范化；拒绝 `..` 穿越与符号链接逃逸；读、写分别校验。允许范围内的写入（含草稿本）不需要用户确认。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 允许根目录之外的读写被拒绝，并返回原因
-- [ ] 指向允许根目录之外的符号链接被拒绝
-- [ ] 允许范围内的读写正常
+**验收/验证结果**：
+- [x] 允许根目录之外的读写被拒绝，并返回原因（方式：`tests/infra/test_files_access.py::test_absolute_path_outside_root_is_denied_with_reason`、`test_parent_traversal_is_denied_with_reason`、`test_read_and_write_are_checked_separately`；结果：通过）
+- [x] 指向允许根目录之外的符号链接被拒绝（方式：`tests/infra/test_files_access.py::test_junction_escape_is_denied_for_write`，用目录联接验证目录逃逸；结果：通过）
+- [ ] 文件符号链接的拒绝（`test_symlink_pointing_outside_is_denied`、`test_directory_symlink_escape_is_denied_for_write`）在本机跳过：Windows 创建符号链接需要开发者模式或管理员权限，当前环境不具备。这两项需要在具备权限的环境中补跑。
+- [x] 允许范围内的读写正常（方式：`test_relative_path_inside_root_is_allowed_for_read_and_write`、`test_absolute_path_inside_root_is_allowed`、`tests/infra/test_files_io.py`；结果：通过）
+- 备注：`io.py` 只做读写，不判断权限；`access.py` 的 `check_read` / `check_write` 分别校验，根目录来自 `constants/path.py` 的 `RESOURCE_DIR`；拒绝原因包括 `..` 穿越、路径不在允许目录内、符号链接或目录联接指向允许目录之外；段落替换按空行分段，按段落序号替换（序号从 1 开始）；全量测试 294 项通过，3 项因环境限制跳过，ruff 检查和格式检查通过；提交号 983f3a2
 
 ### T-029 agent 文件工具
 
