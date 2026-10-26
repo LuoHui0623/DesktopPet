@@ -34,7 +34,7 @@
 | T-018 | 角色卡加载与校验 | — | 已完成 |
 | T-019 | 角色卡版本记录（`persona_version`） | T-018 | 已完成 |
 | T-020 | 迁移 0003：llm_usage 扩展、agent_run、旧表清理 | — | 已完成 |
-| T-021 | LLM 用量记录（client 包装） | T-020 | 待办 |
+| T-021 | LLM 用量记录（client 包装） | T-020 | 已完成 |
 | T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 待办 |
 | T-023 | daily_log 存储与临时模式写入控制 | — | 待办 |
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 进行中 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-021 LLM 用量记录（依赖 T-020，已满足）
+- 下一步：T-022 当前模型接口（依赖 T-021，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -188,15 +188,16 @@
 
 **依赖**：T-020
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`infra/llm/usage.py` 包装 LangChain client。每次 invoke 记录 provider、model、purpose、run_id（可空）、tokens_in / tokens_out（来自返回，不可得记 NULL）、usage_raw（JSON）、started_at、finished_at、latency_ms、success。时间为带时区 ISO 8601。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 正常调用写入一条记录
-- [ ] 失败调用写入 success = 0
-- [ ] token 不可得时为 NULL，不估算
-- [ ] 时间字段为带时区的 ISO 8601
+**验收/验证结果**：
+- [x] 正常调用写入一条记录（方式：`tests/infra/test_llm_usage.py::test_db_sink_writes_success_and_failure_rows`、`test_successful_call_writes_one_record`；结果：通过）
+- [x] 失败调用写入 success = 0（方式：`test_failed_call_writes_success_zero_and_reraises`、数据库测试；结果：通过）
+- [x] token 不可得时为 NULL，不估算（方式：`test_missing_usage_is_recorded_as_null_not_estimated`；结果：通过）
+- [x] 时间字段为带时区的 ISO 8601（方式：`test_timestamps_are_timezone_aware_iso8601`；结果：通过）
+- 备注：通过 `usage_scope` 传入 purpose 与 run_id；`LlmService.client_for` 返回的包装对象同样记录用量（`test_client_for_records_usage_through_sink`）；目前只包装 `invoke` 与 `ainvoke`，流式调用的记录留给 T-026 / T-027；`prompt_hash` 留给 T-024 写入；全量测试 204 项通过；提交号 85a62c2
 
 ### T-022 当前模型接口
 
