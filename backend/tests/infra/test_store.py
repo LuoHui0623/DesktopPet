@@ -1,3 +1,4 @@
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -9,12 +10,9 @@ from infra.store.migrate import MigrationError, migrate, split_statements
 
 EXPECTED_TABLES = {
     "daily_log",
-    "daily_summary",
-    "memory",
-    "memory_archive",
     "core_memory",
-    "consolidation_run",
     "llm_usage",
+    "agent_run",
     "persona_version",
     "behavior_event",
     "proactive_feedback",
@@ -60,7 +58,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3]
     assert EXPECTED_TABLES <= tables(conn)
 
 
@@ -68,7 +66,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
     migrate(conn)
     assert migrate(conn) == []
     rows = conn.execute("SELECT version, name FROM schema_version").fetchall()
-    assert [tuple(row) for row in rows] == [(1, "init"), (2, "log_record")]
+    assert [tuple(row) for row in rows] == [(1, "init"), (2, "log_record"), (3, "agent")]
 
 
 def test_schema_version_records_checksum(conn: sqlite3.Connection):
@@ -89,11 +87,9 @@ def test_foreign_key_is_enforced(conn: sqlite3.Connection):
 @pytest.mark.parametrize(
     "statement",
     [
-        "INSERT INTO memory (category, content, explicit, valid_from, updated_at) "
-        "VALUES ('unknown', 'x', 1, '2026-10-24', 'x')",
-        "INSERT INTO memory (category, content, explicit, importance, valid_from, updated_at) "
-        "VALUES ('preference', 'x', 1, 9, '2026-10-24', 'x')",
         "INSERT INTO llm_usage (provider, model, success, created_at) VALUES ('p', 'm', 2, 'x')",
+        "INSERT INTO agent_run (id, session_id, capability, instruction, status, started_at) "
+        "VALUES ('r', 's', 'c', 'i', 'unknown', 'x')",
     ],
 )
 def test_check_constraints_are_enforced(conn: sqlite3.Connection, statement: str):
@@ -183,3 +179,90 @@ def test_split_statements_keeps_semicolons_inside_strings():
     statements = split_statements(sql)
     assert len(statements) == 2
     assert "'a;b'" in statements[0]
+
+
+def test_legacy_memory_tables_are_removed(conn: sqlite3.Connection):
+    migrate(conn)
+    for name in ("memory", "memory_archive", "daily_summary", "consolidation_run"):
+        assert name not in tables(conn)
+
+
+def test_core_memory_references_text_id(conn: sqlite3.Connection):
+    migrate(conn)
+    conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES ('mem-001', 1)")
+    row = conn.execute("SELECT memory_id, typeof(memory_id) FROM core_memory").fetchone()
+    assert tuple(row) == ("mem-001", "text")
+
+
+def test_llm_usage_has_agent_columns(conn: sqlite3.Connection):
+    migrate(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_usage)")}
+    assert {
+        "purpose",
+        "run_id",
+        "started_at",
+        "finished_at",
+        "usage_raw",
+        "prompt_hash",
+    } <= columns
+
+
+def test_agent_run_columns(conn: sqlite3.Connection):
+    migrate(conn)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(agent_run)")}
+    assert columns == {
+        "id",
+        "session_id",
+        "capability",
+        "instruction",
+        "steps",
+        "output",
+        "status",
+        "error_code",
+        "started_at",
+        "finished_at",
+    }
+
+
+def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Path):
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    for name in ("0001_init.sql", "0002_log_record.sql"):
+        shutil.copy(MIGRATIONS_DIR / name, old_dir / name)
+
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn, old_dir) == [1, 2]
+        conn.execute(
+            "INSERT INTO llm_usage (provider, model, success, created_at) "
+            "VALUES ('deepseek', 'deepseek-flash', 1, '2026-10-25T10:00:00+08:00')"
+        )
+        conn.execute("INSERT INTO daily_summary (date, summary) VALUES ('2026-10-24', 'x')")
+        conn.execute(
+            "INSERT INTO memory (category, content, explicit, valid_from, updated_at) "
+            "VALUES ('preference', 'x', 1, '2026-10-24', 'x')"
+        )
+        conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES (1, 1)")
+
+        assert migrate(conn) == [3]
+
+        usage = conn.execute(
+            "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_usage"
+        ).fetchone()
+        assert tuple(usage) == ("deepseek", "deepseek-flash", 1, None, None, None)
+        assert "memory" not in tables(conn)
+        assert "daily_summary" not in tables(conn)
+        assert conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0] == 0
+        versions = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
+        assert [tuple(row) for row in versions] == [(1,), (2,), (3,)]
+    finally:
+        conn.close()
+
+
+def test_migration_runs_on_empty_database(tmp_path: Path):
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn) == [1, 2, 3]
+        assert migrate(conn) == []
+    finally:
+        conn.close()
