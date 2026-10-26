@@ -116,6 +116,56 @@ def test_invalid_persona_exits_with_error(tmp_path: Path):
     assert "角色卡配置错误" in stderr
 
 
+def persona_versions(data_dir: Path) -> list[tuple[int, str]]:
+    import sqlite3
+
+    if not (data_dir / "pet.db").exists():
+        return []
+    conn = sqlite3.connect(data_dir / "pet.db")
+    try:
+        return [
+            (row[0], row[1])
+            for row in conn.execute("SELECT version, content FROM persona_version ORDER BY version")
+        ]
+    finally:
+        conn.close()
+
+
+def test_persona_version_is_recorded_on_startup(tmp_path: Path):
+    persona_file = tmp_path / "persona.yaml"
+    persona_file.write_text("role:\n  name: 小桌\n", encoding="utf-8")
+    extra = {"PET_PERSONA_FILE": str(persona_file)}
+
+    first = start_with_data_dir(tmp_path, **extra)
+    assert first.stdout.readline().startswith("PET_PORT=")
+    first.stdin.close()
+    assert first.communicate(timeout=20)[0] == ""
+    assert [version for version, _ in persona_versions(tmp_path)] == [1]
+
+    persona_file.write_text("role:\n  name: 小宠\n", encoding="utf-8")
+    second = start_with_data_dir(tmp_path, **extra)
+    assert second.stdout.readline().startswith("PET_PORT=")
+    second.stdin.close()
+    assert second.communicate(timeout=20)[0] == ""
+    assert [version for version, _ in persona_versions(tmp_path)] == [1, 2]
+
+    third = start_with_data_dir(tmp_path, **extra)
+    assert third.stdout.readline().startswith("PET_PORT=")
+    third.stdin.close()
+    assert third.communicate(timeout=20)[0] == ""
+    assert [version for version, _ in persona_versions(tmp_path)] == [1, 2]
+
+
+def test_invalid_persona_does_not_write_version(tmp_path: Path):
+    persona_file = tmp_path / "persona.yaml"
+    persona_file.write_text("role: [unclosed\n", encoding="utf-8")
+    process = start_with_data_dir(tmp_path, PET_PERSONA_FILE=str(persona_file))
+    stdout, _ = process.communicate(timeout=20)
+    assert process.returncode == 1
+    assert stdout == ""
+    assert persona_versions(tmp_path) == []
+
+
 def test_occupied_port_exits_with_error():
     with socket.socket() as occupied:
         occupied.bind(("127.0.0.1", 0))

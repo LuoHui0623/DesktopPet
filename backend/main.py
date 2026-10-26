@@ -1,12 +1,14 @@
 import logging
 import socket
+import sqlite3
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import uvicorn
 
 from api.app import create_app
-from config.persona import PersonaError, load_persona
+from config.persona import PersonaConfig, PersonaError, load_persona
 from config.settings import (
     ModelSettingsError,
     ModelSettingsSource,
@@ -20,6 +22,7 @@ from infra.logging import attach_db_logging, setup_logging
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 from service.llm import LlmService
+from service.persona.persona_service import sync_persona_version
 
 logger = logging.getLogger("pet")
 GRACEFUL_SHUTDOWN_SECONDS = 5
@@ -29,6 +32,15 @@ def initialize_database(data_dir: Path) -> list[int]:
     conn = connect(data_dir / "pet.db")
     try:
         return migrate(conn)
+    finally:
+        conn.close()
+
+
+def record_persona_version(data_dir: Path, persona: PersonaConfig) -> int:
+    conn = connect(data_dir / "pet.db")
+    try:
+        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
+        return sync_persona_version(conn, persona, created_at).version
     finally:
         conn.close()
 
@@ -44,7 +56,7 @@ def bind_socket(host: str, port: int) -> socket.socket:
     return sock
 
 
-def serve(settings: ServiceSettings, llm_service: LlmService) -> int:
+def serve(settings: ServiceSettings, llm_service: LlmService, persona: PersonaConfig) -> int:
     try:
         applied = initialize_database(settings.data_dir)
     except (MigrationError, OSError) as exc:
@@ -55,6 +67,13 @@ def serve(settings: ServiceSettings, llm_service: LlmService) -> int:
         logger.info("数据库迁移完成，已应用版本：%s", applied)
     else:
         logger.info("数据库已是最新版本，无需迁移")
+    try:
+        persona_version = record_persona_version(settings.data_dir, persona)
+    except (sqlite3.Error, OSError) as exc:
+        logger.error("角色卡版本记录失败：%s", exc)
+        print(f"角色卡版本记录失败：{exc}", file=sys.stderr)
+        return 1
+    logger.info("角色卡版本：%s", persona_version)
     db_log = attach_db_logging(
         settings.data_dir / "pet.db",
         queue_size=settings.log_queue_size,
@@ -124,7 +143,7 @@ def main() -> int:
     logger.info("LLM 配置已加载，版本：%s", llm_service.current().version)
 
     try:
-        load_persona(settings.persona_file)
+        persona = load_persona(settings.persona_file)
     except PersonaError as exc:
         for error in exc.errors:
             logger.error("角色卡配置错误：%s", error)
@@ -144,7 +163,7 @@ def main() -> int:
         return 1
 
     try:
-        return serve(settings, llm_service)
+        return serve(settings, llm_service, persona)
     finally:
         lock.release()
 

@@ -13,12 +13,20 @@ class PersonaError(Exception):
         super().__init__("; ".join(errors))
 
 
+def _canonical(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _canonical(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple)):
+        return sorted(set(value))
+    return value
+
+
 @dataclass(frozen=True)
 class PersonaConfig:
     content: Mapping[str, Any]
 
     def to_normalized_json(self) -> str:
-        return json.dumps(self.content, sort_keys=True, ensure_ascii=False)
+        return json.dumps(_canonical(self.content), sort_keys=True, ensure_ascii=False)
 
 
 def _join(location: str, key: str) -> str:
