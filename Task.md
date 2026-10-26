@@ -33,7 +33,7 @@
 |---|---|---|---|
 | T-018 | 角色卡加载与校验 | — | 已完成 |
 | T-019 | 角色卡版本记录（`persona_version`） | T-018 | 已完成 |
-| T-020 | 迁移 0003：llm_usage 扩展、agent_run、旧表清理 | — | 待办 |
+| T-020 | 迁移 0003：llm_usage 扩展、agent_run、旧表清理 | — | 已完成 |
 | T-021 | LLM 用量记录（client 包装） | T-020 | 待办 |
 | T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 待办 |
 | T-023 | daily_log 存储与临时模式写入控制 | — | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-020 迁移 0003（Q-3 已定，无阻塞）
+- 下一步：T-021 LLM 用量记录（依赖 T-020，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -168,7 +168,7 @@
 
 **依赖**：无（旧表处理依赖 Q-3）
 
-**任务状态**：待办。
+**任务状态**：已完成。
 
 **范围**：新增 `0003_agent.sql`：
 - `llm_usage` 增加 `purpose`、`run_id`、`started_at`、`finished_at`、`usage_raw`、`prompt_hash`（SQLite 无法直接改列时新增列）。
@@ -176,10 +176,11 @@
 - 删除 `memory_archive`、`daily_summary`、`consolidation_run`；`memory` 表由 JSON 文件承担，删除或保留按 Q-3 确定。
 - `core_memory.memory_id` 改为引用结构化记忆 id（TEXT）。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 空库与已有库上均可执行
-- [ ] `schema_version` 记录新版本，已应用文件不修改
-- [ ] `tests/infra/test_store.py` 更新并通过
+**验收/验证结果**：
+- [x] 空库与已有库上均可执行（方式：`tests/infra/test_store.py::test_migration_runs_on_empty_database`、`test_migration_upgrades_existing_database_and_keeps_usage_rows`；结果：通过）
+- [x] `schema_version` 记录新版本，已应用文件不修改（方式：`test_second_migrate_is_a_no_op` 的版本列表、校验和检查；`git diff` 显示 0001、0002 未改动；结果：通过）
+- [x] `tests/infra/test_store.py` 更新并通过（方式：pytest；结果：22 项通过）
+- 备注：旧表中的数据为空，`core_memory` 的旧引用不迁移；`agent_run.status` 取值与旧 `consolidation_run` 一致；全量测试 194 项通过，ruff 检查和格式检查通过；提交号 fd3e5d6
 
 ### T-021 LLM 用量记录
 
