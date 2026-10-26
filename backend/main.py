@@ -26,12 +26,14 @@ from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.app_settings import DbAppSettings
+from infra.store.core_memory import DbCoreMemory
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 from service.agent.prompt import PromptError, PromptTemplates, load_templates
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
+from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import StructuredMemoryService
@@ -132,6 +134,7 @@ def serve(
 
     shutdown = ShutdownController()
     event_bus = EventBus()
+    core_memory = CoreMemoryService(DbCoreMemory(db_file), structured_memory)
     chat_service = ChatService(
         llm_service,
         daily_log,
@@ -139,6 +142,9 @@ def serve(
         templates,
         db_usage_sink(db_file),
         BusEventPublisher(event_bus),
+        core=core_memory,
+        structured=structured_memory,
+        timezone=ZoneInfo(settings.timezone),
     )
     app = create_app(
         settings.token.get_secret_value(),

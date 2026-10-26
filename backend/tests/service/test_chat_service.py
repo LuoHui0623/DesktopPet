@@ -266,3 +266,14 @@ def test_history_returns_newest_first_with_has_more(tmp_path: Path):
     )
     assert [record.content for record in records] == ["一"]
     assert has_more is False
+
+
+def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    harness.chat.reply("第一句")
+    harness.chat.reply("第二句")
+    second_call = harness.fake.calls[1]
+    contents = [message.content for message in second_call[1:]]
+    assert contents[0] == "第一句"
+    assert contents[1] == SHORT
+    assert contents[-1] == "第二句"

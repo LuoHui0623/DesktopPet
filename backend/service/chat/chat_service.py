@@ -1,25 +1,31 @@
 import logging
 import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, tzinfo
 from typing import Any, Literal, Protocol
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage
 
 from config.persona import PersonaConfig
 from constants.speech import SENTENCE_MAX_CHARS
 from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
-from service.agent.prompt import PromptTemplates, build_system_prompt
+from service.agent.prompt import PromptTemplates
+from service.chat.context import ContextBuilder, MemoryFragment
 from service.llm import LlmService, LlmUnavailableError
+from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
+from service.memory.memory_service import StructuredMemoryService
 
 logger = logging.getLogger("pet")
 
 SENTENCE = re.compile(r"[^。！？!?…\n]*[。！？!?…]+|[^。！？!?…\n]+|\n")
 MAX_ATTEMPTS = 2
+DEFAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 PetState = Literal["idle", "thinking", "speaking", "executing", "sleeping"]
 
@@ -89,32 +95,42 @@ class ChatService:
         templates: PromptTemplates,
         usage_sink: UsageSink,
         events: ChatEvents | None = None,
+        *,
+        core: CoreMemoryService | None = None,
+        structured: StructuredMemoryService | None = None,
+        timezone: tzinfo | None = None,
+        clock: Callable[[tzinfo], datetime] | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
-        self._persona = persona
-        self._templates = templates
         self._usage_sink = usage_sink
         self._events = events or NoChatEvents()
+        self._context = ContextBuilder(
+            persona,
+            templates,
+            daily_log,
+            timezone or DEFAULT_TIMEZONE,
+            core=core,
+            structured=structured,
+            clock=clock,
+        )
 
-    def reply(self, user_text: str) -> ChatReply:
+    def reply(self, user_text: str, fragments: Sequence[MemoryFragment] = ()) -> ChatReply:
         text = user_text.strip()
         if not text:
             raise ChatError("empty_input", "消息不能为空")
-        prompt = build_system_prompt("chat", self._persona, self._templates)
-        messages: list[BaseMessage] = [
-            SystemMessage(content=prompt.text),
-            HumanMessage(content=text),
-        ]
+        assembled = self._context.build(text, fragments)
+        messages = assembled.messages
+        digest = assembled.template_digest
         try:
             client = self._llm.client_for("chat")
         except LlmUnavailableError as exc:
-            self._record_unavailable(prompt.template_digest)
+            self._record_unavailable(digest)
             raise ChatError("model_unavailable", str(exc)) from exc
 
         self._events.status("thinking")
         try:
-            reply = self._generate(client, messages, prompt.template_digest)
+            reply = self._generate(client, messages, digest)
             recorded = self._daily_log.record_turn(text, reply)
             message_id = uuid4().hex
             self._events.status("speaking")
