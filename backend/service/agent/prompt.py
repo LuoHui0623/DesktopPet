@@ -68,8 +68,8 @@ def _relative(path: Path) -> str:
 
 
 def load_templates(directory: Path = PROMPTS_DIR) -> PromptTemplates:
-    persona_text = _read(directory, PERSONA_TEMPLATE, PERSONA_PLACEHOLDERS)
-    chat_text = _read(directory, CHAT_TEMPLATE, CHAT_PLACEHOLDERS)
+    persona_text = read_template(directory, PERSONA_TEMPLATE, PERSONA_PLACEHOLDERS)
+    chat_text = read_template(directory, CHAT_TEMPLATE, CHAT_PLACEHOLDERS)
     digest = sha256(
         "\n".join([PERSONA_TEMPLATE, persona_text, CHAT_TEMPLATE, chat_text]).encode("utf-8")
     ).hexdigest()
@@ -80,7 +80,7 @@ def load_templates(directory: Path = PROMPTS_DIR) -> PromptTemplates:
     )
 
 
-def _read(directory: Path, name: str, placeholders: frozenset[str]) -> str:
+def read_template(directory: Path, name: str, placeholders: frozenset[str]) -> str:
     path = directory / name
     try:
         text = path.read_text(encoding="utf-8")
