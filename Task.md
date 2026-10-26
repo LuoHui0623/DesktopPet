@@ -54,7 +54,7 @@
 | T-038 | 前端接口层与契约重新生成 | T-022、T-027、T-037 | 已完成 |
 | T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 已完成 |
 | T-040 | 悬浮窗（占位形象与状态标签） | T-026、T-039 | 已完成 |
-| T-041 | 对话窗口（多轮、流式、历史与搜索） | T-038、T-039 | 待办 |
+| T-041 | 对话窗口（多轮、流式、历史与搜索） | T-038、T-039 | 已完成 |
 | T-042 | 设置页：模型（列表、可用性、切换、重载） | T-022、T-038、T-039 | 待办 |
 | T-043 | 设置页：记忆（查看、编辑、删除、临时模式、核心典藏） | T-035、T-037、T-038、T-039 | 待办 |
 | T-044 | 回复中的记忆来源 | T-036、T-041 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-041 对话窗口（多轮、流式、历史与搜索）（依赖 T-038、T-039，已满足）
+- 下一步：T-042 设置页：模型（依赖 T-022、T-038、T-039，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -590,14 +590,21 @@
 
 **依赖**：T-038、T-039
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`modules/chat/`：多轮对话、流式展示、历史列表与关键词搜索。Zustand store 位于 `service/stores/chat.store.ts`，仅作为展示缓存。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 流式片段逐段显示，不闪烁、不重复
-- [ ] 模型失败时显示错误信息，不显示空白回复
-- [ ] 历史列表可以按关键词搜索
+**验收/验证结果**：
+- [x] 流式片段逐段显示，不闪烁、不重复（方式：`tests/modules/chat-store.test.ts` 覆盖分片按 `message_id` 绑定并依序追加、`chat.done` 与 HTTP 返回先后到达都只保留一份、完成后迟到的片段被忽略；结果：通过。注意：后端在整段回复生成后才按句段推送 `chat.chunk`，并非逐 token 流式；"不闪烁"的目视核验未做，需接入真实模型后确认）
+- [x] 模型失败时显示错误信息，不显示空白回复（方式：`chat-store.test.ts` 的失败用例，错误文本写入回复气泡并以 `alert` 角色显示；后端 `tests/api/test_chat_routes.py` 15 项通过，其中 503 `model_unavailable`、502 `model_failed` 映射已覆盖；结果：通过。未用真实模型端到端验证）
+- [x] 历史列表可以按关键词搜索（方式：后端 `test_history_filters_by_keyword_and_date_range` 通过；前端历史面板以 `keyword` 与 `offset` 分页调用 `GET /api/chat/history`，支持"加载更多"；结果：通过。界面目视未做）
+- 备注：
+  - 对话窗口由 `modules/chat/`（`ChatWindow` 标签页、`ConversationPanel`、`HistoryPanel`、`MessageBubble`）组成；Zustand store 位于 `service/stores/chat.store.ts`，只做展示缓存，历史以后端为准。
+  - 发送走 `POST /api/chat`，返回的完整文本为准；流式片段来自 WebSocket，二者以 `message_id` 对齐。发送中禁止重复发送。
+  - 对话窗口的 capability 为 `capabilities/chat.json`，只授权 `get_backend_info`（Rust 测试 `chat_window_only_gets_backend_info` 检查）。
+  - 验证：`npm run check`、`npm run typecheck`、`npm run lint`、`npx vitest run`（61 项）、`cargo clippy --all-targets -- -D warnings`、`cargo test`（7 项）、`uv run pytest tests/api/test_chat_routes.py`（15 项）均通过；对话窗口入口 `chat.html`、`chat.tsx` 经 Vite 返回 200。
+  - 对话内容只保存在窗口内存中，关闭窗口后可在"历史"中查看。
+  - 提交号：`cc7e498`（对话窗口代码，含 Rust capability 与测试）；本任务文档随后续提交记录
 
 ### T-042 设置页：模型
 
