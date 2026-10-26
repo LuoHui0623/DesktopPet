@@ -110,6 +110,7 @@ class LlmService:
             try:
                 self._load()
             except ModelSettingsError as exc:
+                self._last_errors = exc.errors
                 version = self._settings.version if self._settings else None
                 return ReloadResult(ok=False, version=version, errors=exc.errors)
             assert self._settings is not None

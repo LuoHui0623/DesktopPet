@@ -121,6 +121,16 @@ def test_failed_reload_keeps_previous_settings(config_dir: Path):
     assert not result.ok
     assert result.errors
     assert service.current().version == before
+    assert service.last_errors == result.errors
+
+
+def test_successful_reload_clears_previous_errors(config_dir: Path):
+    service = make_service(config_dir)
+    (config_dir / "llm.yaml").write_text("providers: [", encoding="utf-8")
+    assert not service.reload().ok
+    (config_dir / "llm.yaml").write_text(LLM_YAML, encoding="utf-8")
+    assert service.reload().ok
+    assert service.last_errors == []
 
 
 def test_file_change_is_detected_on_next_call(config_dir: Path):
