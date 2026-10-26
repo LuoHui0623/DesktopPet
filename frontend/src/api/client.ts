@@ -20,8 +20,15 @@ export interface ApiClient {
   readonly fetch: typeof fetch;
 }
 
+export type QueryValue = string | number | boolean | null | undefined;
+
+export interface RequestOptions {
+  body?: unknown;
+  query?: Record<string, QueryValue>;
+}
+
 export function createApiClient(info: BackendInfo, fetchImpl: typeof fetch = fetch): ApiClient {
-  // 包装一层：直接保存 window.fetch 后以 client.fetch(...) 调用时，this 会变成 client，浏览器抛出 Illegal invocation。
+  // 包装一层：直接保存 window.fetch 后以 client.fetch(...) 调用时，this 会变成 client，浏览器会抛出 Illegal invocation。
   const callFetch: typeof fetch = (input, init) => fetchImpl(input, init);
   return {
     baseUrl: `http://127.0.0.1:${info.port}`,
@@ -40,18 +47,44 @@ async function readBody(response: Response): Promise<unknown> {
   }
 }
 
-export async function request<T>(client: ApiClient, method: string, path: string): Promise<T> {
-  const response = await client.fetch(`${client.baseUrl}${path}`, {
+export function buildUrl(
+  client: ApiClient,
+  path: string,
+  query?: Record<string, QueryValue>,
+): string {
+  const url = new URL(path, client.baseUrl);
+  for (const [key, value] of Object.entries(query ?? {})) {
+    if (value !== undefined && value !== null) {
+      url.searchParams.set(key, String(value));
+    }
+  }
+  return url.toString();
+}
+
+export async function request<T>(
+  client: ApiClient,
+  method: string,
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = { [TOKEN_HEADER]: client.token };
+  let body: string | undefined;
+  if (options.body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    body = JSON.stringify(options.body);
+  }
+  const response = await client.fetch(buildUrl(client, path, options.query), {
     method,
-    headers: { [TOKEN_HEADER]: client.token },
+    headers,
+    body,
   });
-  const body = await readBody(response);
+  const payload = await readBody(response);
   if (!response.ok) {
-    const error = (body as ErrorBody | null)?.error;
+    const error = (payload as ErrorBody | null)?.error;
     const code = typeof error?.code === "string" ? error.code : "http_error";
     const message =
       typeof error?.message === "string" ? error.message : response.statusText || "请求失败";
     throw new ApiError(response.status, code, message);
   }
-  return body as T;
+  return payload as T;
 }
