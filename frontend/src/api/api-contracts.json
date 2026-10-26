@@ -1,6 +1,20 @@
 {
   "operations": [
     {
+      "operationId": "get_active_llm",
+      "method": "GET",
+      "path": "/api/llm/active",
+      "tags": [
+        "llm"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ActiveLlmResponse"
+        }
+      }
+    },
+    {
       "operationId": "health",
       "method": "GET",
       "path": "/api/health",
@@ -48,6 +62,23 @@
       }
     },
     {
+      "operationId": "set_active_llm",
+      "method": "PUT",
+      "path": "/api/llm/active",
+      "tags": [
+        "llm"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ActiveLlmRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ActiveLlmResponse"
+        },
+        "422": null
+      }
+    },
+    {
       "operationId": "shutdown",
       "method": "POST",
       "path": "/api/shutdown",
@@ -68,6 +99,159 @@
   ],
   "components": {
     "schemas": {
+      "ActiveLlmRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "chat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consolidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveSelection"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "title": "ActiveLlmRequest",
+        "type": "object"
+      },
+      "ActiveLlmResponse": {
+        "properties": {
+          "chat": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveModelInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "consolidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ActiveModelInfo"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "chat",
+          "consolidate"
+        ],
+        "title": "ActiveLlmResponse",
+        "type": "object"
+      },
+      "ActiveModelInfo": {
+        "properties": {
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "source": {
+            "enum": [
+              "database",
+              "env"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model",
+          "source"
+        ],
+        "title": "ActiveModelInfo",
+        "type": "object"
+      },
+      "ActiveSelection": {
+        "additionalProperties": false,
+        "properties": {
+          "model": {
+            "minLength": 1,
+            "title": "Model",
+            "type": "string"
+          },
+          "provider": {
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "model"
+        ],
+        "title": "ActiveSelection",
+        "type": "object"
+      },
+      "ChatChunkEvent": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "chat.chunk",
+            "default": "chat.chunk",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "text"
+        ],
+        "title": "ChatChunkEvent",
+        "type": "object"
+      },
+      "ChatDoneEvent": {
+        "properties": {
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "chat.done",
+            "default": "chat.done",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "text"
+        ],
+        "title": "ChatDoneEvent",
+        "type": "object"
+      },
       "DefaultInfo": {
         "properties": {
           "model": {
@@ -229,6 +413,53 @@
           "warnings"
         ],
         "title": "ReloadResponse",
+        "type": "object"
+      },
+      "ServerEvent": {
+        "discriminator": {
+          "mapping": {
+            "chat.chunk": "#/components/schemas/ChatChunkEvent",
+            "chat.done": "#/components/schemas/ChatDoneEvent",
+            "status": "#/components/schemas/StatusEvent"
+          },
+          "propertyName": "type"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/StatusEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ChatChunkEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ChatDoneEvent"
+          }
+        ]
+      },
+      "StatusEvent": {
+        "properties": {
+          "state": {
+            "enum": [
+              "idle",
+              "thinking",
+              "speaking",
+              "executing",
+              "sleeping"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "type": {
+            "const": "status",
+            "default": "status",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "StatusEvent",
         "type": "object"
       }
     }
