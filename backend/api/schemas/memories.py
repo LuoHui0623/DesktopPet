@@ -55,6 +55,22 @@ class DeleteResponse(BaseModel):
     deleted: bool
 
 
+class CoreAddRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memory_id: str
+
+
+class CoreOrderRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    memory_ids: list[str]
+
+
+class CoreMemoriesResponse(BaseModel):
+    core_ids: list[str]
+
+
 class TemporaryModeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

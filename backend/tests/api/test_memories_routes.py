@@ -233,6 +233,77 @@ def test_routes_report_unavailable_without_memory_services():
     assert client.get("/api/memories", headers=AUTH).status_code == 503
 
 
+def test_core_add_lists_and_rejects_duplicates_and_missing(client):
+    memory = create(client)
+    response = client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
+    assert response.status_code == 200
+    assert response.json() == {"core_ids": [memory.id]}
+    assert client.get("/api/memories", headers=AUTH).json()["core_ids"] == [memory.id]
+
+    duplicate = client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
+    assert duplicate.status_code == 422
+    assert duplicate.json()["error"]["code"] == "core_memory_invalid"
+
+    missing = client.post("/api/memories/core", headers=AUTH, json={"memory_id": "m_20261018_099"})
+    assert missing.status_code == 422
+    assert missing.json()["error"]["code"] == "core_memory_invalid"
+
+
+def test_core_add_rejects_invalid_id_and_extra_fields(client):
+    bad_id = client.post("/api/memories/core", headers=AUTH, json={"memory_id": "../etc"})
+    assert bad_id.status_code == 422
+    assert bad_id.json()["error"]["code"] == "invalid_memory_id"
+    extra = client.post(
+        "/api/memories/core", headers=AUTH, json={"memory_id": "m_20261018_001", "x": 1}
+    )
+    assert extra.status_code == 422
+
+
+def test_core_limit_is_enforced_over_http(client):
+    for index in range(20):
+        memory = create(client, title=f"记忆{index}")
+        assert (
+            client.post(
+                "/api/memories/core", headers=AUTH, json={"memory_id": memory.id}
+            ).status_code
+            == 200
+        )
+    extra = create(client, title="多出来的")
+    response = client.post("/api/memories/core", headers=AUTH, json={"memory_id": extra.id})
+    assert response.status_code == 422
+    assert "最多 20 条" in response.json()["error"]["message"]
+
+
+def test_core_remove_and_reorder(client):
+    first = create(client, title="甲")
+    second = create(client, title="乙")
+    for memory in (first, second):
+        client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
+
+    reordered = client.put(
+        "/api/memories/core/order", headers=AUTH, json={"memory_ids": [second.id, first.id]}
+    )
+    assert reordered.json() == {"core_ids": [second.id, first.id]}
+
+    incomplete = client.put(
+        "/api/memories/core/order", headers=AUTH, json={"memory_ids": [first.id]}
+    )
+    assert incomplete.status_code == 422
+
+    removed = client.delete(f"/api/memories/core/{first.id}", headers=AUTH)
+    assert removed.json() == {"core_ids": [second.id]}
+    again = client.delete(f"/api/memories/core/{first.id}", headers=AUTH)
+    assert again.status_code == 422
+
+
+def test_core_routes_require_token(client):
+    assert (
+        client.post("/api/memories/core", json={"memory_id": "m_20261018_001"}).status_code == 401
+    )
+    assert client.put("/api/memories/core/order", json={"memory_ids": []}).status_code == 401
+    assert client.delete("/api/memories/core/m_20261018_001").status_code == 401
+
+
 def test_openapi_lists_memory_operations(client):
     spec = client.get("/openapi.json", headers=AUTH).json()
     assert spec["paths"]["/api/memories"]["get"]["operationId"] == "list_memories"

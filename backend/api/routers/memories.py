@@ -6,6 +6,9 @@ from fastapi.responses import Response
 
 from api.errors import error_response
 from api.schemas.memories import (
+    CoreAddRequest,
+    CoreMemoriesResponse,
+    CoreOrderRequest,
     DailyRecordOut,
     DeleteResponse,
     MemoriesResponse,
@@ -16,6 +19,7 @@ from api.schemas.memories import (
     TemporaryModeRequest,
     TemporaryModeResponse,
 )
+from service.memory.core_memory import CoreMemoryError
 from service.memory.index import daily_memory_index
 from service.memory.memory_service import ID_RE, MemoryServiceError
 from service.memory.services import MemoryServices
@@ -183,3 +187,66 @@ def delete_memory(request: Request, memory_id: str) -> Response | DeleteResponse
     except MemoryServiceError as exc:
         return _error(exc)
     return DeleteResponse(id=memory_id, deleted=True)
+
+
+def _core_error(exc: CoreMemoryError) -> Response:
+    return error_response(422, "core_memory_invalid", str(exc))
+
+
+def _invalid_core_id(memory_id: str) -> Response | None:
+    if not ID_RE.match(memory_id):
+        return error_response(422, "invalid_memory_id", f"非法的记忆 id：{memory_id}")
+    return None
+
+
+@router.post(
+    "/memories/core",
+    operation_id="add_core_memory",
+    response_model=CoreMemoriesResponse,
+    responses={422: {"description": "记忆不存在、已在典藏中、或典藏已满"}},
+)
+def add_core_memory(request: Request, body: CoreAddRequest) -> Response | CoreMemoriesResponse:
+    services = _services(request)
+    rejected = _invalid_core_id(body.memory_id)
+    if rejected is not None:
+        return rejected
+    try:
+        core_ids = services.core.add(body.memory_id)
+    except CoreMemoryError as exc:
+        return _core_error(exc)
+    return CoreMemoriesResponse(core_ids=core_ids)
+
+
+@router.delete(
+    "/memories/core/{memory_id}",
+    operation_id="remove_core_memory",
+    response_model=CoreMemoriesResponse,
+    responses={422: {"description": "记忆不在典藏中，或 id 不合法"}},
+)
+def remove_core_memory(request: Request, memory_id: str) -> Response | CoreMemoriesResponse:
+    services = _services(request)
+    rejected = _invalid_core_id(memory_id)
+    if rejected is not None:
+        return rejected
+    try:
+        core_ids = services.core.remove(memory_id)
+    except CoreMemoryError as exc:
+        return _core_error(exc)
+    return CoreMemoriesResponse(core_ids=core_ids)
+
+
+@router.put(
+    "/memories/core/order",
+    operation_id="reorder_core_memory",
+    response_model=CoreMemoriesResponse,
+    responses={422: {"description": "列表不完整、有重复或新增了条目"}},
+)
+def reorder_core_memory(
+    request: Request, body: CoreOrderRequest
+) -> Response | CoreMemoriesResponse:
+    services = _services(request)
+    try:
+        core_ids = services.core.reorder(body.memory_ids)
+    except CoreMemoryError as exc:
+        return _core_error(exc)
+    return CoreMemoriesResponse(core_ids=core_ids)
