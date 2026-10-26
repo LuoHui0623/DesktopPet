@@ -106,6 +106,7 @@
 ├─ 桌面宠物PRD.md              # 需求、场景、技术选型
 ├─ .gitignore                 # Git 忽略规则
 ├─ .pre-commit-config.yaml    # 提交前钩子：ruff format / ruff check
+├─ 授权目录/                   # 授权目录：草稿本、表情包等资源所在，不入 Git，不由项目管理（见 PRD §7.9）
 ├─ frontend/                  # 前端（Tauri 2 + React）
 └─ backend/                   # 后端（Python + FastAPI）
 ```

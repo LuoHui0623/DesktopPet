@@ -33,3 +33,6 @@ Thumbs.db
 
 # 导出的 OpenAPI 中间文件（契约文件 frontend/src/api/api-contracts.json 入 Git）
 backend/openapi.json
+
+# 授权目录（读取对象，不由项目管理，不入 Git）
+/授权目录/
