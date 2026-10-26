@@ -30,11 +30,17 @@ fn get_backend_info(slot: State<'_, BackendSlot>) -> Result<BackendInfo, String>
     info.clone().ok_or_else(|| "后端尚未就绪".to_string())
 }
 
+#[tauri::command]
+fn open_chat_window(app: AppHandle) -> Result<(), String> {
+    window::open_chat_window(&app).map_err(|error| error.to_string())
+}
+
 pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(BackendSlot::default())
-        .invoke_handler(tauri::generate_handler![get_backend_info])
+        .invoke_handler(tauri::generate_handler![get_backend_info, open_chat_window])
         .setup(|app| {
             start_backend(app.handle().clone());
             Ok(())
@@ -151,7 +157,12 @@ mod tests {
     const CAPABILITY: &str = include_str!("../capabilities/default.json");
     const CONFIG: &str = include_str!("../tauri.conf.json");
 
-    const ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
+    const ALLOWED_PERMISSIONS: &[&str] = &[
+        "core:default",
+        "core:window:allow-start-dragging",
+        "allow-get-backend-info",
+        "allow-open-chat-window",
+    ];
     const FORBIDDEN_PREFIXES: &[&str] = &[
         "fs:",
         "shell:",
@@ -165,7 +176,7 @@ mod tests {
     ];
 
     #[test]
-    fn pet_window_only_gets_the_backend_info_command() {
+    fn pet_window_only_gets_the_allowed_commands_and_dragging() {
         let capability: Value = serde_json::from_str(CAPABILITY).expect("capability json");
         let windows: Vec<&str> = capability["windows"]
             .as_array()

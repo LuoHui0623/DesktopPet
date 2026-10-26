@@ -1,7 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "pet-window",
-  "description": "悬浮窗：只允许读取后端连接信息，不开放文件系统、进程执行与网络插件",
+  "description": "悬浮窗：读取后端连接信息、打开对话窗口、拖动窗口；不开放文件系统、进程执行与网络插件",
   "windows": ["pet"],
-  "permissions": ["core:default", "allow-get-backend-info"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "allow-get-backend-info",
+    "allow-open-chat-window"
+  ]
 }
