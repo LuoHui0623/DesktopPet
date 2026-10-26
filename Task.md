@@ -38,7 +38,7 @@
 | T-022 | 当前模型接口：`GET/PUT /api/llm/active` | T-021 | 已完成 |
 | T-023 | daily_log 存储与临时模式写入控制 | — | 已完成 |
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 已完成 |
-| T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 待办 |
+| T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 已完成 |
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 待办 |
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 待办 |
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-025 对话用例（依赖 T-021、T-023、T-024 已满足；D-8 不影响本任务）
+- 下一步：T-026 事件总线与 WebSocket 推送（依赖 T-025，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -254,14 +254,15 @@
 
 **依赖**：T-021、T-023、T-024
 
-**任务状态**：待办。本任务不涉及预算（预算计量见 T-036，D-8 已定）。
+**任务状态**：已完成。本任务不涉及预算（预算计量见 T-036，D-8 已定）。
 
 **范围**：`service/chat/chat_service.py` 组合系统提示词与用户输入，调用对话模型（`chat` 角色），获取回复后做句长校验：按句号、问号、感叹号、省略号与换行分句，单句超过 40 字符（含标点）则重新生成一次；仍超限则以错误原因返回（A-21）。回复写入 `daily_log`（临时模式下不写）。模型失败返回明确错误，不编造回复。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 正常调用返回回复文本，并写入 `llm_usage` 与 `daily_log`
-- [ ] 未配置对话模型或密钥缺失时，返回明确错误并记录 success = 0
-- [ ] 单句超限时重新生成；仍超限时返回错误原因，不返回截断文本
+**验收/验证结果**：
+- [x] 正常调用返回回复文本，并写入 `llm_usage` 与 `daily_log`（方式：`tests/service/test_chat_service.py::test_normal_call_returns_reply_and_writes_usage_and_log`；结果：通过）
+- [x] 未配置对话模型或密钥缺失时，返回明确错误并记录 success = 0（方式：`test_missing_key_is_clear_error_and_records_failure`、`test_unconfigured_chat_model_is_clear_error_and_records_failure`；结果：通过）
+- [x] 单句超限时重新生成；仍超限时返回错误原因，不返回截断文本（方式：`test_overlong_sentence_is_regenerated_once`、`test_overlong_twice_returns_reason_not_truncated_text`；结果：通过）
+- 备注：`ChatService.reply` 返回 `ChatReply(text, recorded)`，失败抛出 `ChatError(code, message)`，错误码为 `empty_input` / `model_unavailable` / `model_failed` / `sentence_too_long`；分句按 `。！？!?…` 与换行，句长含标点，上限取 `SENTENCE_MAX_CHARS`；模型调用失败由 `TrackedChatModel` 记录，未调用模型的不可用情况由服务层补记一条 `success = 0`；模型的历史对话与记忆上下文留给 T-036，本任务的消息只含系统提示词与当前输入；全量测试 248 项通过，ruff 检查和格式检查通过；提交号 79a35dc
 
 ### T-026 事件总线与 WebSocket 推送
 
