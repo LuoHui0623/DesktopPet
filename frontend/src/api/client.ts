@@ -1,6 +1,9 @@
-import type { BackendInfo } from "../../electron/shared/ipc";
-
 export const TOKEN_HEADER = "X-Pet-Token";
+
+export interface BackendInfo {
+  port: number;
+  token: string;
+}
 
 export class ApiError extends Error {
   readonly status: number;

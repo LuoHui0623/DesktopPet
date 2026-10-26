@@ -1,11 +1,11 @@
-import js from "@eslint/js";
+﻿import js from "@eslint/js";
 import reactHooks from "eslint-plugin-react-hooks";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["out/**", "node_modules/**", "src/api/api-contracts.json"],
+    ignores: ["dist/**", "node_modules/**", "src-tauri/**", "src/api/api-contracts.json"],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,
@@ -16,7 +16,7 @@ export default tseslint.config(
     rules: reactHooks.configs.recommended.rules,
   },
   {
-    files: ["electron/**/*.ts", "scripts/**/*.{mts,mjs}", "tests/**/*.ts", "*.ts", "*.mjs"],
+    files: ["scripts/**/*.{mts,mjs}", "tests/**/*.ts", "*.ts", "*.mjs"],
     languageOptions: { globals: globals.node },
   },
 );

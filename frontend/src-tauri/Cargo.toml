@@ -1,0 +1,23 @@
+﻿[package]
+name = "pet-shell"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "pet_shell_lib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pet-shell"
+path = "src/main.rs"
+
+[dependencies]
+base64 = "0.22"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = "2"
+tauri-plugin-dialog = "2"
+
+[build-dependencies]
+tauri-build = "2"

@@ -1,4 +1,6 @@
-out
+﻿dist
 node_modules
 package-lock.json
 src/api/api-contracts.json
+src-tauri/target
+src-tauri/gen

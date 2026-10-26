@@ -1,4 +1,4 @@
-# 环境变量与密钥
+﻿# 环境变量与密钥
 .env
 .env.*
 !.env.example
@@ -19,6 +19,8 @@ htmlcov/
 node_modules/
 frontend/dist/
 frontend/out/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
 frontend/release/
 
 # 日志与临时文件

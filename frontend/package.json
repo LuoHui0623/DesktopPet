@@ -2,12 +2,13 @@
   "name": "pet-frontend",
   "version": "0.1.0",
   "private": true,
-  "description": "桌面宠物前端（Electron + React）",
-  "main": "./out/main/index.js",
+  "description": "桌面宠物前端（Tauri 2 + React）",
   "scripts": {
-    "dev": "electron-vite dev",
-    "build": "electron-vite build",
-    "start": "electron .",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "vite:dev": "vite",
+    "vite:build": "vite build",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "gen:api": "node scripts/gen-api-contracts.mts",
@@ -17,14 +18,16 @@
     "format:check": "prettier --check .",
     "check": "node scripts/check.mjs"
   },
+  "dependencies": {
+    "@tauri-apps/api": "^2.12.4"
+  },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^26.6.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
-    "electron": "^45.0.0",
-    "electron-vite": "^6.0.0",
     "eslint": "^10.13.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.13.0",
