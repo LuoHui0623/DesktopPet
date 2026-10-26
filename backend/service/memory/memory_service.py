@@ -92,13 +92,21 @@ class StructuredMemoryService:
         self._clock = clock or (lambda zone: datetime.now(zone))
         self._lock = threading.Lock()
         self._listeners: list[Callable[[], None]] = []
+        self._delete_listeners: list[Callable[[str], None]] = []
 
     def add_listener(self, listener: Callable[[], None]) -> None:
         self._listeners.append(listener)
 
+    def add_delete_listener(self, listener: Callable[[str], None]) -> None:
+        self._delete_listeners.append(listener)
+
     def _notify(self) -> None:
         for listener in self._listeners:
             listener()
+
+    def _notify_deleted(self, memory_id: str) -> None:
+        for listener in self._delete_listeners:
+            listener(memory_id)
 
     def create(
         self,
@@ -168,6 +176,7 @@ class StructuredMemoryService:
             self._files.delete(memory_id)
         except FileNotFoundError as exc:
             raise MemoryNotFound(f"结构化记忆 {memory_id} 不存在") from exc
+        self._notify_deleted(memory_id)
         self._notify()
 
     def _load(self, name: str) -> StructuredMemory:
