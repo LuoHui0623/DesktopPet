@@ -1,0 +1,229 @@
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from infra.files.json_store import JsonDirectory
+from infra.store.app_settings import DbAppSettings
+from infra.store.daily_log import DbDailyLog
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from service.agent.tools.memory import make_memory_tools
+from service.memory.daily_log_service import DailyLogService
+from service.memory.index import MemoryIndexService
+from service.memory.memory_service import (
+    MemoryReader,
+    MemoryReadError,
+    MemorySource,
+    StructuredMemoryService,
+    number_lines,
+    parse_range,
+    section,
+)
+
+TZ = ZoneInfo("Asia/Shanghai")
+SOURCE = MemorySource(type="keyword", date="2026-10-18")
+
+
+class Clock:
+    def __call__(self, zone: ZoneInfo) -> datetime:
+        return datetime(2026, 10, 18, 21, 30, tzinfo=TZ).astimezone(zone)
+
+
+class DictSettings:
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
+    def put(self, key: str, value: str) -> None:
+        self.values[key] = value
+
+
+@pytest.fixture
+def parts(tmp_path: Path):
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+    memories = StructuredMemoryService(
+        JsonDirectory(tmp_path / "memory" / "structured"),
+        DictSettings(),
+        TZ,
+        clock=Clock(),
+    )
+    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    index_file = tmp_path / "memory" / "index.json"
+    index = MemoryIndexService(memories, daily.dates, index_file)
+    memories.add_listener(index.rebuild)
+    return {
+        "memories": memories,
+        "daily": daily,
+        "index_file": index_file,
+        "index": index,
+        "db_file": db_file,
+        "reader": MemoryReader(index_file, memories, daily),
+    }
+
+
+def test_parse_range_accepts_from_to():
+    assert parse_range("2-5") == (2, 5)
+    assert parse_range(" 1 - 1 ") == (1, 1)
+
+
+@pytest.mark.parametrize("spec", ["5", "a-b", "0-3", "4-2", "1-2-3"])
+def test_parse_range_rejects_bad_specs(spec: str):
+    with pytest.raises(MemoryReadError):
+        parse_range(spec)
+
+
+def test_line_numbers_start_at_one_and_do_not_change_content():
+    original = ["第一行", "", "第三行 with 符号 :", "  缩进"]
+    numbered = number_lines(original)
+    assert numbered.split("\n") == [
+        "1: 第一行",
+        "2: ",
+        "3: 第三行 with 符号 :",
+        "4:   缩进",
+    ]
+    stripped = [line.split(": ", 1)[1] if ": " in line else "" for line in numbered.split("\n")]
+    assert stripped == original
+
+
+def test_section_returns_numbered_slice():
+    lines = ["a", "b", "c", "d"]
+    assert section(lines, "2-3") == "2: b\n3: c"
+
+
+def test_section_out_of_range_returns_reason():
+    with pytest.raises(MemoryReadError, match="超出范围，共 3 行"):
+        section(["a", "b", "c"], "2-4")
+
+
+def test_describe_and_index_come_from_index_file(parts):
+    parts["memories"].create(category="preference", title="咖啡", content="美式", source=SOURCE)
+    parts["index"].rebuild()
+    reader: MemoryReader = parts["reader"]
+    assert set(reader.describe()) == {"结构化记忆", "daily_memory"}
+    assert reader.index()["结构化记忆"][0]["title"] == "咖啡"
+
+
+def test_missing_index_is_reported(parts):
+    with pytest.raises(MemoryReadError, match="记忆索引不存在"):
+        parts["reader"].describe()
+
+
+def test_reads_structured_memory_with_line_numbers(parts):
+    memory = parts["memories"].create(
+        category="preference",
+        title="咖啡偏好",
+        content="喜欢美式咖啡\n不加糖",
+        source=SOURCE,
+    )
+    text = parts["reader"].read("结构化记忆", memory.id)
+    lines = text.split("\n")
+    assert lines[0] == "1: 标题: 咖啡偏好"
+    assert len(lines) == 8
+    assert lines[-2:] == ["7: 喜欢美式咖啡", "8: 不加糖"]
+
+
+def test_reads_structured_memory_range(parts):
+    memory = parts["memories"].create(
+        category="preference",
+        title="咖啡偏好",
+        content="喜欢美式咖啡\n不加糖",
+        source=SOURCE,
+    )
+    assert parts["reader"].read("结构化记忆", memory.id, "7-8") == "7: 喜欢美式咖啡\n8: 不加糖"
+
+
+def test_reads_daily_turns_one_line_per_turn(parts):
+    store = DbDailyLog(parts["db_file"])
+    store.append(
+        "2026-10-18",
+        "2026-10-18T09:00:00+08:00",
+        [("user", "喜欢美式咖啡"), ("assistant", "记住啦")],
+    )
+    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("user", "早安")])
+    text = parts["reader"].read("daily_memory", "2026-10-18")
+    assert text == "1: 用户：喜欢美式咖啡 / 宠物：记住啦\n2: 用户：早安"
+    assert parts["reader"].read("daily_memory", "2026-10-18", "2-2") == "2: 用户：早安"
+
+
+def test_daily_range_out_of_bounds_is_reported(parts):
+    DbDailyLog(parts["db_file"]).append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "早")])
+    with pytest.raises(MemoryReadError, match="超出范围"):
+        parts["reader"].read("daily_memory", "2026-10-18", "1-3")
+
+
+def test_missing_entries_are_reported(parts):
+    with pytest.raises(MemoryReadError, match="不存在"):
+        parts["reader"].read("结构化记忆", "m_20261018_099")
+    with pytest.raises(MemoryReadError, match="没有对话记录"):
+        parts["reader"].read("daily_memory", "2026-10-01")
+
+
+def test_bad_date_and_unknown_kind_are_reported(parts):
+    with pytest.raises(MemoryReadError, match="日期格式"):
+        parts["reader"].read("daily_memory", "2026-13-01")
+    with pytest.raises(MemoryReadError, match="未知的记忆类型"):
+        parts["reader"].read("secret", "x")
+
+
+def test_corrupt_structured_memory_is_reported(parts):
+    directory = parts["memories"]._files.directory
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "m_20261018_050.json").write_text("{", encoding="utf-8")
+    with pytest.raises(MemoryReadError):
+        parts["reader"].read("结构化记忆", "m_20261018_050")
+
+
+@pytest.fixture
+def tools(parts):
+    return {tool.name: tool for tool in make_memory_tools(parts["reader"])}
+
+
+def test_tools_return_structured_results(parts, tools):
+    memory = parts["memories"].create(
+        category="preference", title="咖啡", content="美式", source=SOURCE
+    )
+    parts["index"].rebuild()
+    described = tools["memory_describe"].invoke({})
+    assert described["ok"] is True
+    assert described["action"] == "describe"
+    assert "daily_memory" in described["content"]
+    indexed = tools["memory_index"].invoke({})
+    assert indexed["ok"] is True
+    assert memory.id in indexed["content"]
+    read = tools["memory_read"].invoke({"kind": "结构化记忆", "entry_id": memory.id})
+    assert read == {
+        "ok": True,
+        "action": "read",
+        "content": read["content"],
+        "error": None,
+    }
+    assert read["content"].startswith("1: 标题: 咖啡")
+
+
+def test_tool_failures_return_readable_reasons(tools):
+    result = tools["memory_read"].invoke({"kind": "结构化记忆", "entry_id": "m_20261018_099"})
+    assert result["ok"] is False
+    assert result["error"]
+    assert result["content"] is None
+
+
+def test_tool_range_error_is_returned_not_raised(parts, tools):
+    DbDailyLog(parts["db_file"]).append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "早")])
+    result = tools["memory_read"].invoke(
+        {"kind": "daily_memory", "entry_id": "2026-10-18", "lines": "1-9"}
+    )
+    assert result["ok"] is False
+    assert "超出范围" in result["error"]
+
+
+def test_tool_without_index_reports_missing_index(tools):
+    result = tools["memory_index"].invoke({})
+    assert result["ok"] is False
+    assert "记忆索引不存在" in result["error"]

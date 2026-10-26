@@ -3,13 +3,14 @@ import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, tzinfo
+from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from infra.files.json_store import JsonDirectory
+from infra.files.json_store import JsonDirectory, read_json
 from infra.store.repositories.daily_log import DailyLogRecord
-from service.memory.daily_log_service import SettingStore
+from service.memory.daily_log_service import DailyLogService, SettingStore
 
 ID_PATTERN = r"^m_(\d{8})_(\d{3,})$"
 ID_RE = re.compile(ID_PATTERN)
@@ -221,3 +222,98 @@ def _first_error(exc: ValidationError) -> str:
     error = exc.errors()[0]
     location = ".".join(str(part) for part in error["loc"]) or "(根)"
     return f"{location}: {error['msg']}"
+
+
+KIND_STRUCTURED = "结构化记忆"
+KIND_DAILY = "daily_memory"
+RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*-\s*(\d+)\s*$")
+
+
+class MemoryReadError(MemoryServiceError):
+    pass
+
+
+def parse_range(spec: str) -> tuple[int, int]:
+    match = RANGE_PATTERN.match(spec)
+    if match is None:
+        raise MemoryReadError(f"行号区间应为 from-to 形式，例如 1-5，当前为 {spec!r}")
+    start, end = int(match.group(1)), int(match.group(2))
+    if start < 1 or end < start:
+        raise MemoryReadError(f"行号区间 {spec} 不合法：起始行须从 1 开始，且不大于结束行")
+    return start, end
+
+
+def number_lines(lines: Sequence[str], start: int = 1) -> str:
+    return "\n".join(f"{number}: {line}" for number, line in enumerate(lines, start=start))
+
+
+def section(lines: Sequence[str], spec: str) -> str:
+    start, end = parse_range(spec)
+    if end > len(lines):
+        raise MemoryReadError(f"行号区间 {spec} 超出范围，共 {len(lines)} 行")
+    return number_lines(lines[start - 1 : end], start)
+
+
+def render_structured_lines(memory: StructuredMemory) -> list[str]:
+    return [
+        f"标题: {memory.title}",
+        f"类别: {memory.category}",
+        f"重要度: {memory.importance}",
+        f"来源: {memory.source.type} {memory.source.date}",
+        f"更新时间: {memory.updated_at}",
+        "内容:",
+        *memory.content.splitlines(),
+    ]
+
+
+class MemoryReader:
+    def __init__(
+        self,
+        index_path: Path,
+        structured: StructuredMemoryService,
+        daily: DailyLogService,
+    ) -> None:
+        self._index_path = index_path
+        self._structured = structured
+        self._daily = daily
+
+    def describe(self) -> dict[str, str]:
+        return dict(self._index()["描述"])
+
+    def index(self) -> dict[str, Any]:
+        return self._index()["记忆索引"]
+
+    def read(self, kind: str, entry_id: str, lines: str | None = None) -> str:
+        source = self._lines_of(kind, entry_id)
+        if lines is None:
+            return number_lines(source)
+        return section(source, lines)
+
+    def _index(self) -> dict[str, Any]:
+        try:
+            data = read_json(self._index_path)
+        except FileNotFoundError as exc:
+            raise MemoryReadError("记忆索引不存在，请重启后端生成") from exc
+        except (OSError, ValueError) as exc:
+            raise MemoryReadError(f"记忆索引无法读取：{exc}") from exc
+        if not isinstance(data, dict) or "描述" not in data or "记忆索引" not in data:
+            raise MemoryReadError("记忆索引格式不正确，请重启后端重新生成")
+        return data
+
+    def _lines_of(self, kind: str, entry_id: str) -> list[str]:
+        if kind == KIND_STRUCTURED:
+            try:
+                memory = self._structured.get(entry_id)
+            except (MemoryNotFound, MemoryCorrupt, ValueError) as exc:
+                raise MemoryReadError(str(exc)) from exc
+            return render_structured_lines(memory)
+        if kind == KIND_DAILY:
+            try:
+                day = date.fromisoformat(entry_id).isoformat()
+            except ValueError as exc:
+                raise MemoryReadError(f"日期格式不合法：{entry_id}") from exc
+            records = self._daily.read_day(day)
+            if not records:
+                raise MemoryReadError(f"{day} 没有对话记录")
+            return render_daily_turns(records)
+        raise MemoryReadError(f"未知的记忆类型：{kind}")
