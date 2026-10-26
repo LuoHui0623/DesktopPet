@@ -50,7 +50,7 @@
 | T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 已完成 |
 | T-035 | 核心典藏（最多 20 条） | T-030 | 已完成 |
 | T-036 | 对话接入记忆（上下文组装、每日 reset） | T-025、T-033、T-035 | 已完成 |
-| T-037 | 记忆管理接口：`/api/memories` 与临时模式 | T-023、T-030、T-035 | 待办 |
+| T-037 | 记忆管理接口：`/api/memories` 与临时模式 | T-023、T-030、T-035 | 已完成 |
 | T-038 | 前端接口层与契约重新生成 | T-022、T-027、T-037 | 待办 |
 | T-039 | 桌面壳迁移到 Tauri 2（Rust 核心、拉起后端、命令与窗口） | — | 待办 |
 | T-040 | 悬浮窗（占位形象与状态标签） | T-026、T-039 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-037 记忆管理接口与临时模式（依赖 T-023、T-030、T-035，已满足）
+- 下一步：T-038 前端接口层与契约重新生成（依赖 T-022、T-027、T-037，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -488,15 +488,23 @@
 
 **依赖**：T-023、T-030、T-035
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`GET /api/memories`（结构化记忆与 daily_memory 的索引与按日期读取）、`PATCH /api/memories/{id}`（结构化记忆）、`DELETE /api/memories/{id}`（结构化记忆）、`POST /api/memories/temporary-mode`（写入 `app_setting`）。daily_memory 只读，PATCH 与 DELETE 返回明确错误。改动后触发索引重建。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] PATCH 后索引更新
-- [ ] DELETE 同步移出核心典藏
-- [ ] 临时模式开关立即生效
-- [ ] 对 daily_memory 的修改请求被拒绝
+**验收/验证结果**：
+- [x] PATCH 后索引更新（方式：`tests/api/test_memories_routes.py::test_patch_updates_memory_and_refreshes_index`；结果：通过）
+- [x] DELETE 同步移出核心典藏（方式：`test_delete_removes_memory_from_core_and_index`；结果：通过）
+- [x] 临时模式开关立即生效（方式：`test_temporary_mode_switch_takes_effect_immediately`；结果：通过）
+- [x] 对 daily_memory 的修改请求被拒绝（方式：`test_daily_memory_cannot_be_modified_or_deleted`；结果：通过，返回 403 与 `daily_memory_readonly`）
+- 备注：
+  - 接口：`GET /api/memories`（`list_memories`，可选 `category`、`date`，返回结构化记忆、核心典藏 id、daily_memory 的月份索引、跳过的损坏文件、临时模式状态，`date` 给出时附带当日对话）；`GET /api/memories/{id}`（`get_memory`）；`PATCH /api/memories/{id}`（`update_memory`，字段 title、content、category、importance，未知字段与空请求返回 422）；`DELETE /api/memories/{id}`（`delete_memory`）；`POST /api/memories/temporary-mode`（`set_memory_temporary_mode`，请求体 `enabled` 必须为布尔值）。
+  - 错误码与状态：`not_found` 404，`corrupt` 409，`temporary_mode` 409，`sensitive` 422，`invalid` 422，`daily_memory_readonly` 403，`invalid_memory_id` 422。错误码来自服务层的 `code` 属性，接口层不解析错误文字。
+  - 修改与删除都经过服务层，改动后由 T-031 的监听器重建索引；删除由 T-035 的监听器同步移出核心典藏。
+  - 临时模式只阻止写入（新增、编辑），删除不受影响；状态存于 `app_setting`（键 `memory.temporary_mode`），每次请求即时读取。
+  - `daily_memory` 的修改请求通过路径参数识别为日期，返回 403，不写入任何数据。
+  - `main.py` 装配 `MemoryServices`（结构化记忆、写入、每日对话、核心典藏）并传给应用。
+  - 前端契约已重新生成（仅新增）；全量测试 446 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 cd7ac6e
 
 ### T-038 前端接口层与契约重新生成
 
