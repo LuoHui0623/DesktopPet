@@ -44,7 +44,7 @@
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 已完成 |
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 已完成 |
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 已完成 |
-| T-031 | 记忆索引生成（由代码生成） | T-030 | 待办 |
+| T-031 | 记忆索引生成（由代码生成） | T-030 | 已完成 |
 | T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 待办 |
 | T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 待办 |
 | T-034 | 结构化记忆写入与编辑（关键词触发） | T-033 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-031 记忆索引生成（依赖 T-030，已满足）
+- 下一步：T-032 记忆读取工具与行号 helper（依赖 T-030、T-031，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -360,14 +360,15 @@
 
 **依赖**：T-030
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`service/memory/index.py` 根据 JSON 文件与 `daily_log` 生成 `data/memory/index.json`，顶层为 `描述` 与 `记忆索引`（格式见 PRD §5.3）。时机：结构化记忆增删改后，以及启动时。索引不手工编辑。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 索引与存储一致（测试）
-- [ ] 删除文件后索引随之更新
-- [ ] `daily_memory` 为 `{月份: [日期]}`
+**验收/验证结果**：
+- [x] 索引与存储一致（方式：`tests/service/test_memory_index.py::test_index_matches_storage_exactly`、`test_index_file_matches_storage_after_create`、`test_index_is_updated_after_update`；结果：通过）
+- [x] 删除文件后索引随之更新（方式：`test_deleting_a_memory_removes_it_from_index`、`test_external_file_removal_is_reflected_on_rebuild`；结果：通过）
+- [x] `daily_memory` 为 `{月份: [日期]}`（方式：`test_daily_memory_is_grouped_by_month_with_sorted_unique_dates`、`test_daily_memory_dates_come_from_daily_log`；结果：通过）
+- 备注：索引文件为 `data/memory/index.json`（`constants/path.py` 的 `MEMORY_INDEX_FILE`），顶层 `描述` 与 `记忆索引` 按 PRD §5.3；结构化记忆取自 `StructuredMemoryService.list()`，损坏文件不进入索引；`StructuredMemoryService.add_listener` 在增删改后触发重建；启动时（数据库迁移之后）重建一次；内容未变化时不重写；写入沿用原子写入（`infra/files/json_store.py` 的 `write_json_atomic`，`JsonDirectory` 也改为调用它）；已知限制：PRD 规定索引在增删改和启动时重建，因此当天新增的对话日期要到下次启动才会出现在 `daily_memory` 中，是否需要在新一天的首轮对话后重建，待确认；全量测试 335 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 23727e6
 
 ### T-032 记忆读取工具与行号 helper
 
