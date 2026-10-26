@@ -4,6 +4,14 @@ import json
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 TOKEN_HEADER = b"x-pet-token"
+SUBPROTOCOL_HEADER = b"sec-websocket-protocol"
+WS_SUBPROTOCOL = "pet.v1"
+
+
+def _subprotocol_offers_token(headers: dict[bytes, bytes], token: bytes) -> bool:
+    raw = headers.get(SUBPROTOCOL_HEADER, b"").decode("latin-1")
+    parts = (part.strip().encode("utf-8") for part in raw.split(","))
+    return any(hmac.compare_digest(part, token) for part in parts if part)
 
 
 class TokenAuthMiddleware:
@@ -16,12 +24,16 @@ class TokenAuthMiddleware:
             await self.app(scope, receive, send)
             return
 
-        provided = dict(scope["headers"]).get(TOKEN_HEADER, b"")
+        headers = dict(scope["headers"])
+        provided = headers.get(TOKEN_HEADER, b"")
         if hmac.compare_digest(provided, self._token):
             await self.app(scope, receive, send)
             return
 
         if scope["type"] == "websocket":
+            if _subprotocol_offers_token(headers, self._token):
+                await self.app(scope, receive, send)
+                return
             await send({"type": "websocket.close", "code": 1008})
             return
 

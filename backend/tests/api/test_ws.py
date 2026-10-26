@@ -72,3 +72,20 @@ def test_openapi_contains_event_schemas():
         "executing",
         "sleeping",
     ]
+
+
+def test_token_offered_as_subprotocol_is_accepted_and_negotiated():
+    app = create_app(TOKEN)
+    client = TestClient(app)
+    with client.websocket_connect("/ws", subprotocols=["pet.v1", TOKEN]) as websocket:
+        assert websocket.accepted_subprotocol == "pet.v1"
+        app.state.event_bus.publish(StatusEvent(state="idle"))
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+
+
+def test_wrong_token_in_subprotocol_is_closed_with_1008():
+    client = TestClient(create_app(TOKEN))
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect("/ws", subprotocols=["pet.v1", "wrong-token"]):
+            pass
+    assert exc.value.code == 1008
