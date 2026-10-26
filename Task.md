@@ -40,7 +40,7 @@
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 已完成 |
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 已完成 |
 | T-026 | 事件总线与 WebSocket 推送 | T-025 | 已完成 |
-| T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 待办 |
+| T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 已完成 |
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 待办 |
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 待办 |
 | T-030 | 结构化记忆存储（JSON 文件） | T-023 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-027 对话接口（依赖 T-025、T-026，已满足）
+- 下一步：T-028 文件 IO 与权限（无依赖）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -287,13 +287,21 @@
 
 **依赖**：T-025、T-026
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`POST /api/chat` 接收用户输入，回复经 WebSocket 流式推送，接口返回最终回复。`GET /api/chat/history` 按日期范围与关键词分页返回 `daily_log`，结果按时间倒序。请求与响应体在 `api/schemas/chat.py` 中定义。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 发送消息后，WebSocket 依次收到 `chat.chunk` 与 `chat.done`
-- [ ] 历史接口支持日期范围与关键词，结果按时间倒序
+**验收/验证结果**：
+- [x] 发送消息后，WebSocket 依次收到 `chat.chunk` 与 `chat.done`（方式：`tests/api/test_chat_routes.py::test_websocket_receives_chunks_then_done_in_order`、`tests/service/test_chat_service.py::test_events_follow_thinking_speaking_chunks_done_idle`；结果：通过）
+- [x] 历史接口支持日期范围与关键词，结果按时间倒序（方式：`tests/api/test_chat_routes.py::test_history_is_newest_first`、`test_history_filters_by_keyword_and_date_range`、`test_history_pages_with_has_more`；结果：通过）
+- 备注：
+  - `POST /api/chat`（`send_chat`）同步执行，返回 `message_id`、`text`、`recorded`；失败时返回错误码：`empty_input` 422、`model_unavailable` 503、`model_failed` 502、`sentence_too_long` 502。
+  - `GET /api/chat/history`（`list_chat_history`）支持 `date_from`、`date_to`、`keyword`、`limit`（默认 50，1–100）、`offset`，返回 `items` 与 `has_more`，按时间倒序。
+  - 流式的粒度为句子：句长校验要求看到整句，所以回复先通过校验，再按句推送 `chat.chunk`，最后推送 `chat.done`；未做逐 token 推送。
+  - 推送顺序为 `status: thinking` → `status: speaking` → 多个 `chat.chunk` → `chat.done` → `status: idle`；失败时也会回到 `idle`。
+  - 服务层通过 `ChatEvents` 协议发布事件，api 层的 `BusEventPublisher` 负责构造 schema 对象，服务层不依赖 api。
+  - `daily_log` 的搜索新增了倒序、分页参数（默认仍为正序）。
+  - 前端契约已重新生成（仅新增）；全量测试 278 项通过，ruff 检查和格式检查通过；提交号 fa93d97
 
 ### T-028 文件 IO 与权限
 
