@@ -39,7 +39,7 @@
 | T-023 | daily_log 存储与临时模式写入控制 | — | 已完成 |
 | T-024 | 提示词构建（`prompt.py`，模板与注入） | T-018、T-019 | 已完成 |
 | T-025 | 对话用例：模型调用（非流式）与句长校验 | T-021、T-023、T-024 | 已完成 |
-| T-026 | 事件总线与 WebSocket 推送 | T-025 | 待办 |
+| T-026 | 事件总线与 WebSocket 推送 | T-025 | 已完成 |
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 待办 |
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 待办 |
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-026 事件总线与 WebSocket 推送（依赖 T-025，已满足）
+- 下一步：T-027 对话接口（依赖 T-025、T-026，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -270,15 +270,16 @@
 
 **依赖**：T-025
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：`infra/events/bus.py` 提供进程内发布与订阅；`api/routers/ws.py` 提供 `/ws`，鉴权同 `TokenAuthMiddleware`。事件类型：`status`（待机、思考、说话、执行中、休眠）、`chat.chunk`（流式片段）、`chat.done`。事件结构在 `api/schemas/events.py` 中定义。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 未携带令牌的连接被关闭（1008）
-- [ ] 订阅者收到的事件顺序与发布顺序一致
-- [ ] 慢订阅者不阻塞发布方（队列满时丢弃并计数）
-- [ ] 事件结构纳入契约生成
+**验收/验证结果**：
+- [x] 未携带令牌的连接被关闭（1008）（方式：`tests/api/test_ws.py::test_connection_without_token_is_closed_with_1008`、`test_connection_with_wrong_token_is_closed_with_1008`；结果：通过）
+- [x] 订阅者收到的事件顺序与发布顺序一致（方式：`tests/infra/test_event_bus.py::test_subscribers_receive_events_in_publish_order`、`test_publish_from_other_thread_is_delivered_in_order`；`tests/api/test_ws.py::test_events_arrive_in_publish_order`；结果：通过）
+- [x] 慢订阅者不阻塞发布方（队列满时丢弃并计数）（方式：`test_publish_never_blocks_and_full_queue_drops_and_counts`、`test_slow_subscriber_does_not_affect_fast_subscriber`；结果：通过）
+- [x] 事件结构纳入契约生成（方式：`tests/api/test_ws.py::test_openapi_contains_event_schemas`；`npm run gen:api:check` 通过；结果：通过）
+- 备注：事件结构定义于 `api/schemas/events.py`（`status` 的 state 为 idle / thinking / speaking / executing / sleeping，`chat.chunk` 与 `chat.done` 含 `message_id` 与 `text`），以 `ServerEvent` 合并进 OpenAPI 的 components；所有投递经 `loop.call_soon_threadsafe`，因此顺序与 `publish()` 调用顺序一致，发布方可在任意线程调用；订阅在 accept 之前完成，连接建立后发布的事件不会丢失；鉴权沿用 `TokenAuthMiddleware`；前端契约已重新生成（仅新增）；全量测试 259 项通过，ruff 检查和格式检查通过；提交号 ec47fd1
 
 ### T-027 对话接口
 
