@@ -2,15 +2,24 @@
 
 export type MemoryCategory = "profile" | "preference" | "habit" | "event" | "interaction";
 
+export interface MemorySourceRef {
+  id: string;
+  kind: string;
+  category: string | null;
+  date: string;
+  text: string;
+}
+
 export type ServerEvent =
   | { type: "status"; state: PetState }
   | { type: "chat.chunk"; message_id: string; text: string }
-  | { type: "chat.done"; message_id: string; text: string };
+  | { type: "chat.done"; message_id: string; text: string; sources: MemorySourceRef[] };
 
 export interface ChatReplyResponse {
   message_id: string;
   text: string;
   recorded: boolean;
+  sources: MemorySourceRef[];
 }
 
 export interface ChatHistoryItem {

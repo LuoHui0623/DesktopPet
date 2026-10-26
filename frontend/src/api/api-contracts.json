@@ -409,6 +409,13 @@
             "title": "Message Id",
             "type": "string"
           },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -490,6 +497,13 @@
           "recorded": {
             "title": "Recorded",
             "type": "boolean"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "title": "Sources",
+            "type": "array"
           },
           "text": {
             "title": "Text",
@@ -1019,6 +1033,46 @@
           "reason"
         ],
         "title": "SkippedMemoryOut",
+        "type": "object"
+      },
+      "SourceOut": {
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Category"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "date",
+          "text"
+        ],
+        "title": "SourceOut",
         "type": "object"
       },
       "StatusEvent": {

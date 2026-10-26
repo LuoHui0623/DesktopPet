@@ -48,8 +48,12 @@ describe("chat store: streaming", () => {
   it("does not duplicate text when the final reply arrives after the stream", () => {
     const { store, localId } = setup();
     store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "你好" });
-    store.getState().applyEvent({ type: "chat.done", message_id: "m1", text: "你好呀" });
-    store.getState().completeSend(localId, { message_id: "m1", text: "你好呀", recorded: true });
+    store
+      .getState()
+      .applyEvent({ type: "chat.done", sources: [], message_id: "m1", text: "你好呀" });
+    store
+      .getState()
+      .completeSend(localId, { message_id: "m1", text: "你好呀", recorded: true, sources: [] });
     const reply = store.getState().messages[1];
     expect(reply?.text).toBe("你好呀");
     expect(reply?.status).toBe("done");
@@ -58,7 +62,9 @@ describe("chat store: streaming", () => {
 
   it("ignores chunks that arrive after the reply is complete", () => {
     const { store, localId } = setup();
-    store.getState().completeSend(localId, { message_id: "m1", text: "你好呀", recorded: true });
+    store
+      .getState()
+      .completeSend(localId, { message_id: "m1", text: "你好呀", recorded: true, sources: [] });
     store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "你好" });
     expect(store.getState().messages[1]?.text).toBe("你好呀");
   });
@@ -66,15 +72,17 @@ describe("chat store: streaming", () => {
   it("keeps a single copy when done arrives before the HTTP reply", () => {
     const { store, localId } = setup();
     store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "你" });
-    store.getState().applyEvent({ type: "chat.done", message_id: "m1", text: "你好" });
-    store.getState().completeSend(localId, { message_id: "m1", text: "你好", recorded: true });
+    store.getState().applyEvent({ type: "chat.done", sources: [], message_id: "m1", text: "你好" });
+    store
+      .getState()
+      .completeSend(localId, { message_id: "m1", text: "你好", recorded: true, sources: [] });
     expect(store.getState().messages[1]?.text).toBe("你好");
   });
 
   it("ignores events for unknown messages when nothing is pending", () => {
     const store = createChatStore();
     store.getState().applyEvent({ type: "chat.chunk", message_id: "x", text: "游离" });
-    store.getState().applyEvent({ type: "chat.done", message_id: "x", text: "游离" });
+    store.getState().applyEvent({ type: "chat.done", sources: [], message_id: "x", text: "游离" });
     expect(store.getState().messages).toHaveLength(0);
   });
 
@@ -99,5 +107,50 @@ describe("chat store: failure", () => {
     const { store, localId } = setup();
     store.getState().failSend(localId, "失败");
     expect(store.getState().beginSend("重试")).not.toBeNull();
+  });
+});
+
+describe("chat store: sources", () => {
+  const source = {
+    id: "m_20261018_001",
+    kind: "结构化记忆",
+    category: "preference",
+    date: "2026-10-18",
+    text: "喜欢美式咖啡，不加糖",
+  };
+
+  it("attaches the sources that come with the done event", () => {
+    const { store } = setup();
+    store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "你上次说过" });
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "你上次说过喜欢美式",
+      sources: [source],
+    });
+    expect(store.getState().messages[1]?.sources).toEqual([source]);
+  });
+
+  it("keeps the sources from the HTTP reply when the event arrives later", () => {
+    const { store, localId } = setup();
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "你上次说过喜欢美式",
+      recorded: true,
+      sources: [source],
+    });
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "你上次说过喜欢美式",
+      sources: [source],
+    });
+    expect(store.getState().messages[1]?.sources).toEqual([source]);
+  });
+
+  it("has no sources on user messages or failed replies", () => {
+    const { store, localId } = setup();
+    store.getState().failSend(localId, "失败");
+    expect(store.getState().messages.map((message) => message.sources)).toEqual([[], []]);
   });
 });

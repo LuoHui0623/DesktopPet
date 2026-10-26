@@ -43,7 +43,7 @@ describe("pet store", () => {
     store.getState().setConnected(true);
     store.getState().applyEvent({ type: "status", state: "thinking" });
     store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "你好" });
-    store.getState().applyEvent({ type: "chat.done", message_id: "m1", text: "你好" });
+    store.getState().applyEvent({ type: "chat.done", sources: [], message_id: "m1", text: "你好" });
     expect(store.getState().status).toBe("thinking");
   });
 

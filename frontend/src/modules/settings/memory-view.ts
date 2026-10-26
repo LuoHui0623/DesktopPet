@@ -1,4 +1,7 @@
 import type { MemoryCategory, MemoryItem } from "../../api/types";
+import { categoryLabel } from "../memory-labels";
+
+export { categoryLabel };
 
 export const CATEGORY_OPTIONS: MemoryCategory[] = [
   "profile",
@@ -7,18 +10,6 @@ export const CATEGORY_OPTIONS: MemoryCategory[] = [
   "event",
   "interaction",
 ];
-
-export const CATEGORY_LABELS: Record<MemoryCategory, string> = {
-  profile: "个人资料",
-  preference: "偏好",
-  habit: "习惯",
-  event: "事件",
-  interaction: "互动",
-};
-
-export function categoryLabel(category: string): string {
-  return CATEGORY_LABELS[category as MemoryCategory] ?? category;
-}
 
 export function filterByCategory(
   items: MemoryItem[],

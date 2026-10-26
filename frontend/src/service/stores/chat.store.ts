@@ -1,5 +1,5 @@
 import { createStore } from "zustand/vanilla";
-import type { ChatReplyResponse, ServerEvent } from "../../api/types";
+import type { ChatReplyResponse, MemorySourceRef, ServerEvent } from "../../api/types";
 
 export type ChatRole = "user" | "assistant";
 export type ChatMessageStatus = "done" | "pending" | "streaming" | "error";
@@ -10,6 +10,7 @@ export interface ChatMessage {
   text: string;
   status: ChatMessageStatus;
   messageId: string | null;
+  sources: MemorySourceRef[];
 }
 
 export interface ChatStoreState {
@@ -63,6 +64,7 @@ export function createChatStore() {
           text: trimmed,
           status: "done",
           messageId: null,
+          sources: [],
         };
         const replyMessage: ChatMessage = {
           localId: nextLocalId(),
@@ -70,6 +72,7 @@ export function createChatStore() {
           text: "",
           status: "pending",
           messageId: null,
+          sources: [],
         };
         set((state) => ({
           messages: [...state.messages, userMessage, replyMessage],
@@ -82,7 +85,13 @@ export function createChatStore() {
         set((state) => ({
           messages: state.messages.map((message) =>
             message.localId === localId
-              ? { ...message, text: reply.text, status: "done", messageId: reply.message_id }
+              ? {
+                  ...message,
+                  text: reply.text,
+                  status: "done",
+                  messageId: reply.message_id,
+                  sources: reply.sources,
+                }
               : message,
           ),
           sending: false,
@@ -114,7 +123,7 @@ export function createChatStore() {
         } else if (event.type === "chat.done") {
           const localId = resolveTarget(event.message_id);
           if (!localId) return;
-          patchMessage(localId, { text: event.text, status: "done" });
+          patchMessage(localId, { text: event.text, status: "done", sources: event.sources });
         }
       },
     };
