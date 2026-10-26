@@ -10,15 +10,15 @@
 
 仓库分为两个独立根目录，**前后端分离**：
 
-- **`frontend/`**：Electron + React + TypeScript。负责窗口、界面、用户输入与前端状态展示，不含业务规则。
+- **`frontend/`**：Tauri 2（Rust 核心）+ React + TypeScript。负责窗口、界面、用户输入与前端状态展示，不含业务规则。
 - **`backend/`**：Python 3.12 + FastAPI。负责全部业务逻辑、数据存储、模型调用与系统能力。
 
 二者只通过**本地 HTTP（REST）与 WebSocket** 通信。前端的接口类型从后端 OpenAPI 文档生成，不手写。
 
 ```
-┌──────────────── frontend/（Electron · React · TypeScript）────────────────┐
-│  electron/main     主进程：窗口、托盘、快捷键、开机自启、拉起/监控后端          │
-│  electron/preload  桥接：contextBridge 暴露白名单（后端端口、令牌、窗口操作）    │
+┌──────────────── frontend/（Tauri 2 · React · TypeScript）─────────────────┐
+│  src-tauri         Rust 核心：窗口、托盘、快捷键、开机自启、拉起/监控后端          │
+│  Tauri 命令         白名单：后端端口、令牌、窗口操作，经 invoke 暴露给界面          │
 │  src/app           应用层：入口、窗口装配、启动流程（握手、健康检查）             │
 │  src/modules       功能模块层：chat、settings、pet（只展示与转发）               │
 │  src/service       服务层：应用状态（Zustand）、业务编排、WebSocket 事件分发       │
@@ -43,8 +43,8 @@
 
 - 后端只监听 `127.0.0.1`，配置其他地址时启动报错。
 - 所有 HTTP 与 WebSocket 连接都必须携带启动令牌（`X-Pet-Token`），不匹配则拒绝。
-- 令牌由 Electron 主进程生成并传给后端；渲染进程通过 preload 获取，不写入 URL，也不落盘。
-- 安全退出：Electron 以管道方式启动后端，并通过 stdin 控制退出（见 §1.3）。
+- 令牌由 Tauri 核心（Rust）生成并传给后端；渲染进程通过 Tauri 命令获取，不写入 URL，也不落盘。
+- 安全退出：Tauri 核心以管道方式启动后端，并通过 stdin 控制退出（见 §1.3）。
 - 单实例：启动时获取 `<数据目录>/backend.lock` 上的操作系统文件锁，锁由进程持有，进程结束（包括被强制结束）时自动释放，因此不会因残留的锁文件而无法启动。第二个实例直接退出（退出码 1），且不执行数据库迁移。
 
 ### 1.3 安全退出
@@ -52,16 +52,16 @@
 
 | 通道 | 触发 | 说明 |
 |---|---|---|
-| stdin | 读到 `shutdown` 行，或 stdin 关闭（EOF） | 父进程（Electron）退出时管道关闭即触发；Windows 上最可靠的方式，不暴露端口 |
+| stdin | 读到 `shutdown` 行，或 stdin 关闭（EOF） | 父进程（Tauri 核心）退出时管道关闭即触发；Windows 上最可靠的方式，不暴露端口 |
 | HTTP | `POST /api/shutdown`（需 `X-Pet-Token`） | 供本机客户端使用；返回 202，随后退出 |
 | 信号 | SIGINT / SIGTERM | 由 uvicorn 处理，同样走优雅退出路径 |
 
 退出过程：停止接收新连接 → 等待在途请求（最多 5 秒，`GRACEFUL_SHUTDOWN_SECONDS`）→ 记录退出原因 → 关闭数据库日志处理器，写完所有未满批次。
 - 重复的退出请求被忽略，保留第一次的原因。
-- Electron 应以 `stdio: ['pipe', ...]` 启动后端，不要使用 `'ignore'`，否则 stdin 立即关闭，后端会马上退出。
+- Tauri 核心应以带可写 stdin 的方式启动后端（`tauri-plugin-shell` 的 spawn，并保持 stdin 管道打开），不要关闭或忽略 stdin，否则后端会马上退出。
 - 强制结束（`TerminateProcess`）不经过上述路径，仍会丢失未写入的日志，因此正常退出应使用上述通道。
-- **父进程异常结束的限制**：Windows 上父进程（Electron）被异常结束（崩溃、任务管理器结束）时，仍在运行的子进程会被系统一并结束，后端无法完成优雅退出。这由进程模型决定，无法在后端内避免。影响是未写入的日志丢失（最多一个未满批次），单实例锁由系统释放，之后可立即重新启动。
-- Electron 正常退出时，`before-quit` 会先调用 `BackendSupervisor.stop()`（stdin `shutdown` 指令），等待后端完成退出后再结束应用。
+- **父进程异常结束的限制**：Windows 上父进程（Tauri 核心）被异常结束（崩溃、任务管理器结束）时，仍在运行的子进程会被系统一并结束，后端无法完成优雅退出。这由进程模型决定，无法在后端内避免。影响是未写入的日志丢失（最多一个未满批次），单实例锁由系统释放，之后可立即重新启动。
+- Tauri 应用正常退出时，Rust 核心先向后端 stdin 写入 `shutdown` 指令，等待后端完成退出后再结束应用。
 - 展示层不做业务判断。按钮动作（喜欢 / 别这样 / 确认执行 / 紧急停止）统一转为请求交给后端。
 - 模型输出只能提出计划，能力执行由后端校验后进行。
 
@@ -69,7 +69,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 桌面壳 | Electron（主进程 TypeScript），electron-vite 构建 |
+| 桌面壳 | Tauri 2（Rust 核心），`tauri-plugin-shell` 拉起后端 |
 | 界面 | React + TypeScript + Vite |
 | 样式 | Tailwind CSS |
 | 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
@@ -106,7 +106,7 @@
 ├─ 桌面宠物PRD.md              # 需求、场景、技术选型
 ├─ .gitignore                 # Git 忽略规则
 ├─ .pre-commit-config.yaml    # 提交前钩子：ruff format / ruff check
-├─ frontend/                  # 前端（Electron + React）
+├─ frontend/                  # 前端（Tauri 2 + React）
 └─ backend/                   # 后端（Python + FastAPI）
 ```
 
@@ -116,27 +116,25 @@
 frontend/
 ├─ package.json               # 依赖与脚本（dev、build、gen:api、lint）
 ├─ package-lock.json          # 前端依赖锁定，入 Git
-├─ electron.vite.config.ts    # electron-vite：分别构建 main、preload、renderer
+├─ vite.config.ts             # Vite：构建界面（renderer）
 ├─ tsconfig.json              # TypeScript 配置
 │
 ├─ scripts/                   # 构建期脚本（在 Node 中运行，不进入产物）
 │  └─ gen-api-contracts.ts    # 读取 backend 的 OpenAPI，生成 src/api/api-contracts.json
 │
-├─ electron/                  # Electron 侧代码（Node 环境）
-│  ├─ main/                   # 主进程
-│  │  ├─ index.ts             # 入口：应用生命周期
-│  │  ├─ windows/             # 窗口创建与管理
-│  │  │  ├─ pet-window.ts     # 悬浮形象：透明、置顶、记住位置
-│  │  │  ├─ chat-window.ts    # 对话窗口
-│  │  │  └─ settings-window.ts# 设置窗口
-│  │  ├─ tray.ts              # 托盘图标与菜单
-│  │  ├─ shortcuts.ts         # 全局快捷键（紧急停止等）
-│  │  ├─ autostart.ts         # 开机自启
-│  │  └─ backend/             # 后端进程管理
-│  │     ├─ launcher.ts       # 启动后端，读取端口握手
-│  │     └─ supervisor.ts     # 监控存活、退出联动、异常提示
-│  └─ preload/
-│     └─ index.ts             # contextBridge 白名单：后端地址、令牌、窗口操作
+├─ src-tauri/                 # Tauri 核心（Rust）
+│  ├─ Cargo.toml              # Rust 依赖
+│  ├─ tauri.conf.json         # 窗口、打包与插件配置
+│  ├─ capabilities/           # 权限白名单：界面可调用的命令与插件
+│  └─ src/
+│     ├─ main.rs              # 入口：应用生命周期
+│     ├─ windows.rs           # 窗口创建与管理：悬浮形象（透明、置顶、记住位置）、对话窗口、设置窗口
+│     ├─ tray.rs              # 托盘图标与菜单
+│     ├─ shortcuts.rs         # 全局快捷键（紧急停止等）
+│     ├─ autostart.rs         # 开机自启
+│     └─ backend/             # 后端进程管理
+│        ├─ launcher.rs       # 启动后端，读取端口握手
+│        └─ supervisor.rs     # 监控存活、退出联动、异常提示
 │
 └─ src/                       # 渲染进程（React）
    ├─ app/                    # 【应用层】入口与装配，不含业务
@@ -236,6 +234,8 @@ backend/
 │  │  └─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检查点记忆片段 → 近期对话
 │  ├─ llm/
 │  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、触发重载、连通性测试
+│  ├─ persona/
+│  │  └─ persona_service.py    # 角色卡版本同步：规范化 JSON 与最新版本比较，变化时追加 persona_version
 │  ├─ memory/
 │  │  ├─ memory_service.py   # 记忆用例：结构化记忆增删改、daily_memory 行号视图、行号 helper（仅供 sub agent）
 │  │  └─ index.py            # 记忆索引生成：由代码根据 JSON 文件与 daily_log 生成，不手工编辑
@@ -334,8 +334,8 @@ backend/
 | 服务层 | `src/service/` | Zustand store、业务编排、WebSocket 事件分发 | 渲染 JSX |
 | 接口层 | `src/api/` | 类型化请求、WebSocket 连接、统一错误处理 | 业务判断、维护 UI 状态 |
 | 共享层 | `src/shared/` | 色系、文案、样式、工具、通用组件 | 依赖任何业务模块 |
-| 主进程 | `electron/main/` | 窗口、托盘、快捷键、拉起后端 | 业务规则 |
-| 预加载 | `electron/preload/` | 白名单桥接 | 暴露 `ipcRenderer`、`fs`、`child_process` |
+| Tauri 核心 | `src-tauri/src/` | 窗口、托盘、快捷键、拉起后端 | 业务规则 |
+| 命令与权限 | `src-tauri/capabilities/` | 白名单桥接，只暴露必要命令 | 暴露文件系统、进程执行等通用能力 |
 
 ### 4.2 依赖方向
 

@@ -409,8 +409,8 @@ relationship:
 
 | 层 | 选择 | 理由 |
 |---|---|---|
-| 桌面壳 | Electron（主进程用 TypeScript） | 悬浮窗、透明背景、托盘、全局快捷键、开机自启成熟 |
-| 界面 | TypeScript + React + Vite（electron-vite 构建）+ Tailwind CSS + Zustand | 悬浮窗、对话窗、设置页，只负责展示 |
+| 桌面壳 | Tauri 2（Rust 核心） | 悬浮窗、透明背景、托盘、全局快捷键、开机自启支持；体积小、内存占用低 |
+| 界面 | TypeScript + React + Vite + Tailwind CSS + Zustand | 悬浮窗、对话窗、设置页，只负责展示 |
 | 后端 | **Python 3.12**，FastAPI + uvicorn | 生态适合记忆整理、文本处理、Windows 系统调用；本地服务 |
 | 后端 ↔ 界面通信 | 本地 HTTP（REST）+ WebSocket（推送） | 绑定 `127.0.0.1`，随机端口 + 启动令牌，语言无关 |
 | 数据库 | SQLite（Python 标准库 `sqlite3`，SQL 直写或轻量封装） | 单文件，备份方便，无需额外服务 |
@@ -431,7 +431,7 @@ relationship:
 
 ### 7.2 前后端关系与架构
 
-前后端分离（Electron 界面 + 本机 Python 后端，经本地 REST / WebSocket 通信）的运行时结构、目录树与分层说明，见 **`Arch.md`**。本 PRD 只约定技术选型与产品行为，不重复维护架构细节。
+前后端分离（Tauri 界面 + 本机 Python 后端，经本地 REST / WebSocket 通信）的运行时结构、目录树与分层说明，见 **`Arch.md`**。本 PRD 只约定技术选型与产品行为，不重复维护架构细节。
 
 ### 7.3 目录结构
 
@@ -462,7 +462,7 @@ relationship:
 ### 7.6 运行方式（自用）
 
 - 使用 uv 创建的项目虚拟环境直接运行，不做打包。
-- Electron 开发期拉起后端：在 `backend/` 下执行 `uv run python main.py`。
+- Tauri 开发期拉起后端：由 Rust 核心在 `backend/` 下执行 `uv run python main.py`。
 - 发布期（可选，暂不做）：再考虑用 PyInstaller 打包后端。
 - 数据目录固定在 `backend/data/` 下，备份时复制 `backend/data/pet.db`、`backend/data/memory/` 与 `backend/config/persona.yaml`。
 - 版本管理使用 Git，每个里程碑打一个 tag。
@@ -497,7 +497,7 @@ relationship:
 
 | 阶段 | 范围 |
 |---|---|
-| **M0 骨架** | Electron 主进程拉起 Python 后端（端口握手、令牌、退出联动）、REST/WebSocket 连通、SQLite 迁移脚本、日志 |
+| **M0 骨架** | Tauri 核心拉起 Python 后端（端口握手、令牌、退出联动）、REST/WebSocket 连通、SQLite 迁移脚本、日志 |
 | **M1 基础对话** | 悬浮窗（占位图）、对话窗口、模型网关（可切换 provider、用量记录）、角色卡与提示词注入、设置页 |
 | **M2 记忆** | 日常对话 `daily_log`、结构化记忆（关键词触发写入）、记忆索引、sub agent 按行号检索、核心典藏、上下文组装、记忆查看与编辑 |
 | **M3 主动与天气** | 定位与天气、早安与天气汇报、基础感知（开关机、空闲）、主动消息与反馈、勿扰时段、发言规则 |

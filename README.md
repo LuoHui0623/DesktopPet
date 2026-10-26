@@ -16,7 +16,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 桌面端 | Electron + React + TypeScript（Vite），样式 Tailwind，状态 Zustand |
+| 桌面端 | Tauri 2（Rust 核心）+ React + TypeScript（Vite），样式 Tailwind，状态 Zustand |
 | 后端 | Python 3.12 + FastAPI + uvicorn |
 | 数据库 | SQLite |
 | 模型 | LangChain（OpenAI 兼容接口） |
@@ -36,7 +36,7 @@
 
 ```
 桌宠/
-├─ frontend/     前端：Electron + React（electron/ 主进程与预加载，src/ 渲染进程）
+├─ frontend/     前端：Tauri 2 + React（src-tauri/ Rust 核心，src/ 界面）
 ├─ backend/      后端：Python + FastAPI（api / service / capabilities / infra / config）
 ├─ README.md     项目介绍
 ├─ Arch.md       架构设计
@@ -50,7 +50,7 @@
 
 **M0「骨架」已完成**（标签 `m0-skeleton`）。当前可以运行的内容：
 
-- Electron 启动后自动拉起 Python 后端，读取端口并建立连接，窗口显示后端健康状态。
+- Electron 启动后自动拉起 Python 后端，读取端口并建立连接，窗口显示后端健康状态。（壳当前仍为 Electron，待迁移到 Tauri 2，见 Task.md D-12。）
 - 后端：配置解析（`.env`、`llm.yaml`、`PET_*`）、LLM 三种接口范式的装配与热更新、SQLite 连接与迁移、文件日志与数据库日志（批量写入）、单实例锁、三种安全退出通道（stdin、HTTP、信号）、令牌鉴权与健康检查。
 - 前端：Electron 骨架、preload 白名单、接口契约生成（`npm run gen:api`）、api 层与健康检查。
 - 代码检查：ruff（后端），ESLint 与 Prettier（前端），pre-commit 钩子覆盖两者。
