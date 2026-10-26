@@ -1,30 +1,27 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { createRoot } from "react-dom/client";
-import { ApiError } from "../../api/client";
-import { checkBackendHealth } from "../../service/backend.service";
-
-function describeError(error: unknown): string {
-  if (error instanceof ApiError) return `${error.code}：${error.message}`;
-  return String(error);
-}
+import { PetWindow } from "../../modules/pet/PetWindow";
+import { startPetEvents } from "../../service/events";
 
 function PetApp() {
-  const [status, setStatus] = useState("正在检查后端…");
-
   useEffect(() => {
-    checkBackendHealth()
-      .then((health) => setStatus(`后端正常（端口 ${health.port}，状态 ${health.status}）`))
+    let stop: (() => void) | null = null;
+    let cancelled = false;
+    startPetEvents()
+      .then((close) => {
+        if (cancelled) close();
+        else stop = close;
+      })
       .catch((error: unknown) => {
-        console.error("backend health check failed", error);
-        setStatus(`后端错误：${describeError(error)}`);
+        console.error("连接后端事件失败", error);
       });
+    return () => {
+      cancelled = true;
+      stop?.();
+    };
   }, []);
 
-  return (
-    <main style={{ padding: 16, fontFamily: "system-ui, sans-serif", color: "#222" }}>
-      {status}
-    </main>
-  );
+  return <PetWindow />;
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<PetApp />);

@@ -16,7 +16,10 @@ export default defineConfig({
     outDir: `${projectRoot}dist`,
     emptyOutDir: true,
     rollupOptions: {
-      input: { pet: `${projectRoot}src/app/entries/pet.html` },
+      input: {
+        pet: `${projectRoot}src/app/entries/pet.html`,
+        chat: `${projectRoot}src/app/entries/chat.html`,
+      },
     },
   },
 });
