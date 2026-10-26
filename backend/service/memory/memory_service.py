@@ -23,15 +23,15 @@ Category = Literal["profile", "preference", "habit", "event", "interaction"]
 
 
 class MemoryServiceError(Exception):
-    pass
+    code: str = "memory_error"
 
 
 class MemoryNotFound(MemoryServiceError):
-    pass
+    code = "not_found"
 
 
 class MemoryCorrupt(MemoryServiceError):
-    pass
+    code = "corrupt"
 
 
 class MemorySource(BaseModel):
@@ -333,7 +333,9 @@ TRIGGERS = ("keyword", "explicit")
 
 
 class MemoryWriteError(MemoryServiceError):
-    pass
+    def __init__(self, message: str, code: str = "invalid") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class MemoryWriter:
@@ -372,7 +374,7 @@ class MemoryWriter:
                 importance=importance,
             )
         except (MemoryServiceError, ValueError) as exc:
-            raise MemoryWriteError(str(exc)) from exc
+            raise MemoryWriteError(str(exc), code=getattr(exc, "code", "invalid")) from exc
 
     def revise(self, memory_id: str, **changes: Any) -> StructuredMemory:
         self._ensure_writable()
@@ -383,17 +385,17 @@ class MemoryWriter:
         try:
             return self._memories.update(memory_id, **changes)
         except (MemoryServiceError, ValueError) as exc:
-            raise MemoryWriteError(str(exc)) from exc
+            raise MemoryWriteError(str(exc), code=getattr(exc, "code", "invalid")) from exc
 
     def temporary_mode(self) -> bool:
         return self._daily.temporary_mode()
 
     def _ensure_writable(self) -> None:
         if self._daily.temporary_mode():
-            raise MemoryWriteError("临时模式开启，本次不写入结构化记忆")
+            raise MemoryWriteError("临时模式开启，本次不写入结构化记忆", code="temporary_mode")
 
     def _ensure_not_sensitive(self, *texts: str) -> None:
         for text in texts:
             reason = sensitive_reason(text)
             if reason is not None:
-                raise MemoryWriteError(f"拒绝写入：{reason}")
+                raise MemoryWriteError(f"拒绝写入：{reason}", code="sensitive")

@@ -21,13 +21,17 @@ def build_index(memories: list[StructuredMemory], daily_dates: list[str]) -> dic
         }
         for memory in sorted(memories, key=lambda item: (item.created_at, item.id))
     ]
+    return {
+        "描述": dict(DESCRIPTION),
+        "记忆索引": {"结构化记忆": structured, "daily_memory": daily_memory_index(daily_dates)},
+    }
+
+
+def daily_memory_index(daily_dates: list[str]) -> dict[str, list[str]]:
     months: dict[str, list[str]] = {}
     for day in sorted(set(daily_dates)):
         months.setdefault(day[:7], []).append(day)
-    return {
-        "描述": dict(DESCRIPTION),
-        "记忆索引": {"结构化记忆": structured, "daily_memory": months},
-    }
+    return months
 
 
 class MemoryIndexService:

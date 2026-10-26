@@ -1,6 +1,25 @@
 {
   "operations": [
     {
+      "operationId": "delete_memory",
+      "method": "DELETE",
+      "path": "/api/memories/{memory_id}",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/DeleteResponse"
+        },
+        "403": null,
+        "404": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
+      }
+    },
+    {
       "operationId": "get_active_llm",
       "method": "GET",
       "path": "/api/llm/active",
@@ -11,6 +30,25 @@
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ActiveLlmResponse"
+        }
+      }
+    },
+    {
+      "operationId": "get_memory",
+      "method": "GET",
+      "path": "/api/memories/{memory_id}",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MemoryOut"
+        },
+        "404": null,
+        "409": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
         }
       }
     },
@@ -59,6 +97,21 @@
         "200": {
           "$ref": "#/components/schemas/LlmProvidersResponse"
         }
+      }
+    },
+    {
+      "operationId": "list_memories",
+      "method": "GET",
+      "path": "/api/memories",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MemoriesResponse"
+        },
+        "422": null
       }
     },
     {
@@ -113,6 +166,25 @@
       }
     },
     {
+      "operationId": "set_memory_temporary_mode",
+      "method": "POST",
+      "path": "/api/memories/temporary-mode",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/TemporaryModeRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/TemporaryModeResponse"
+        },
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
+      }
+    },
+    {
       "operationId": "shutdown",
       "method": "POST",
       "path": "/api/shutdown",
@@ -128,6 +200,26 @@
           "title": "Response Shutdown",
           "type": "object"
         }
+      }
+    },
+    {
+      "operationId": "update_memory",
+      "method": "PATCH",
+      "path": "/api/memories/{memory_id}",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/MemoryPatch"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MemoryOut"
+        },
+        "403": null,
+        "404": null,
+        "409": null,
+        "422": null
       }
     }
   ],
@@ -378,6 +470,39 @@
         "title": "ChatRequest",
         "type": "object"
       },
+      "DailyRecordOut": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "date",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "DailyRecordOut",
+        "type": "object"
+      },
       "DefaultInfo": {
         "properties": {
           "model": {
@@ -394,6 +519,37 @@
           "model"
         ],
         "title": "DefaultInfo",
+        "type": "object"
+      },
+      "DeleteResponse": {
+        "properties": {
+          "deleted": {
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ],
+        "title": "DeleteResponse",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
         "type": "object"
       },
       "LlmProvidersResponse": {
@@ -439,6 +595,195 @@
           "last_reload_errors"
         ],
         "title": "LlmProvidersResponse",
+        "type": "object"
+      },
+      "MemoriesResponse": {
+        "properties": {
+          "core_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Core Ids",
+            "type": "array"
+          },
+          "daily_memory": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Daily Memory",
+            "type": "object"
+          },
+          "daily_records": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/DailyRecordOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Daily Records"
+          },
+          "skipped": {
+            "items": {
+              "$ref": "#/components/schemas/SkippedMemoryOut"
+            },
+            "title": "Skipped",
+            "type": "array"
+          },
+          "structured": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryOut"
+            },
+            "title": "Structured",
+            "type": "array"
+          },
+          "temporary_mode": {
+            "title": "Temporary Mode",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "temporary_mode",
+          "core_ids",
+          "structured",
+          "skipped",
+          "daily_memory"
+        ],
+        "title": "MemoriesResponse",
+        "type": "object"
+      },
+      "MemoryOut": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "importance": {
+            "title": "Importance",
+            "type": "integer"
+          },
+          "source": {
+            "$ref": "#/components/schemas/MemorySourceOut"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "category",
+          "title",
+          "content",
+          "importance",
+          "source",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MemoryOut",
+        "type": "object"
+      },
+      "MemoryPatch": {
+        "additionalProperties": false,
+        "properties": {
+          "category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "profile",
+                  "preference",
+                  "habit",
+                  "event",
+                  "interaction"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Category"
+          },
+          "content": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "importance": {
+            "anyOf": [
+              {
+                "maximum": 5,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Importance"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          }
+        },
+        "title": "MemoryPatch",
+        "type": "object"
+      },
+      "MemorySourceOut": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "date"
+        ],
+        "title": "MemorySourceOut",
         "type": "object"
       },
       "ModelInfo": {
@@ -562,6 +907,24 @@
           }
         ]
       },
+      "SkippedMemoryOut": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "reason"
+        ],
+        "title": "SkippedMemoryOut",
+        "type": "object"
+      },
       "StatusEvent": {
         "properties": {
           "state": {
@@ -586,6 +949,73 @@
           "state"
         ],
         "title": "StatusEvent",
+        "type": "object"
+      },
+      "TemporaryModeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "TemporaryModeRequest",
+        "type": "object"
+      },
+      "TemporaryModeResponse": {
+        "properties": {
+          "temporary_mode": {
+            "title": "Temporary Mode",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "temporary_mode"
+        ],
+        "title": "TemporaryModeResponse",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
         "type": "object"
       }
     }

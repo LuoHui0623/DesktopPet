@@ -36,7 +36,8 @@ from service.llm import LlmService
 from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
-from service.memory.memory_service import StructuredMemoryService
+from service.memory.memory_service import MemoryWriter, StructuredMemoryService
+from service.memory.services import MemoryServices
 from service.persona.persona_service import sync_persona_version
 
 logger = logging.getLogger("pet")
@@ -135,6 +136,13 @@ def serve(
     shutdown = ShutdownController()
     event_bus = EventBus()
     core_memory = CoreMemoryService(DbCoreMemory(db_file), structured_memory)
+    memory_writer = MemoryWriter(structured_memory, daily_log, ZoneInfo(settings.timezone))
+    memory_services = MemoryServices(
+        structured=structured_memory,
+        writer=memory_writer,
+        daily=daily_log,
+        core=core_memory,
+    )
     chat_service = ChatService(
         llm_service,
         daily_log,
@@ -152,6 +160,7 @@ def serve(
         llm_service=llm_service,
         event_bus=event_bus,
         chat_service=chat_service,
+        memories=memory_services,
     )
     config = uvicorn.Config(
         app,
