@@ -1,3 +1,17 @@
-from service.llm.llm_service import LlmService, LlmUnavailableError, ProviderStatus, ReloadResult
+from service.llm.llm_service import (
+    ActiveModel,
+    LlmService,
+    LlmUnavailableError,
+    ModelSelectionError,
+    ProviderStatus,
+    ReloadResult,
+)
 
-__all__ = ["LlmService", "LlmUnavailableError", "ProviderStatus", "ReloadResult"]
+__all__ = [
+    "ActiveModel",
+    "LlmService",
+    "LlmUnavailableError",
+    "ModelSelectionError",
+    "ProviderStatus",
+    "ReloadResult",
+]

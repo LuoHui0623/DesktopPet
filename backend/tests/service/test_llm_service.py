@@ -5,7 +5,18 @@ from langchain_core.messages import AIMessage
 
 from config.settings import DefaultModel, ModelSettingsSource
 from infra.llm.usage import usage_scope
-from service.llm import LlmService, LlmUnavailableError
+from infra.store.app_settings import DbAppSettings
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from service.llm import ActiveModel, LlmService, LlmUnavailableError, ModelSelectionError
+
+MULTI_ENV = """
+LLM_PROVIDERS=deepseek,opencode
+DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+OPENCODE_BASE_URL=https://opencode.ai/zen/go/v1
+DEFAULT_CHAT_MODEL=deepseek-flash
+DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
+"""
 
 LLM_YAML = """
 providers:
@@ -25,6 +36,20 @@ LLM_PROVIDERS=deepseek
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEFAULT_CHAT_MODEL=deepseek-flash
 """
+
+MULTI_LLM_YAML = (
+    LLM_YAML
+    + """  opencode:
+    display_name: OpenCode Go
+    models:
+      - name: gpt-5.6-luna
+        id: gpt-5.6-luna
+        api: responses
+        roles: [chat]
+        temperature: 0.7
+        max_tokens: 1024
+"""
+)
 
 
 class FakeBuilder:
@@ -161,3 +186,60 @@ def test_client_for_records_usage_through_sink(config_dir: Path):
     assert (records[0].provider, records[0].model) == ("deepseek", "deepseek-flash")
     assert (records[0].purpose, records[0].run_id) == ("chat", "run-9")
     assert (records[0].tokens_in, records[0].tokens_out) == (2, 4)
+
+
+def make_multi_service(
+    config_dir: Path, active_store=None, builder: FakeBuilder | None = None
+) -> tuple[LlmService, FakeBuilder]:
+    (config_dir / ".env").write_text(MULTI_ENV, encoding="utf-8")
+    (config_dir / "llm.yaml").write_text(MULTI_LLM_YAML, encoding="utf-8")
+    env = {"DEEPSEEK_API_KEY": "sk-ds", "OPENCODE_API_KEY": "sk-oc"}
+    builder = builder or FakeBuilder()
+    service = LlmService(
+        ModelSettingsSource(config_dir, environ=env),
+        builder=builder,
+        environ=env,
+        active_store=active_store,
+    )
+    service.start()
+    return service, builder
+
+
+def test_switched_model_is_used_by_next_call(config_dir: Path):
+    service, builder = make_multi_service(config_dir)
+    service.client_for("chat")
+    assert builder.specs[-1].provider == "deepseek"
+
+    service.set_active_models({"chat": DefaultModel(provider="opencode", model="gpt-5.6-luna")})
+    service.client_for("chat")
+    assert builder.specs[-1].provider == "opencode"
+    assert builder.specs[-1].model == "gpt-5.6-luna"
+    assert service.active_model("chat") == ActiveModel(
+        "chat", "opencode", "gpt-5.6-luna", "database"
+    )
+
+
+def test_database_selection_persists_and_overrides_env(config_dir: Path, tmp_path: Path):
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+
+    service, _ = make_multi_service(config_dir, active_store=DbAppSettings(db_file))
+    assert service.active_model("chat").source == "env"
+    service.set_active_models({"chat": DefaultModel(provider="opencode", model="gpt-5.6-luna")})
+
+    restarted, _ = make_multi_service(config_dir, active_store=DbAppSettings(db_file))
+    assert restarted.active_model("chat") == ActiveModel(
+        "chat", "opencode", "gpt-5.6-luna", "database"
+    )
+    assert restarted.active_model("consolidate").source == "env"
+
+
+def test_selection_without_required_role_is_rejected(config_dir: Path):
+    service, _ = make_multi_service(config_dir)
+    with pytest.raises(ModelSelectionError, match="consolidate"):
+        service.set_active_models(
+            {"consolidate": DefaultModel(provider="opencode", model="gpt-5.6-luna")}
+        )
+    assert service.active_model("consolidate").source == "env"

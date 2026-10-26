@@ -2,18 +2,55 @@ import os
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
+from typing import Literal, Protocol
 
 from langchain_core.language_models import BaseChatModel
 
-from config.settings import DefaultModel, ModelSettings, ModelSettingsError, ModelSettingsSource
+from config.settings import (
+    CAPABILITY_VARS,
+    DefaultModel,
+    ModelSettings,
+    ModelSettingsError,
+    ModelSettingsSource,
+)
 from infra.llm import ApiParadigm, ModelSpec, build_chat_model
 from infra.llm.usage import TrackedChatModel, UsageSink, discard_usage
 
 Builder = Callable[[ModelSpec], BaseChatModel]
+ACTIVE_KEY_PREFIX = "llm.active."
 
 
 class LlmUnavailableError(Exception):
     pass
+
+
+class ModelSelectionError(Exception):
+    pass
+
+
+class ActiveModelStore(Protocol):
+    def get(self, key: str) -> str | None: ...
+
+    def put(self, key: str, value: str) -> None: ...
+
+
+class MemoryActiveModelStore:
+    def __init__(self) -> None:
+        self._values: dict[str, str] = {}
+
+    def get(self, key: str) -> str | None:
+        return self._values.get(key)
+
+    def put(self, key: str, value: str) -> None:
+        self._values[key] = value
+
+
+@dataclass(frozen=True)
+class ActiveModel:
+    capability: str
+    provider: str
+    model: str
+    source: Literal["database", "env"]
 
 
 @dataclass(frozen=True)
@@ -39,11 +76,13 @@ class LlmService:
         builder: Builder = build_chat_model,
         environ: Mapping[str, str] | None = None,
         usage_sink: UsageSink | None = None,
+        active_store: ActiveModelStore | None = None,
     ) -> None:
         self._source = source
         self._builder = builder
         self._environ = environ
         self._usage_sink = usage_sink or discard_usage
+        self._active_store = active_store or MemoryActiveModelStore()
         self._lock = threading.RLock()
         self._settings: ModelSettings | None = None
         self._stamp: object = None
@@ -88,9 +127,26 @@ class LlmService:
                 statuses.append(ProviderStatus(provider.name, provider.display_name, False, reason))
         return statuses
 
+    def active_model(self, capability: str) -> ActiveModel | None:
+        settings = self.current()
+        stored = self._stored_ref(capability)
+        if stored is not None:
+            return ActiveModel(capability, stored.provider, stored.model, "database")
+        default = settings.defaults.get(capability)
+        if default is not None:
+            return ActiveModel(capability, default.provider, default.model, "env")
+        return None
+
+    def set_active_models(self, selections: Mapping[str, DefaultModel]) -> None:
+        settings = self.current()
+        for capability, ref in selections.items():
+            self._validate(settings, capability, ref)
+        for capability, ref in selections.items():
+            self._active_store.put(_active_key(capability), f"{ref.provider}/{ref.model}")
+
     def client_for(self, capability: str, override: DefaultModel | None = None) -> TrackedChatModel:
         settings = self.current()
-        ref = override or settings.defaults.get(capability)
+        ref = override or self._stored_ref(capability) or settings.defaults.get(capability)
         if ref is None:
             raise LlmUnavailableError(f"{capability} 能力未配置默认模型")
         provider = settings.providers.get(ref.provider)
@@ -146,3 +202,26 @@ class LlmService:
 
     def _env(self) -> Mapping[str, str]:
         return os.environ if self._environ is None else self._environ
+
+    def _stored_ref(self, capability: str) -> DefaultModel | None:
+        raw = self._active_store.get(_active_key(capability))
+        if not raw:
+            return None
+        provider, _, model = raw.partition("/")
+        return DefaultModel(provider=provider, model=model)
+
+    def _validate(self, settings: ModelSettings, capability: str, ref: DefaultModel) -> None:
+        if capability not in CAPABILITY_VARS:
+            raise ModelSelectionError(f"未知能力 {capability}")
+        provider = settings.providers.get(ref.provider)
+        if provider is None:
+            raise ModelSelectionError(f"provider {ref.provider} 未启用")
+        model = provider.models.get(ref.model)
+        if model is None:
+            raise ModelSelectionError(f"provider {ref.provider} 中没有模型 {ref.model}")
+        if capability not in model.roles:
+            raise ModelSelectionError(f"模型 {ref.model} 不支持 {capability} 能力")
+
+
+def _active_key(capability: str) -> str:
+    return f"{ACTIVE_KEY_PREFIX}{capability}"

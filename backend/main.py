@@ -20,6 +20,7 @@ from infra.lifecycle import ShutdownController, watch_stdin
 from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
+from infra.store.app_settings import DbAppSettings
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 from service.llm import LlmService
@@ -136,6 +137,7 @@ def main() -> int:
     llm_service = LlmService(
         ModelSettingsSource(),
         usage_sink=db_usage_sink(settings.data_dir / "pet.db"),
+        active_store=DbAppSettings(settings.data_dir / "pet.db"),
     )
     try:
         llm_service.start()
