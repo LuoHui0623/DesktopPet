@@ -43,7 +43,7 @@
 | T-027 | 对话接口：`POST /api/chat`、`GET /api/chat/history` | T-025、T-026 | 已完成 |
 | T-028 | 文件 IO 与权限（`infra/files`） | — | 已完成 |
 | T-029 | agent 文件工具（`service/agent/tools/file.py`） | T-028 | 已完成 |
-| T-030 | 结构化记忆存储（JSON 文件） | T-023 | 待办 |
+| T-030 | 结构化记忆存储（JSON 文件） | T-023 | 已完成 |
 | T-031 | 记忆索引生成（由代码生成） | T-030 | 待办 |
 | T-032 | 记忆读取工具与行号 helper | T-030、T-031 | 待办 |
 | T-033 | sub agent 编排（ReAct、能力描述、检查点） | T-021、T-029、T-032 | 待办 |
@@ -68,7 +68,7 @@
 
 - 阶段：基础对话与记忆管理
 - 正在做：无
-- 下一步：T-030 结构化记忆存储（依赖 T-023，已满足）
+- 下一步：T-031 记忆索引生成（依赖 T-030，已满足）
 - 阻塞项：无。第五节待定事项已全部确认。
 - 文档状态：PRD 已按 v0.7 修订，Arch 已按口径修订（见第六节 A-22）。
 
@@ -344,14 +344,15 @@
 
 **依赖**：T-023
 
-**任务状态**：待办
+**任务状态**：已完成
 
 **范围**：每条结构化记忆一个文件 `data/memory/structured/<id>.json`，字段见 PRD §5.4。文件读写放在 `infra/files/`，增删改查的业务判断放在 `service/memory/memory_service.py`。id 不复用。`daily_memory` 的行号视图由 `service/memory/` 渲染：每日完整对话按轮渲染为文本行。
 
-**验收/验证结果**：待完成时填写（方式 / 结果 / 证据）
-- [ ] 增删改查正常
-- [ ] 每条记忆对应一个文件
-- [ ] 损坏的文件被跳过并返回错误原因，不影响其他条目
+**验收/验证结果**：
+- [x] 增删改查正常（方式：`tests/service/test_memory_service.py` 中的 create、get、list、update、delete 用例；结果：通过）
+- [x] 每条记忆对应一个文件（方式：`test_create_writes_one_file_per_memory`、`test_created_file_matches_the_documented_format`；结果：通过）
+- [x] 损坏的文件被跳过并返回错误原因，不影响其他条目（方式：`test_corrupt_json_is_skipped_with_reason`、`test_schema_invalid_file_is_skipped_with_reason`、`test_file_name_must_match_memory_id`；结果：通过）
+- 备注：文件存放于 `data/memory/structured/<id>.json`（`constants/path.py` 的 `STRUCTURED_MEMORY_DIR`）；文件读写在 `infra/files/json_store.py`（`JsonDirectory`，写入先写临时文件再替换），业务在 `service/memory/memory_service.py`；id 格式 `m_YYYYMMDD_NNN`，每天的序号持久化在 `app_setting`（键 `memory.structured.seq.<日期>`），删除后不复用；`source.type` 取 `keyword`（关键词触发）或 `explicit`（用户明确要求），此取值为本任务的选择，PRD 只给出示例；`importance` 默认 3，取值 1–5（沿用旧表约束）；`daily_memory` 行号视图 `render_daily_turns` 按轮渲染，每轮一行，换行折叠为空格；全量测试 324 项通过，3 项因符号链接权限跳过，ruff 检查和格式检查通过；提交号 2ff5026
 
 ### T-031 记忆索引生成
 
