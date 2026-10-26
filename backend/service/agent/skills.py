@@ -48,3 +48,22 @@ class SkillRegistry:
             CapabilityDescription(name=skill.name, description=skill.description)
             for skill in self._skills.values()
         ]
+
+
+MEMORY_WRITE_CAPABILITY = "记忆写入"
+MEMORY_WRITE_KEYWORDS = ("记住", "记一下", "我喜欢")
+
+
+def memory_write_skill() -> Skill:
+    return Skill(
+        name=MEMORY_WRITE_CAPABILITY,
+        description=(
+            "判断用户这句话是否包含值得长期记住的信息。"
+            "若是新信息，用 memory_create 新增一条记忆。"
+            "若与已有记忆是同一主题的新说法，先用 memory_index 与 memory_read 找到该条记忆的 id，"
+            "再用 memory_update 覆盖其内容。"
+            "不要记录用户没有表达的内容。完成后用一句话告知用户记住了什么。"
+        ),
+        keywords=MEMORY_WRITE_KEYWORDS,
+        tools=("memory_index", "memory_read", "memory_create", "memory_update"),
+    )

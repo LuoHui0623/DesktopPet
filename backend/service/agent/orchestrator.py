@@ -44,6 +44,9 @@ class Checkpoint:
     capability: str
     ok: bool
     text: str
+    output: str | None = None
+    error: str | None = None
+    steps: tuple[dict[str, Any], ...] = ()
 
 
 def parse_plan(text: str) -> list[PlanStep]:
@@ -126,6 +129,9 @@ class Orchestrator:
             capability=capability,
             ok=result.ok,
             text=_checkpoint_text(capability, result),
+            output=result.output,
+            error=result.error,
+            steps=tuple(result.steps),
         )
 
     def run_plan(self, plan: Sequence[PlanStep]) -> list[Checkpoint]:

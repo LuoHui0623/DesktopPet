@@ -136,13 +136,15 @@ class SubAgent:
                 continue
 
             result = self._call_tool(action, tools)
+            succeeded = result.get("ok") is True
             steps.append(
                 {
                     "step": number,
                     "action": "tool",
                     "tool": action.get("tool"),
                     "args": action.get("args"),
-                    "ok": result.get("ok") is True,
+                    "ok": succeeded,
+                    "error": None if succeeded else result.get("error"),
                 }
             )
             messages.append(HumanMessage(content=_observation(result)))

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from infra.files.json_store import JsonDirectory, read_json
 from infra.store.repositories.daily_log import DailyLogRecord
 from service.memory.daily_log_service import DailyLogService, SettingStore
+from service.memory.sensitive import sensitive_reason
 
 ID_PATTERN = r"^m_(\d{8})_(\d{3,})$"
 ID_RE = re.compile(ID_PATTERN)
@@ -317,3 +318,73 @@ class MemoryReader:
                 raise MemoryReadError(f"{day} 没有对话记录")
             return render_daily_turns(records)
         raise MemoryReadError(f"未知的记忆类型：{kind}")
+
+
+TRIGGERS = ("keyword", "explicit")
+
+
+class MemoryWriteError(MemoryServiceError):
+    pass
+
+
+class MemoryWriter:
+    def __init__(
+        self,
+        memories: StructuredMemoryService,
+        daily: DailyLogService,
+        timezone: tzinfo,
+        clock: Callable[[tzinfo], datetime] | None = None,
+    ) -> None:
+        self._memories = memories
+        self._daily = daily
+        self._timezone = timezone
+        self._clock = clock or (lambda zone: datetime.now(zone))
+
+    def remember(
+        self,
+        *,
+        category: str,
+        title: str,
+        content: str,
+        trigger: str = "keyword",
+        importance: int = DEFAULT_IMPORTANCE,
+    ) -> StructuredMemory:
+        self._ensure_writable()
+        if trigger not in TRIGGERS:
+            raise MemoryWriteError(f"触发方式应为 keyword 或 explicit，当前为 {trigger!r}")
+        self._ensure_not_sensitive(title, content)
+        today = self._clock(self._timezone).date().isoformat()
+        try:
+            return self._memories.create(
+                category=category,
+                title=title,
+                content=content,
+                source=MemorySource(type=trigger, date=today),
+                importance=importance,
+            )
+        except (MemoryServiceError, ValueError) as exc:
+            raise MemoryWriteError(str(exc)) from exc
+
+    def revise(self, memory_id: str, **changes: Any) -> StructuredMemory:
+        self._ensure_writable()
+        for field_name in ("title", "content"):
+            value = changes.get(field_name)
+            if value is not None:
+                self._ensure_not_sensitive(value)
+        try:
+            return self._memories.update(memory_id, **changes)
+        except (MemoryServiceError, ValueError) as exc:
+            raise MemoryWriteError(str(exc)) from exc
+
+    def temporary_mode(self) -> bool:
+        return self._daily.temporary_mode()
+
+    def _ensure_writable(self) -> None:
+        if self._daily.temporary_mode():
+            raise MemoryWriteError("临时模式开启，本次不写入结构化记忆")
+
+    def _ensure_not_sensitive(self, *texts: str) -> None:
+        for text in texts:
+            reason = sensitive_reason(text)
+            if reason is not None:
+                raise MemoryWriteError(f"拒绝写入：{reason}")
