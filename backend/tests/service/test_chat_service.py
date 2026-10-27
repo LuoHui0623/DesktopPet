@@ -4,13 +4,13 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage, SystemMessage
 
-from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.llm.usage import db_usage_sink
 from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from infra.store.persona_versions import DbPersonaVersions
 from service.agent.prompt import load_templates
 from service.chat.chat_service import (
     ChatError,
@@ -21,6 +21,7 @@ from service.chat.chat_service import (
 from service.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
+from service.persona.persona_service import PersonaService
 
 LLM_YAML = """
 providers:
@@ -42,7 +43,16 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 """
 
-PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
+CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和\n"
+
+
+def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
+    directory = tmp_path / "personas"
+    directory.mkdir(exist_ok=True)
+    (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
+    return PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+
+
 SHORT = "你好呀，今天过得怎么样？"
 LONG = "很" * 41 + "。"
 
@@ -93,7 +103,7 @@ class Harness:
         self.chat = ChatService(
             self.llm,
             self.daily,
-            PERSONA,
+            persona_service(tmp_path, self.db_file),
             load_templates(),
             db_usage_sink(self.db_file),
             events,

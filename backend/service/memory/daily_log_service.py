@@ -66,6 +66,17 @@ class DailyLogService:
         )
         return True
 
+    def record_event(self, content: str) -> bool:
+        if self.temporary_mode():
+            return False
+        now = self._clock(self._timezone)
+        self._store.append(
+            now.date().isoformat(),
+            now.isoformat(timespec="milliseconds"),
+            [("event", content)],
+        )
+        return True
+
     def dates(self) -> list[str]:
         return self._store.dates()
 

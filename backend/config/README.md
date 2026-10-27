@@ -10,7 +10,7 @@
 | `.env` | 否 | 本机配置：通用参数、启用的 provider、base_url、默认模型 |
 | `.env.example` | 是 | `.env` 的模板，不含真实值 |
 | `llm.yaml` | 是 | 模型预设：provider、模型、角色、温度、最大 token、请求头 |
-| `persona.yaml` | 是 | 人设 |
+| `personas/<id>.yaml` | 是 | 人设 |
 | `settings.py` | 是 | 解析入口：读取 `.env` 与 `llm.yaml`，产出 `model_settings`（见 §10）；通用配置 `PET_*` 的加载与校验 |
 
 
@@ -233,7 +233,7 @@ opencode:
 | `PET_PORT` | `0` | 0 到 65535 的整数，`0` 表示随机端口 |
 | `PET_TOKEN` | 无（必填） | 不能为空；`ServiceSettings` 中以 `SecretStr` 保存，不出现在 repr 或 JSON 中 |
 | `PET_DATA_DIR` | `backend/data` | 相对路径按项目根目录解析 |
-| `PET_PERSONA_FILE` | `backend/config/persona.yaml` | 相对路径按项目根目录解析 |
+| `PET_PERSONAS_DIR` | `backend/config/personas` | 人设卡片目录，相对路径按项目根目录解析 |
 | `PET_TIMEZONE` | `Asia/Shanghai` | 必须是有效的 IANA 时区名 |
 | `PET_LOG_LEVEL` | `INFO` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 之一，大小写不敏感 |
 | `PET_QUIET_HOURS` | `23:00-08:00` | `HH:MM-HH:MM` 格式，小时 00–23，分钟 00–59 |
@@ -245,7 +245,13 @@ opencode:
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。
 
-## 12. 角色卡 persona.yaml
+## 12. 人设卡片（personas/）
+
+每张卡是 `backend/config/personas/<id>.yaml`，id 为文件名（允许文字、数字、下划线、连字符，1 到 32 个字符）。`DEFAULT_PERSONA_ID`（`constants/agent.py`）为默认启用的人设，即 `芙芙`。启用状态保存在数据库 `app_setting`（键 `persona.active`）。
+
+每次请求检查卡片的修改时间，文件变化后重新解析。解析失败的卡标为不可用，不能启用，错误原因在 `GET /api/personas` 中显示。切换人设由设置页完成，接口为 `PUT /api/personas/active`。
+
+下面描述单张卡的内容格式。
 
 `config/persona.py` 的 `load_persona(path)` 解析角色卡，返回不可变的 `PersonaConfig`。顶层键是**主题**，每个主题有固定的解析方式，主题清单与规则定义在 `THEME_SPECS`：
 

@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
 
-from constants.path import CONFIG_DIR, DATA_DIR, resolve_from_root
+from constants.path import CONFIG_DIR, DATA_DIR, PERSONAS_DIR, resolve_from_root
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 QUIET_HOURS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
@@ -310,7 +310,7 @@ class ServiceSettings(BaseModel):
     port: int
     token: SecretStr
     data_dir: Path
-    persona_file: Path
+    personas_dir: Path
     timezone: str
     log_level: str
     quiet_hours: str
@@ -409,7 +409,7 @@ def load_service_settings(
         port=port,
         token=SecretStr(token),
         data_dir=_path_value(values, "PET_DATA_DIR", DATA_DIR),
-        persona_file=_path_value(values, "PET_PERSONA_FILE", CONFIG_DIR / "persona.yaml"),
+        personas_dir=_path_value(values, "PET_PERSONAS_DIR", PERSONAS_DIR),
         timezone=timezone,
         log_level=log_level,
         quiet_hours=quiet_hours,

@@ -3,13 +3,13 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from hashlib import sha256
 from typing import Any, Literal, Protocol
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from langchain_core.messages import BaseMessage
 
-from config.persona import PersonaConfig
 from constants.speech import SENTENCE_MAX_CHARS
 from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
@@ -22,6 +22,7 @@ from service.llm import LlmService, LlmUnavailableError
 from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.memory_service import StructuredMemoryService
+from service.persona.persona_service import PersonaService, PersonaSnapshot, PersonaUnavailableError
 
 logger = logging.getLogger("pet")
 
@@ -89,12 +90,16 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+def _prompt_digest(template_digest: str, persona_id: str, persona_version: int) -> str:
+    return sha256(f"{template_digest}|{persona_id}|{persona_version}".encode()).hexdigest()
+
+
 class ChatService:
     def __init__(
         self,
         llm: LlmService,
         daily_log: DailyLogService,
-        persona: PersonaConfig,
+        personas: PersonaService,
         templates: PromptTemplates,
         usage_sink: UsageSink,
         events: ChatEvents | None = None,
@@ -110,15 +115,12 @@ class ChatService:
         self._usage_sink = usage_sink
         self._events = events or NoChatEvents()
         self._capture = capture
-        self._context = ContextBuilder(
-            persona,
-            templates,
-            daily_log,
-            timezone or DEFAULT_TIMEZONE,
-            core=core,
-            structured=structured,
-            clock=clock,
-        )
+        self._personas = personas
+        self._templates = templates
+        self._core = core
+        self._structured = structured
+        self._timezone = timezone or DEFAULT_TIMEZONE
+        self._clock = clock
 
     def reply(self, user_text: str, fragments: Sequence[MemoryFragment] = ()) -> ChatReply:
         text = user_text.strip()
@@ -126,9 +128,19 @@ class ChatService:
             raise ChatError("empty_input", "消息不能为空")
         if self._capture is not None and self._capture.matches(text):
             return self._reply_from_capture(text)
-        assembled = self._context.build(text, fragments)
+        snapshot = self._current_persona()
+        builder = ContextBuilder(
+            snapshot.config,
+            self._templates,
+            self._daily_log,
+            self._timezone,
+            core=self._core,
+            structured=self._structured,
+            clock=self._clock,
+        )
+        assembled = builder.build(text, fragments)
         messages = assembled.messages
-        digest = assembled.template_digest
+        digest = _prompt_digest(assembled.template_digest, snapshot.id, snapshot.version)
         try:
             client = self._llm.client_for("chat")
         except LlmUnavailableError as exc:
@@ -149,6 +161,12 @@ class ChatService:
         finally:
             self._events.status("idle")
         return ChatReply(message_id=message_id, text=reply, recorded=recorded, sources=sources)
+
+    def _current_persona(self) -> PersonaSnapshot:
+        try:
+            return self._personas.current()
+        except PersonaUnavailableError as exc:
+            raise ChatError(PersonaUnavailableError.code, str(exc)) from exc
 
     def _reply_from_capture(self, text: str) -> ChatReply:
         assert self._capture is not None

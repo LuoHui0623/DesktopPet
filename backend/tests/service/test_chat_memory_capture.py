@@ -5,7 +5,6 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage
 
-from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.files.json_store import JsonDirectory
 from infra.llm.usage import db_usage_sink
@@ -14,6 +13,7 @@ from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from infra.store.persona_versions import DbPersonaVersions
 from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import load_templates
@@ -25,9 +25,18 @@ from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
+from service.persona.persona_service import PersonaService
 
 TZ = ZoneInfo("Asia/Shanghai")
-PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
+CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和\n"
+
+
+def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
+    directory = tmp_path / "personas"
+    directory.mkdir(exist_ok=True)
+    (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
+    return PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+
 
 LLM_YAML = """
 providers:
@@ -141,7 +150,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     chat = ChatService(
         llm,
         daily,
-        PERSONA,
+        persona_service(tmp_path, db_file),
         load_templates(),
         db_usage_sink(db_file),
         events,

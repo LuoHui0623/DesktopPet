@@ -106,6 +106,7 @@ def start_backend(data_dir: Path, llm_base_url: str) -> tuple[subprocess.Popen, 
         "PET_TOKEN": TOKEN,
         "PET_DATA_DIR": str(data_dir),
         "PET_LOG_LEVEL": "INFO",
+        "PET_PERSONAS_DIR": str(data_dir / "personas"),
         "LLM_PROVIDERS": "deepseek",
         "DEEPSEEK_BASE_URL": llm_base_url,
         "DEEPSEEK_API_KEY": "sk-e2e-not-real",
@@ -271,6 +272,34 @@ def check_daily_records(api: Api) -> None:
     step("每日对话：记录完整保留，只读约束生效")
 
 
+def check_persona_switch(api: Api, tap: EventTap, llm: FakeLlm, data_dir: Path) -> None:
+    listing = api.call("GET", "/api/personas")
+    items = {item["id"]: item for item in listing["personas"]}
+    check(set(items) == {"芙芙", "小桌"}, f"人设卡片应为两张：{set(items)}")
+    check(listing["active"] == "芙芙", f"默认人设应为芙芙：{listing}")
+    check(items["小桌"]["available"] is True, "小桌卡应可用")
+    (data_dir / "personas" / "坏卡.yaml").write_text("role:\n  名字: 坏\n", encoding="utf-8")
+    broken = api.call("PUT", "/api/personas/active", {"id": "坏卡"}, expect=422)
+    check(broken["error"]["code"] == "persona_unavailable", f"不可用卡应被拒绝：{broken}")
+    step("人设卡片：列出多张卡，不可用卡不能启用")
+
+    api.call("PUT", "/api/personas/active", {"id": "小桌"})
+    mark = len(tap.events)
+    reply = api.call("POST", "/api/chat", {"text": "你好"})
+    check(reply["text"] == "你好呀，今天过得怎么样？", f"切换后回复异常：{reply}")
+    check(
+        "你的名字是小桌" in str(last_chat_request(llm.requests)["messages"][0]["content"]),
+        "切换后的下一次对话应使用小桌人设",
+    )
+    tap.wait_until_idle_after(mark)
+    history = api.call("GET", "/api/chat/history")["items"]
+    check(
+        any(item["role"] == "event" and "小桌" in item["content"] for item in history),
+        "历史中应出现人设切换的会话边界",
+    )
+    step("人设切换：下一次对话使用新人设，历史中出现会话边界")
+
+
 def check_shutdown_outputs(data_dir: Path) -> None:
     log_files = sorted((data_dir / "logs").glob("*.log"))
     check(log_files, "未找到后端日志")
@@ -281,10 +310,18 @@ def check_shutdown_outputs(data_dir: Path) -> None:
     step("关闭：stdin 指令正常退出，日志完整，令牌未落盘")
 
 
+def write_persona_cards(data_dir: Path) -> None:
+    personas = data_dir / "personas"
+    personas.mkdir()
+    (personas / "芙芙.yaml").write_text("role:\n  名字: 芙芙\n  人设: 陪伴\n", encoding="utf-8")
+    (personas / "小桌.yaml").write_text("role:\n  名字: 小桌\n  人设: 陪伴\n", encoding="utf-8")
+
+
 def run() -> Path:
     llm = FakeLlm()
     llm.start()
     data_dir = Path(tempfile.mkdtemp(prefix="pet-e2e-"))
+    write_persona_cards(data_dir)
     process, port, stderr_file = start_backend(data_dir, llm.base_url)
     try:
         api = Api(port)
@@ -296,6 +333,7 @@ def run() -> Path:
             memory = check_keyword_write(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)
+            check_persona_switch(api, tap, llm, data_dir)
         check_daily_records(api)
     finally:
         stop_backend(process)

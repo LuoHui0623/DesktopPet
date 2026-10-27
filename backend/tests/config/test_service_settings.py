@@ -37,16 +37,16 @@ def test_defaults_when_only_token_is_set(config_dir: Path):
 def test_default_paths_come_from_constants(config_dir: Path):
     settings = load(config_dir)
     assert settings.data_dir == DATA_DIR
-    assert settings.persona_file == CONFIG_DIR / "persona.yaml"
+    assert settings.personas_dir == CONFIG_DIR / "personas"
 
 
 def test_relative_paths_resolve_against_repo_root(config_dir: Path):
     settings = load(
         config_dir,
-        {"PET_DATA_DIR": "backend/data", "PET_PERSONA_FILE": "backend/config/persona.yaml"},
+        {"PET_DATA_DIR": "backend/data", "PET_PERSONAS_DIR": "backend/config/personas"},
     )
     assert settings.data_dir == ROOT_DIR / "backend" / "data"
-    assert settings.persona_file == ROOT_DIR / "backend" / "config" / "persona.yaml"
+    assert settings.personas_dir == ROOT_DIR / "backend" / "config" / "personas"
 
 
 def test_absolute_path_is_kept(config_dir: Path, tmp_path: Path):

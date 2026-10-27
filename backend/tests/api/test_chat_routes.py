@@ -8,7 +8,6 @@ from langchain_core.messages import AIMessage
 
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
-from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.events.bus import EventBus
 from infra.llm.usage import db_usage_sink
@@ -16,10 +15,12 @@ from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from infra.store.persona_versions import DbPersonaVersions
 from service.agent.prompt import load_templates
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
+from service.persona.persona_service import PersonaService
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -45,7 +46,16 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 """
 
-PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}})
+CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和\n"
+
+
+def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
+    directory = tmp_path / "personas"
+    directory.mkdir(exist_ok=True)
+    (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
+    return PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+
+
 LONG = "很" * 41 + "。"
 
 
@@ -81,7 +91,7 @@ def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None):
     chat = ChatService(
         llm,
         DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ),
-        PERSONA,
+        persona_service(tmp_path, db_file),
         load_templates(),
         db_usage_sink(db_file),
         BusEventPublisher(bus),

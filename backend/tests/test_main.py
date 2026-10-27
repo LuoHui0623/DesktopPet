@@ -106,17 +106,28 @@ def test_missing_token_exits_with_error():
     assert "PET_TOKEN" in stderr
 
 
-def test_invalid_persona_exits_with_error(tmp_path: Path):
-    persona_file = tmp_path / "persona.yaml"
-    persona_file.write_text("role: [unclosed\n", encoding="utf-8")
-    process = run_backend({"PET_PERSONA_FILE": str(persona_file)})
+def test_no_persona_card_exits_with_error(tmp_path: Path):
+    personas = tmp_path / "personas"
+    personas.mkdir()
+    process = run_backend({"PET_PERSONAS_DIR": str(personas)})
     stdout, stderr = process.communicate(timeout=20)
     assert process.returncode == 1
     assert stdout == ""
-    assert "角色卡配置错误" in stderr
+    assert "未找到人设卡片" in stderr
 
 
-def persona_versions(data_dir: Path) -> list[tuple[int, str]]:
+def test_only_broken_persona_cards_exit_with_error(tmp_path: Path):
+    personas = tmp_path / "personas"
+    personas.mkdir()
+    (personas / "芙芙.yaml").write_text("role: [unclosed\n", encoding="utf-8")
+    process = run_backend({"PET_PERSONAS_DIR": str(personas)})
+    stdout, stderr = process.communicate(timeout=20)
+    assert process.returncode == 1
+    assert stdout == ""
+    assert "人设配置错误（芙芙）" in stderr
+
+
+def persona_versions(data_dir: Path) -> list[tuple[str, int]]:
     import sqlite3
 
     if not (data_dir / "pet.db").exists():
@@ -125,45 +136,39 @@ def persona_versions(data_dir: Path) -> list[tuple[int, str]]:
     try:
         return [
             (row[0], row[1])
-            for row in conn.execute("SELECT version, content FROM persona_version ORDER BY version")
+            for row in conn.execute(
+                "SELECT persona_id, version FROM persona_version ORDER BY persona_id, version"
+            )
         ]
     finally:
         conn.close()
 
 
 def test_persona_version_is_recorded_on_startup(tmp_path: Path):
-    persona_file = tmp_path / "persona.yaml"
-    persona_file.write_text("role:\n  名字: 小桌\n  人设: 陪伴\n", encoding="utf-8")
-    extra = {"PET_PERSONA_FILE": str(persona_file)}
+    personas = tmp_path / "personas"
+    personas.mkdir()
+    card = personas / "芙芙.yaml"
+    card.write_text("role:\n  名字: 小桌\n  人设: 陪伴\n", encoding="utf-8")
+    extra = {"PET_PERSONAS_DIR": str(personas)}
 
     first = start_with_data_dir(tmp_path, **extra)
     assert first.stdout.readline().startswith("PET_PORT=")
     first.stdin.close()
     assert first.communicate(timeout=20)[0] == ""
-    assert [version for version, _ in persona_versions(tmp_path)] == [1]
+    assert persona_versions(tmp_path) == [("芙芙", 1)]
 
-    persona_file.write_text("role:\n  名字: 小宠\n  人设: 陪伴\n", encoding="utf-8")
+    card.write_text("role:\n  名字: 小宠\n  人设: 陪伴\n", encoding="utf-8")
     second = start_with_data_dir(tmp_path, **extra)
     assert second.stdout.readline().startswith("PET_PORT=")
     second.stdin.close()
     assert second.communicate(timeout=20)[0] == ""
-    assert [version for version, _ in persona_versions(tmp_path)] == [1, 2]
+    assert persona_versions(tmp_path) == [("芙芙", 1), ("芙芙", 2)]
 
     third = start_with_data_dir(tmp_path, **extra)
     assert third.stdout.readline().startswith("PET_PORT=")
     third.stdin.close()
     assert third.communicate(timeout=20)[0] == ""
-    assert [version for version, _ in persona_versions(tmp_path)] == [1, 2]
-
-
-def test_invalid_persona_does_not_write_version(tmp_path: Path):
-    persona_file = tmp_path / "persona.yaml"
-    persona_file.write_text("role: [unclosed\n", encoding="utf-8")
-    process = start_with_data_dir(tmp_path, PET_PERSONA_FILE=str(persona_file))
-    stdout, _ = process.communicate(timeout=20)
-    assert process.returncode == 1
-    assert stdout == ""
-    assert persona_versions(tmp_path) == []
+    assert persona_versions(tmp_path) == [("芙芙", 1), ("芙芙", 2)]
 
 
 def test_occupied_port_exits_with_error():

@@ -1,4 +1,5 @@
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -138,3 +139,47 @@ def load_persona(path: Path) -> PersonaConfig:
     except yaml.YAMLError as exc:
         raise PersonaError([f"persona.yaml 解析失败：{exc}"]) from exc
     return parse_persona(data)
+
+
+PERSONA_ID_PATTERN = re.compile(r"^[\w-]{1,32}$")
+CARD_SUFFIX = ".yaml"
+
+
+def validate_persona_id(persona_id: str) -> str | None:
+    if PERSONA_ID_PATTERN.match(persona_id):
+        return None
+    return "人设 id 只能包含文字、数字、下划线与连字符，长度 1 到 32"
+
+
+@dataclass(frozen=True)
+class PersonaCard:
+    id: str
+    config: PersonaConfig | None
+    errors: tuple[str, ...] = ()
+
+    @property
+    def available(self) -> bool:
+        return self.config is not None
+
+
+def card_path(directory: Path, persona_id: str) -> Path:
+    return directory / f"{persona_id}{CARD_SUFFIX}"
+
+
+def load_card(directory: Path, persona_id: str) -> PersonaCard:
+    invalid = validate_persona_id(persona_id)
+    if invalid is not None:
+        return PersonaCard(id=persona_id, config=None, errors=(invalid,))
+    try:
+        return PersonaCard(id=persona_id, config=load_persona(card_path(directory, persona_id)))
+    except PersonaError as exc:
+        return PersonaCard(id=persona_id, config=None, errors=tuple(exc.errors))
+
+
+def scan_cards(directory: Path) -> list[PersonaCard]:
+    if not directory.is_dir():
+        return []
+    ids = sorted(
+        path.stem for path in directory.iterdir() if path.is_file() and path.suffix == CARD_SUFFIX
+    )
+    return [load_card(directory, persona_id) for persona_id in ids]

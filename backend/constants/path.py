@@ -5,6 +5,7 @@ ROOT_DIR = BACKEND_DIR.parent
 FRONTEND_DIR = ROOT_DIR / "frontend"
 
 CONFIG_DIR = BACKEND_DIR / "config"
+PERSONAS_DIR = CONFIG_DIR / "personas"
 DATA_DIR = BACKEND_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 EXPORT_DIR = DATA_DIR / "exports"

@@ -58,7 +58,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2, 3]
+    assert applied == [1, 2, 3, 4]
     assert EXPECTED_TABLES <= tables(conn)
 
 
@@ -66,7 +66,12 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
     migrate(conn)
     assert migrate(conn) == []
     rows = conn.execute("SELECT version, name FROM schema_version").fetchall()
-    assert [tuple(row) for row in rows] == [(1, "init"), (2, "log_record"), (3, "agent")]
+    assert [tuple(row) for row in rows] == [
+        (1, "init"),
+        (2, "log_record"),
+        (3, "agent"),
+        (4, "persona_card"),
+    ]
 
 
 def test_schema_version_records_checksum(conn: sqlite3.Connection):
@@ -244,7 +249,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         )
         conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES (1, 1)")
 
-        assert migrate(conn) == [3]
+        assert migrate(conn) == [3, 4]
 
         usage = conn.execute(
             "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_usage"
@@ -254,7 +259,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         assert "daily_summary" not in tables(conn)
         assert conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0] == 0
         versions = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
-        assert [tuple(row) for row in versions] == [(1,), (2,), (3,)]
+        assert [tuple(row) for row in versions] == [(1,), (2,), (3,), (4,)]
     finally:
         conn.close()
 
@@ -262,7 +267,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2, 3]
+        assert migrate(conn) == [1, 2, 3, 4]
         assert migrate(conn) == []
     finally:
         conn.close()

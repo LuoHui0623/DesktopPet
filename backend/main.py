@@ -2,7 +2,6 @@ import logging
 import socket
 import sqlite3
 import sys
-from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -10,7 +9,7 @@ import uvicorn
 
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
-from config.persona import PersonaConfig, PersonaError, load_persona
+from config.persona import scan_cards
 from config.settings import (
     ModelSettingsError,
     ModelSettingsSource,
@@ -30,6 +29,7 @@ from infra.store.core_memory import DbCoreMemory
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
+from infra.store.persona_versions import DbPersonaVersions
 from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import PromptError, PromptTemplates, load_templates
@@ -43,7 +43,7 @@ from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
 from service.memory.services import MemoryServices
-from service.persona.persona_service import sync_persona_version
+from service.persona.persona_service import PersonaService, PersonaUnavailableError
 
 logger = logging.getLogger("pet")
 GRACEFUL_SHUTDOWN_SECONDS = 5
@@ -53,15 +53,6 @@ def initialize_database(data_dir: Path) -> list[int]:
     conn = connect(data_dir / "pet.db")
     try:
         return migrate(conn)
-    finally:
-        conn.close()
-
-
-def record_persona_version(data_dir: Path, persona: PersonaConfig) -> int:
-    conn = connect(data_dir / "pet.db")
-    try:
-        created_at = datetime.now().astimezone().isoformat(timespec="seconds")
-        return sync_persona_version(conn, persona, created_at).version
     finally:
         conn.close()
 
@@ -80,7 +71,6 @@ def bind_socket(host: str, port: int) -> socket.socket:
 def serve(
     settings: ServiceSettings,
     llm_service: LlmService,
-    persona: PersonaConfig,
     templates: PromptTemplates,
 ) -> int:
     try:
@@ -93,13 +83,6 @@ def serve(
         logger.info("数据库迁移完成，已应用版本：%s", applied)
     else:
         logger.info("数据库已是最新版本，无需迁移")
-    try:
-        persona_version = record_persona_version(settings.data_dir, persona)
-    except (sqlite3.Error, OSError) as exc:
-        logger.error("角色卡版本记录失败：%s", exc)
-        print(f"角色卡版本记录失败：{exc}", file=sys.stderr)
-        return 1
-    logger.info("角色卡版本：%s", persona_version)
     db_file = settings.data_dir / "pet.db"
     memory_dir = settings.data_dir / "memory"
     structured_dir = memory_dir / "structured"
@@ -164,10 +147,25 @@ def serve(
         skills,
         ZoneInfo(settings.timezone),
     )
+    personas = PersonaService(
+        settings.personas_dir,
+        DbAppSettings(db_file),
+        DbPersonaVersions(db_file),
+        session_marker=daily_log.record_event,
+    )
+    try:
+        snapshot = personas.current()
+        logger.info("人设已启用：%s，版本：%s", snapshot.id, snapshot.version)
+    except PersonaUnavailableError as exc:
+        logger.warning("%s。对话将返回人设不可用，请在设置中切换人设", exc)
+    except (sqlite3.Error, OSError) as exc:
+        logger.error("人设版本记录失败：%s", exc)
+        print(f"人设版本记录失败：{exc}", file=sys.stderr)
+        return 1
     chat_service = ChatService(
         llm_service,
         daily_log,
-        persona,
+        personas,
         templates,
         db_usage_sink(db_file),
         BusEventPublisher(event_bus),
@@ -183,6 +181,7 @@ def serve(
         event_bus=event_bus,
         chat_service=chat_service,
         memories=memory_services,
+        persona_service=personas,
     )
     config = uvicorn.Config(
         app,
@@ -232,14 +231,18 @@ def main() -> int:
         return 1
     logger.info("LLM 配置已加载，版本：%s", llm_service.current().version)
 
-    try:
-        persona = load_persona(settings.persona_file)
-    except PersonaError as exc:
-        for error in exc.errors:
-            logger.error("角色卡配置错误：%s", error)
-            print(f"角色卡配置错误：{error}", file=sys.stderr)
+    cards = scan_cards(settings.personas_dir)
+    if not any(card.available for card in cards):
+        if not cards:
+            message = f"未找到人设卡片：{settings.personas_dir}"
+            logger.error(message)
+            print(message, file=sys.stderr)
+        for card in cards:
+            for error in card.errors:
+                logger.error("人设配置错误（%s）：%s", card.id, error)
+                print(f"人设配置错误（{card.id}）：{error}", file=sys.stderr)
         return 1
-    logger.info("角色卡已加载")
+    logger.info("人设卡片：%s", "、".join(card.id for card in cards))
 
     try:
         templates = load_templates()
@@ -261,7 +264,7 @@ def main() -> int:
         return 1
 
     try:
-        return serve(settings, llm_service, persona, templates)
+        return serve(settings, llm_service, templates)
     finally:
         lock.release()
 
