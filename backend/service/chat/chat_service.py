@@ -14,6 +14,7 @@ from constants.speech import SENTENCE_MAX_CHARS
 from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
+from service.agent.memory_capture import DEFAULT_NOTICE, MemoryCapture
 from service.agent.prompt import PromptTemplates
 from service.chat.citations import CitedSource, resolve_sources, split_citations
 from service.chat.context import ContextBuilder, MemoryFragment
@@ -102,11 +103,13 @@ class ChatService:
         structured: StructuredMemoryService | None = None,
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
+        capture: MemoryCapture | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
         self._usage_sink = usage_sink
         self._events = events or NoChatEvents()
+        self._capture = capture
         self._context = ContextBuilder(
             persona,
             templates,
@@ -121,6 +124,8 @@ class ChatService:
         text = user_text.strip()
         if not text:
             raise ChatError("empty_input", "消息不能为空")
+        if self._capture is not None and self._capture.matches(text):
+            return self._reply_from_capture(text)
         assembled = self._context.build(text, fragments)
         messages = assembled.messages
         digest = assembled.template_digest
@@ -144,6 +149,22 @@ class ChatService:
         finally:
             self._events.status("idle")
         return ChatReply(message_id=message_id, text=reply, recorded=recorded, sources=sources)
+
+    def _reply_from_capture(self, text: str) -> ChatReply:
+        assert self._capture is not None
+        self._events.status("executing")
+        try:
+            captured = self._capture.handle(text)
+            notice = captured.notice or DEFAULT_NOTICE
+            recorded = self._daily_log.record_turn(text, notice)
+            message_id = uuid4().hex
+            self._events.status("speaking")
+            for segment in split_segments(notice):
+                self._events.chunk(message_id, segment)
+            self._events.done(message_id, notice, ())
+        finally:
+            self._events.status("idle")
+        return ChatReply(message_id=message_id, text=notice, recorded=recorded)
 
     def history(
         self,

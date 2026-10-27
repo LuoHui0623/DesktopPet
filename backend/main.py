@@ -18,25 +18,30 @@ from config.settings import (
     ServiceSettingsError,
     load_service_settings,
 )
-from constants.path import MEMORY_INDEX_FILE, STRUCTURED_MEMORY_DIR
 from infra.events.bus import EventBus
 from infra.files.json_store import JsonDirectory
 from infra.lifecycle import ShutdownController, watch_stdin
 from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
+from infra.store.agent_runs import DbAgentRuns
 from infra.store.app_settings import DbAppSettings
 from infra.store.core_memory import DbCoreMemory
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
+from service.agent.memory_capture import MemoryCapture
+from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import PromptError, PromptTemplates, load_templates
+from service.agent.skills import SkillRegistry, memory_write_skill
+from service.agent.subagent import SubAgent
+from service.agent.tools.memory import make_memory_tools, make_memory_write_tools
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemoryWriter, StructuredMemoryService
+from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
 from service.memory.services import MemoryServices
 from service.persona.persona_service import sync_persona_version
 
@@ -96,17 +101,20 @@ def serve(
         return 1
     logger.info("角色卡版本：%s", persona_version)
     db_file = settings.data_dir / "pet.db"
+    memory_dir = settings.data_dir / "memory"
+    structured_dir = memory_dir / "structured"
+    index_file = memory_dir / "index.json"
     daily_log = DailyLogService(
         DbDailyLog(db_file),
         DbAppSettings(db_file),
         ZoneInfo(settings.timezone),
     )
     structured_memory = StructuredMemoryService(
-        JsonDirectory(STRUCTURED_MEMORY_DIR),
+        JsonDirectory(structured_dir),
         DbAppSettings(db_file),
         ZoneInfo(settings.timezone),
     )
-    memory_index = MemoryIndexService(structured_memory, daily_log.dates, MEMORY_INDEX_FILE)
+    memory_index = MemoryIndexService(structured_memory, daily_log.dates, index_file)
     structured_memory.add_listener(memory_index.rebuild)
     try:
         memory_index.rebuild()
@@ -137,11 +145,24 @@ def serve(
     event_bus = EventBus()
     core_memory = CoreMemoryService(DbCoreMemory(db_file), structured_memory)
     memory_writer = MemoryWriter(structured_memory, daily_log, ZoneInfo(settings.timezone))
+    memory_reader = MemoryReader(index_file, structured_memory, daily_log)
     memory_services = MemoryServices(
         structured=structured_memory,
         writer=memory_writer,
         daily=daily_log,
         core=core_memory,
+    )
+    skills = SkillRegistry()
+    skills.register(memory_write_skill())
+    subagent = SubAgent(
+        llm_service,
+        [*make_memory_tools(memory_reader), *make_memory_write_tools(memory_writer)],
+    )
+    orchestrator = Orchestrator(
+        subagent,
+        DbAgentRuns(db_file),
+        skills,
+        ZoneInfo(settings.timezone),
     )
     chat_service = ChatService(
         llm_service,
@@ -153,6 +174,7 @@ def serve(
         core=core_memory,
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
+        capture=MemoryCapture(skills, orchestrator, memory_writer),
     )
     app = create_app(
         settings.token.get_secret_value(),

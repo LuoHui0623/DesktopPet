@@ -30,11 +30,11 @@ class MemoryCapture:
         self._writer = writer
         self._capability = capability
 
+    def matches(self, user_text: str) -> bool:
+        return any(skill.name == self._capability for skill in self._skills.match(user_text))
+
     def handle(self, user_text: str) -> CaptureResult:
-        matched = [
-            skill for skill in self._skills.match(user_text) if skill.name == self._capability
-        ]
-        if not matched:
+        if not self.matches(user_text):
             return CaptureResult(triggered=False, ok=False)
         if self._writer.temporary_mode():
             return CaptureResult(True, False, notice="临时模式开启，本次不写入记忆")
