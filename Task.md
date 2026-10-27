@@ -739,4 +739,4 @@
   - 提示词哈希：`llm_usage.prompt_hash` 由模板哈希、人设 id 与人设版本共同计算。
   - 配置变化：`PET_PERSONA_FILE` 替换为 `PET_PERSONAS_DIR`（默认 `backend/config/personas`）。`backend/config/persona.yaml` 迁移为 `backend/config/personas/芙芙.yaml`，内容保持迁移时的本地版本。
   - 未做：设置页“人设”标签的界面目视核验。
-  - 提交号待提交后补充。
+  - 提交号：后端 `ef48dad`，前端 `b04d95a`，文档 `74b2f5e`。
