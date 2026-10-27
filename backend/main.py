@@ -151,7 +151,7 @@ def serve(
         settings.personas_dir,
         DbAppSettings(db_file),
         DbPersonaVersions(db_file),
-        session_marker=daily_log.record_event,
+        session_marker=daily_log.record_session_boundary,
     )
     try:
         snapshot = personas.current()

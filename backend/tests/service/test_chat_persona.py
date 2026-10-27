@@ -14,6 +14,7 @@ from infra.store.persona_versions import DbPersonaVersions
 from service.agent.prompt import load_templates
 from service.chat.chat_service import ChatError, ChatService
 from service.llm import LlmService
+from service.memory.daily_events import event_text
 from service.memory.daily_log_service import DailyLogService
 from service.persona.persona_service import PersonaService
 
@@ -79,7 +80,7 @@ def env(tmp_path: Path):
         directory,
         settings,
         DbPersonaVersions(db_file),
-        session_marker=daily.record_event,
+        session_marker=daily.record_session_boundary,
     )
     chat = ChatService(
         llm,
@@ -114,8 +115,8 @@ def test_switch_keeps_recent_turns_and_marks_a_new_session(env):
     assert contents[-1] == "第二句"
     events = env["daily"].read_day(env["daily"].dates()[-1])
     assert [record.role for record in events if record.role == "event"] == ["event"]
-    assert [record.content for record in events if record.role == "event"] == [
-        "切换人设为 小桌，新会话开始"
+    assert [event_text(record.content) for record in events if record.role == "event"] == [
+        "切换人设为小桌，新会话开始"
     ]
 
 

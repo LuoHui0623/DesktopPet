@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from infra.files.json_store import JsonDirectory, read_json
 from infra.store.repositories.daily_log import DailyLogRecord
+from service.memory.daily_events import event_text
 from service.memory.daily_log_service import DailyLogService, SettingStore
 from service.memory.sensitive import sensitive_reason
 
@@ -215,13 +216,14 @@ def render_daily_turns(records: Sequence[DailyLogRecord]) -> list[str]:
             turns.append([record])
         else:
             turns[-1].append(record)
+    return [" / ".join(_render_daily_line(record) for record in turn) for turn in turns]
+
+
+def _render_daily_line(record: DailyLogRecord) -> str:
+    if record.role == "event":
+        return f"事件：{_flatten(event_text(record.content))}"
     labels = {"master": "用户", "me": "宠物"}
-    return [
-        " / ".join(
-            f"{labels.get(record.role, record.role)}：{_flatten(record.content)}" for record in turn
-        )
-        for turn in turns
-    ]
+    return f"{labels.get(record.role, record.role)}：{_flatten(record.content)}"
 
 
 def _flatten(text: str) -> str:

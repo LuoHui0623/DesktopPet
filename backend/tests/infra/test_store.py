@@ -1,3 +1,4 @@
+import json
 import shutil
 import sqlite3
 from pathlib import Path
@@ -58,7 +59,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2, 3, 4, 5]
+    assert applied == [1, 2, 3, 4, 5, 6]
     assert EXPECTED_TABLES <= tables(conn)
 
 
@@ -72,6 +73,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
         (3, "agent"),
         (4, "persona_card"),
         (5, "daily_log_roles"),
+        (6, "daily_event_structure"),
     ]
 
 
@@ -250,7 +252,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         )
         conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES (1, 1)")
 
-        assert migrate(conn) == [3, 4, 5]
+        assert migrate(conn) == [3, 4, 5, 6]
 
         usage = conn.execute(
             "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_usage"
@@ -260,7 +262,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         assert "daily_summary" not in tables(conn)
         assert conn.execute("SELECT COUNT(*) FROM core_memory").fetchone()[0] == 0
         versions = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
-        assert [tuple(row) for row in versions] == [(1,), (2,), (3,), (4,), (5,)]
+        assert [tuple(row) for row in versions] == [(1,), (2,), (3,), (4,), (5,), (6,)]
     finally:
         conn.close()
 
@@ -268,7 +270,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2, 3, 4, 5]
+        assert migrate(conn) == [1, 2, 3, 4, 5, 6]
         assert migrate(conn) == []
     finally:
         conn.close()
@@ -290,7 +292,7 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
             "('2026-10-25', 'event', '切换人设', '2026-10-25T09:05:00+08:00')"
         )
 
-        assert migrate(conn) == [5]
+        assert migrate(conn) == [5, 6]
 
         rows = conn.execute("SELECT id, role, content FROM daily_log ORDER BY id").fetchall()
         assert [tuple(row) for row in rows] == [
@@ -303,5 +305,35 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
                 "INSERT INTO daily_log (date, role, content, created_at) "
                 "VALUES ('2026-10-25', 'user', 'x', 'x')"
             )
+    finally:
+        conn.close()
+
+
+def test_session_boundary_text_becomes_structured_event(tmp_path: Path):
+    old_dir = tmp_path / "old"
+    old_dir.mkdir()
+    for name in (
+        "0001_init.sql",
+        "0002_log_record.sql",
+        "0003_agent.sql",
+        "0004_persona_card.sql",
+        "0005_daily_log_roles.sql",
+    ):
+        shutil.copy(MIGRATIONS_DIR / name, old_dir / name)
+
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn, old_dir) == [1, 2, 3, 4, 5]
+        conn.execute(
+            "INSERT INTO daily_log (date, role, content, created_at) VALUES "
+            "('2026-10-25', 'event', '切换人设为 小桌，新会话开始', 'x'), "
+            "('2026-10-25', 'event', '其他旧事件', 'y')"
+        )
+
+        assert migrate(conn) == [6]
+
+        rows = conn.execute("SELECT content FROM daily_log ORDER BY id").fetchall()
+        assert json.loads(rows[0][0]) == {"type": "session_boundary", "persona": "小桌"}
+        assert rows[1][0] == "其他旧事件"
     finally:
         conn.close()

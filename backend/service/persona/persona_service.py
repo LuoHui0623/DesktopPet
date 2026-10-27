@@ -127,9 +127,7 @@ class PersonaService:
         previous = self.active_id()
         self._settings.put(ACTIVE_KEY, persona_id)
         if previous != persona_id and self._session_marker is not None:
-            self._session_marker(
-                f"切换人设为 {snapshot.config.themes['role'].values[NAME_FIELD]}，新会话开始"
-            )
+            self._session_marker(snapshot.config.themes["role"].values[NAME_FIELD])
         return snapshot
 
     def _ids_on_disk(self) -> list[str]:

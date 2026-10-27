@@ -91,7 +91,7 @@ def test_activate_switches_and_writes_session_marker(tmp_path: Path):
     snapshot = harness.service.activate("小桌")
     assert harness.service.active_id() == "小桌"
     assert snapshot.id == "小桌" and snapshot.version == 1
-    assert harness.markers == ["切换人设为 小桌，新会话开始"]
+    assert harness.markers == ["小桌"]
 
 
 def test_activating_the_same_card_writes_no_marker(tmp_path: Path):

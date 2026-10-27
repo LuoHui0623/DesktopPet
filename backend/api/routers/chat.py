@@ -10,6 +10,7 @@ from api.schemas.chat import (
     ChatRequest,
 )
 from service.chat.chat_service import ChatError, ChatService
+from service.memory.daily_events import display_content
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -84,7 +85,7 @@ def list_chat_history(
             id=record.id,
             date=record.date,
             role=record.role,
-            content=record.content,
+            content=display_content(record.role, record.content),
             created_at=record.created_at,
         )
         for record in records

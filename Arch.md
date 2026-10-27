@@ -240,7 +240,7 @@ backend/
 │  ├─ store/
 │  │  ├─ db.py               # SQLite 连接：WAL、外键、事务封装
 │  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version（含 SHA-256 校验）
-│  │  ├─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles
+│  │  ├─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure
 │  │  ├─ repositories/       # 各表的读写，只返回数据，不做规则判断
 │  │  └─ *.py                # 存储适配：daily_log、core_memory、app_settings、agent_runs
 │  ├─ llm/
@@ -455,7 +455,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 
 ### 6.3 结构化记忆写入
 
-日常对话每天完整保留在 `daily_log`，不做日终摘要。记录角色为 `master`（主人）、`me`（宠物）与 `event`（事件）。关键词命中时写入结构化记忆（用户明确要求的写入尚未单独实现）：
+日常对话每天完整保留在 `daily_log`，不做日终摘要。记录角色为 `master`（主人）、`me`（宠物）与 `event`（事件）。`event` 的内容为结构化 JSON（含 `type`），类型表与上下文规则见 `service/memory/daily_events.py`：会话边界不进入上下文，派发失败与审批拒绝进入上下文；所有 event 都保留在记忆中。关键词命中时写入结构化记忆（用户明确要求的写入尚未单独实现）：
 
 ```
 对话消息命中关键词（记住、记一下、我喜欢）

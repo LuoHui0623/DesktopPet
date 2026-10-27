@@ -20,6 +20,7 @@ from api.schemas.memories import (
     TemporaryModeResponse,
 )
 from service.memory.core_memory import CoreMemoryError
+from service.memory.daily_events import display_content
 from service.memory.index import daily_memory_index
 from service.memory.memory_service import ID_RE, MemoryServiceError
 from service.memory.services import MemoryServices
@@ -98,7 +99,7 @@ def list_memories(
                 id=record.id,
                 date=record.date,
                 role=record.role,
-                content=record.content,
+                content=display_content(record.role, record.content),
                 created_at=record.created_at,
             )
             for record in records

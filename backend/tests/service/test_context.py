@@ -149,6 +149,44 @@ def test_recent_turns_follow_the_day_in_order(parts):
     assert [message.content for message in messages[1:-1]] == ["一", "二", "三", "四"]
 
 
+def test_events_follow_their_type_in_recent_turns(parts):
+    from service.memory.daily_events import encode_event
+
+    DbDailyLog(parts["db_file"]).append(
+        "2026-10-18",
+        "2026-10-18T09:00:00+08:00",
+        [
+            ("master", "一"),
+            ("me", "二"),
+            ("event", encode_event("session_boundary", persona="小桌")),
+            ("event", encode_event("dispatch_failed", capability="记忆检索", reason="超时")),
+            ("master", "三"),
+        ],
+    )
+    messages = parts["builder"]().build("你好").messages
+    assert [type(message) for message in messages[1:-1]] == [
+        HumanMessage,
+        AIMessage,
+        SystemMessage,
+        HumanMessage,
+    ]
+    assert messages[3].content == "[事件] 派发失败：记忆检索，超时"
+
+
+def test_event_before_any_turn_is_kept_as_its_own_entry(parts):
+    from service.memory.daily_events import encode_event
+
+    DbDailyLog(parts["db_file"]).append(
+        "2026-10-18",
+        "2026-10-18T09:00:00+08:00",
+        [("event", encode_event("approval_rejected", capability="记忆写入", reason="未确认"))],
+    )
+    messages = parts["builder"]().build("你好").messages
+    assert [message.content for message in messages[1:-1]] == [
+        "[事件] 审批被拒绝：记忆写入，未确认"
+    ]
+
+
 def test_new_day_starts_a_new_session(parts):
     DbDailyLog(parts["db_file"]).append(
         "2026-10-18",

@@ -253,3 +253,16 @@ def test_daily_turns_are_rendered_one_line_each():
 def test_orphan_records_still_get_a_line():
     records = [record("me", "开场白", 1), record("master", "你好", 2)]
     assert render_daily_turns(records) == ["宠物：开场白", "用户：你好"]
+
+
+def test_events_are_rendered_as_text_and_kept_in_memory():
+    from service.memory.daily_events import encode_event
+
+    records = [
+        record("master", "你好", 1),
+        record("event", encode_event("session_boundary", persona="小桌"), 2),
+        record("event", encode_event("dispatch_failed", capability="记忆检索", reason="超时"), 3),
+    ]
+    assert render_daily_turns(records) == [
+        "用户：你好 / 事件：切换人设为小桌，新会话开始 / 事件：派发失败：记忆检索，超时"
+    ]

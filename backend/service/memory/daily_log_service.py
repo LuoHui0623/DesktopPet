@@ -3,6 +3,7 @@ from datetime import date, datetime, tzinfo
 from typing import Protocol
 
 from infra.store.repositories.daily_log import DailyLogRecord
+from service.memory.daily_events import encode_event
 
 TEMPORARY_MODE_KEY = "memory.temporary_mode"
 
@@ -66,7 +67,8 @@ class DailyLogService:
         )
         return True
 
-    def record_event(self, content: str) -> bool:
+    def record_event(self, event_type: str, **fields: str) -> bool:
+        content = encode_event(event_type, **fields)
         if self.temporary_mode():
             return False
         now = self._clock(self._timezone)
@@ -76,6 +78,9 @@ class DailyLogService:
             [("event", content)],
         )
         return True
+
+    def record_session_boundary(self, persona: str) -> bool:
+        return self.record_event("session_boundary", persona=persona)
 
     def dates(self) -> list[str]:
         return self._store.dates()

@@ -12,6 +12,7 @@ from constants.memory import (
 )
 from service.agent.prompt import PromptTemplates, build_system_prompt
 from service.memory.core_memory import CoreMemoryService
+from service.memory.daily_events import event_in_context, event_text
 from service.memory.daily_log_service import DailyLogService
 from service.memory.memory_service import MemoryServiceError, StructuredMemoryService
 
@@ -186,4 +187,10 @@ class ContextBuilder:
                 turns.append([HumanMessage(content=record.content)])
             elif record.role == "me" and turns:
                 turns[-1].append(AIMessage(content=record.content))
+            elif record.role == "event" and event_in_context(record.content):
+                note = SystemMessage(content=f"[事件] {event_text(record.content)}")
+                if turns:
+                    turns[-1].append(note)
+                else:
+                    turns.append([note])
         return turns

@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -8,6 +9,7 @@ from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from service.memory.daily_events import EventError
 from service.memory.daily_log_service import TEMPORARY_MODE_KEY, DailyLogService
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -74,6 +76,28 @@ def test_temporary_mode_is_stored_in_app_setting(db_file: Path):
 
 def test_default_is_not_temporary(db_file: Path):
     assert make_service(db_file, datetime(2026, 10, 25, tzinfo=TZ)).temporary_mode() is False
+
+
+def test_session_boundary_is_written_as_structured_event(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    assert service.record_session_boundary("小桌") is True
+    [record] = service.read_day("2026-10-25")
+    assert record.role == "event"
+    assert json.loads(record.content) == {"type": "session_boundary", "persona": "小桌"}
+
+
+def test_invalid_event_is_rejected_and_nothing_is_written(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    with pytest.raises(EventError):
+        service.record_event("dispatch_failed", capability="记忆检索")
+    assert service.read_day("2026-10-25") == []
+
+
+def test_event_is_not_written_in_temporary_mode(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    service.set_temporary_mode(True)
+    assert service.record_event("dispatch_failed", capability="记忆检索", reason="超时") is False
+    assert service.read_day("2026-10-25") == []
 
 
 def test_read_day_rejects_invalid_date(db_file: Path):
