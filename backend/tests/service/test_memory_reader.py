@@ -144,16 +144,18 @@ def test_reads_daily_turns_one_line_per_turn(parts):
     store.append(
         "2026-10-18",
         "2026-10-18T09:00:00+08:00",
-        [("user", "喜欢美式咖啡"), ("assistant", "记住啦")],
+        [("master", "喜欢美式咖啡"), ("me", "记住啦")],
     )
-    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("user", "早安")])
+    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("master", "早安")])
     text = parts["reader"].read("daily_memory", "2026-10-18")
     assert text == "1: 用户：喜欢美式咖啡 / 宠物：记住啦\n2: 用户：早安"
     assert parts["reader"].read("daily_memory", "2026-10-18", "2-2") == "2: 用户：早安"
 
 
 def test_daily_range_out_of_bounds_is_reported(parts):
-    DbDailyLog(parts["db_file"]).append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "早")])
+    DbDailyLog(parts["db_file"]).append(
+        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
+    )
     with pytest.raises(MemoryReadError, match="超出范围"):
         parts["reader"].read("daily_memory", "2026-10-18", "1-3")
 
@@ -215,7 +217,9 @@ def test_tool_failures_return_readable_reasons(tools):
 
 
 def test_tool_range_error_is_returned_not_raised(parts, tools):
-    DbDailyLog(parts["db_file"]).append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "早")])
+    DbDailyLog(parts["db_file"]).append(
+        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
+    )
     result = tools["memory_read"].invoke(
         {"kind": "daily_memory", "entry_id": "2026-10-18", "lines": "1-9"}
     )

@@ -93,7 +93,9 @@ def test_routes_require_token(client):
 def test_list_returns_structured_core_and_daily_index(client):
     memory = create(client)
     client.core.add(memory.id)
-    DbDailyLog(client.db_file).append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "你好")])
+    DbDailyLog(client.db_file).append(
+        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好")]
+    )
     body = client.get("/api/memories", headers=AUTH).json()
     assert [item["id"] for item in body["structured"]] == [memory.id]
     assert body["core_ids"] == [memory.id]
@@ -106,7 +108,7 @@ def test_list_filters_by_category_and_returns_day_records(client):
     create(client, title="咖啡")
     create(client, title="作息", category="habit", content="十一点前睡")
     DbDailyLog(client.db_file).append(
-        "2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "你好"), ("assistant", "你好呀")]
+        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好"), ("me", "你好呀")]
     )
     body = client.get("/api/memories?category=habit&date=2026-10-18", headers=AUTH).json()
     assert [item["title"] for item in body["structured"]] == ["作息"]

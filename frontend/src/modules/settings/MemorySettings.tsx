@@ -23,7 +23,7 @@ import {
 const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
 const headingStyle = { fontSize: 15, margin: 0 } as const;
 const buttonStyle = { padding: "2px 8px", fontSize: 12 } as const;
-const ROLE_LABELS: Record<string, string> = { user: "我", assistant: "宠物" };
+const ROLE_LABELS: Record<string, string> = { master: "我", me: "宠物" };
 
 export function MemorySettings() {
   const [data, setData] = useState<MemoriesResponse | null>(null);

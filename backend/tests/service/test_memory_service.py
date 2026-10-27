@@ -239,10 +239,10 @@ def record(role: str, content: str, record_id: int = 1) -> DailyLogRecord:
 
 def test_daily_turns_are_rendered_one_line_each():
     records = [
-        record("user", "喜欢美式咖啡", 1),
-        record("assistant", "记住啦", 2),
-        record("user", "第一行\n第二行", 3),
-        record("assistant", "好的", 4),
+        record("master", "喜欢美式咖啡", 1),
+        record("me", "记住啦", 2),
+        record("master", "第一行\n第二行", 3),
+        record("me", "好的", 4),
     ]
     assert render_daily_turns(records) == [
         "用户：喜欢美式咖啡 / 宠物：记住啦",
@@ -251,5 +251,5 @@ def test_daily_turns_are_rendered_one_line_each():
 
 
 def test_orphan_records_still_get_a_line():
-    records = [record("assistant", "开场白", 1), record("user", "你好", 2)]
+    records = [record("me", "开场白", 1), record("master", "你好", 2)]
     assert render_daily_turns(records) == ["宠物：开场白", "用户：你好"]

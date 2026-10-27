@@ -127,7 +127,7 @@ def test_normal_call_returns_reply_and_writes_usage_and_log(tmp_path: Path):
     assert usage[0][:3] == ("chat", 1, 3)
     assert len(usage[0][3]) == 64
     logged = harness.query("SELECT role, content FROM daily_log ORDER BY id")
-    assert logged == [("user", "你好"), ("assistant", SHORT)]
+    assert logged == [("master", "你好"), ("me", SHORT)]
 
 
 def test_system_prompt_comes_first_and_contains_persona(tmp_path: Path):
@@ -315,9 +315,7 @@ def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_pa
     assert result.sources[0].text == "喜欢美式咖啡，不加糖"
     done = next(entry for entry in events.log if entry[0] == "done")
     assert [source.id for source in done[3]] == ["m_20261018_001", "2026-10-17"]
-    assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [
-        (result.text,)
-    ]
+    assert harness.query("SELECT content FROM daily_log WHERE role = 'me'") == [(result.text,)]
 
 
 def test_injected_fragments_carry_their_ids_and_the_citation_rule(tmp_path: Path):

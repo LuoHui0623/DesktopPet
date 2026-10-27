@@ -182,8 +182,8 @@ class ContextBuilder:
         today = self._clock(self._timezone).date().isoformat()
         turns: list[list[BaseMessage]] = []
         for record in self._daily.read_day(today):
-            if record.role == "user":
+            if record.role == "master":
                 turns.append([HumanMessage(content=record.content)])
-            elif record.role == "assistant" and turns:
+            elif record.role == "me" and turns:
                 turns[-1].append(AIMessage(content=record.content))
         return turns

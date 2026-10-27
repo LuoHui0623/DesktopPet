@@ -184,8 +184,8 @@ def test_keyword_message_writes_memory_and_replies_with_the_notice(tmp_path: Pat
     assert [item.title for item in env["memories"].list().items] == ["咖啡偏好"]
     assert env["chat_model"].calls == 2
     assert logged_turns(env["db_file"]) == [
-        ("user", "记住，我喜欢美式咖啡，不加糖"),
-        ("assistant", "我记住啦：喜欢美式咖啡，不加糖"),
+        ("master", "记住，我喜欢美式咖啡，不加糖"),
+        ("me", "我记住啦：喜欢美式咖啡，不加糖"),
     ]
     kinds = [entry[0] if entry[0] != "status" else entry[1] for entry in events.log]
     assert kinds[0] == "executing"

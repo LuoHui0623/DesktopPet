@@ -140,8 +140,8 @@ def test_corrupt_memory_is_not_indexed(stack):
 
 def test_daily_memory_dates_come_from_daily_log(stack):
     store = DbDailyLog(stack["db_file"])
-    store.append("2026-10-25", "2026-10-25T09:00:00+08:00", [("user", "早")])
-    store.append("2026-10-18", "2026-10-18T09:00:00+08:00", [("user", "你好")])
+    store.append("2026-10-25", "2026-10-25T09:00:00+08:00", [("master", "早")])
+    store.append("2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好")])
     stack["index"].rebuild()
     assert read_index(stack["index_file"])["记忆索引"]["daily_memory"] == {
         "2026-10": ["2026-10-18", "2026-10-25"]

@@ -188,11 +188,9 @@ def test_empty_body_is_rejected_by_schema(tmp_path: Path):
 def history_client(tmp_path: Path):
     client = make_client(tmp_path, [])
     store = DbDailyLog(tmp_path / "pet.db")
-    store.append("2026-10-24", "2026-10-24T09:00:00.000+08:00", [("user", "喜欢咖啡")])
-    store.append(
-        "2026-10-25", "2026-10-25T09:00:00.000+08:00", [("user", "早安"), ("assistant", "早")]
-    )
-    store.append("2026-10-25", "2026-10-25T10:00:00.000+08:00", [("user", "喜欢茶")])
+    store.append("2026-10-24", "2026-10-24T09:00:00.000+08:00", [("master", "喜欢咖啡")])
+    store.append("2026-10-25", "2026-10-25T09:00:00.000+08:00", [("master", "早安"), ("me", "早")])
+    store.append("2026-10-25", "2026-10-25T10:00:00.000+08:00", [("master", "喜欢茶")])
     return client
 
 

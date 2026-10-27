@@ -211,11 +211,11 @@ class StructuredMemoryService:
 def render_daily_turns(records: Sequence[DailyLogRecord]) -> list[str]:
     turns: list[list[DailyLogRecord]] = []
     for record in records:
-        if record.role == "user" or not turns:
+        if record.role == "master" or not turns:
             turns.append([record])
         else:
             turns[-1].append(record)
-    labels = {"user": "用户", "assistant": "宠物"}
+    labels = {"master": "用户", "me": "宠物"}
     return [
         " / ".join(
             f"{labels.get(record.role, record.role)}：{_flatten(record.content)}" for record in turn

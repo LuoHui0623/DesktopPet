@@ -31,11 +31,11 @@ def make_service(db_file: Path, now: datetime) -> DailyLogService:
     )
 
 
-def test_each_turn_writes_user_and_assistant_records(db_file: Path):
+def test_each_turn_writes_master_and_me_records(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     assert service.record_turn("你好", "你好呀") is True
     records = service.read_day("2026-10-25")
-    assert [(r.role, r.content) for r in records] == [("user", "你好"), ("assistant", "你好呀")]
+    assert [(r.role, r.content) for r in records] == [("master", "你好"), ("me", "你好呀")]
     for record in records:
         assert datetime.fromisoformat(record.created_at).tzinfo is not None
 

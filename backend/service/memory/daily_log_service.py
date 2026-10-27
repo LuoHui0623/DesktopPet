@@ -62,7 +62,7 @@ class DailyLogService:
         self._store.append(
             now.date().isoformat(),
             now.isoformat(timespec="milliseconds"),
-            [("user", user_text), ("assistant", assistant_text)],
+            [("master", user_text), ("me", assistant_text)],
         )
         return True
 

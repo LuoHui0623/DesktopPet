@@ -136,9 +136,9 @@ def test_recent_turns_follow_the_day_in_order(parts):
     store.append(
         "2026-10-18",
         "2026-10-18T09:00:00+08:00",
-        [("user", "一"), ("assistant", "二")],
+        [("master", "一"), ("me", "二")],
     )
-    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("user", "三"), ("assistant", "四")])
+    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("master", "三"), ("me", "四")])
     messages = parts["builder"]().build("五").messages
     assert [type(message) for message in messages[1:-1]] == [
         HumanMessage,
@@ -153,7 +153,7 @@ def test_new_day_starts_a_new_session(parts):
     DbDailyLog(parts["db_file"]).append(
         "2026-10-18",
         "2026-10-18T23:00:00+08:00",
-        [("user", "昨天的话"), ("assistant", "好")],
+        [("master", "昨天的话"), ("me", "好")],
     )
     parts["clock"].moment = datetime(2026, 10, 19, 8, 0, tzinfo=TZ)
     messages = parts["builder"]().build("早").messages
@@ -168,7 +168,7 @@ def test_over_budget_trims_oldest_turns_and_keeps_persona_and_core(parts, monkey
         store.append(
             "2026-10-18",
             f"2026-10-18T09:0{index}:00+08:00",
-            [("user", f"第{index}轮" + "问" * 80), ("assistant", "答" * 80)],
+            [("master", f"第{index}轮" + "问" * 80), ("me", "答" * 80)],
         )
     monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", 700)
     result = parts["builder"]().build("现在")
