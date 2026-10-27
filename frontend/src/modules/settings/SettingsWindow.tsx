@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { MemorySettings } from "./MemorySettings";
 import { ModelSettings } from "./ModelSettings";
+import { PersonaSettings } from "./PersonaSettings";
 
-type Tab = "models" | "memory";
+type Tab = "models" | "personas" | "memory";
 
 const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
   { key: "models", label: "模型" },
+  { key: "personas", label: "人设" },
   { key: "memory", label: "记忆" },
 ];
 
@@ -47,7 +49,9 @@ export function SettingsWindow() {
         ))}
       </nav>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
-        {tab === "models" ? <ModelSettings /> : <MemorySettings />}
+        {tab === "models" && <ModelSettings />}
+        {tab === "personas" && <PersonaSettings />}
+        {tab === "memory" && <MemorySettings />}
       </div>
     </div>
   );

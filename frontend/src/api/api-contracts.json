@@ -1,6 +1,23 @@
 {
   "operations": [
     {
+      "operationId": "activate_persona",
+      "method": "PUT",
+      "path": "/api/personas/active",
+      "tags": [
+        "personas"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/PersonaActivateRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PersonasResponse"
+        },
+        "422": null
+      }
+    },
+    {
       "operationId": "add_core_memory",
       "method": "POST",
       "path": "/api/memories/core",
@@ -129,6 +146,20 @@
           "$ref": "#/components/schemas/MemoriesResponse"
         },
         "422": null
+      }
+    },
+    {
+      "operationId": "list_personas",
+      "method": "GET",
+      "path": "/api/personas",
+      "tags": [
+        "personas"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PersonasResponse"
+        }
       }
     },
     {
@@ -925,6 +956,88 @@
           "roles"
         ],
         "title": "ModelInfo",
+        "type": "object"
+      },
+      "PersonaActivateRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "maxLength": 32,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "PersonaActivateRequest",
+        "type": "object"
+      },
+      "PersonaItemOut": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "id",
+          "available",
+          "active"
+        ],
+        "title": "PersonaItemOut",
+        "type": "object"
+      },
+      "PersonasResponse": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "string"
+          },
+          "personas": {
+            "items": {
+              "$ref": "#/components/schemas/PersonaItemOut"
+            },
+            "title": "Personas",
+            "type": "array"
+          }
+        },
+        "required": [
+          "active",
+          "personas"
+        ],
+        "title": "PersonasResponse",
         "type": "object"
       },
       "ProviderInfo": {

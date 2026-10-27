@@ -160,3 +160,16 @@ export interface TemporaryModeResponse {
 export interface CoreMemoriesResponse {
   core_ids: string[];
 }
+
+export interface PersonaItem {
+  id: string;
+  name: string | null;
+  available: boolean;
+  reason: string | null;
+  active: boolean;
+}
+
+export interface PersonasResponse {
+  active: string;
+  personas: PersonaItem[];
+}

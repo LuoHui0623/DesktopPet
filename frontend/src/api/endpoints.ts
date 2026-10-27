@@ -12,6 +12,7 @@ import type {
   MemoriesResponse,
   MemoryItem,
   MemoryPatch,
+  PersonasResponse,
   ReloadResponse,
   TemporaryModeResponse,
 } from "./types";
@@ -106,6 +107,16 @@ export function reorderCoreMemory(
 ): Promise<CoreMemoriesResponse> {
   return request<CoreMemoriesResponse>(client, "PUT", "/api/memories/core/order", {
     body: { memory_ids: memoryIds },
+  });
+}
+
+export function listPersonas(client: ApiClient): Promise<PersonasResponse> {
+  return request<PersonasResponse>(client, "GET", "/api/personas");
+}
+
+export function activatePersona(client: ApiClient, personaId: string): Promise<PersonasResponse> {
+  return request<PersonasResponse>(client, "PUT", "/api/personas/active", {
+    body: { id: personaId },
   });
 }
 

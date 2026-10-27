@@ -5,7 +5,7 @@ import { describeRequestError } from "../../service/api-client";
 import type { ChatHistoryItem } from "../../api/types";
 
 const PAGE_SIZE = 50;
-const ROLE_LABELS: Record<string, string> = { user: "我", assistant: "宠物" };
+const ROLE_LABELS: Record<string, string> = { user: "我", assistant: "宠物", event: "会话" };
 
 export function HistoryPanel() {
   const [keyword, setKeyword] = useState("");
