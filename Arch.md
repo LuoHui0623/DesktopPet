@@ -34,7 +34,7 @@
 │  service       服务层：业务规则与用例编排                                        │
 │  capabilities  原子能力层：天气等复杂原子能力、受限动作注册、校验、执行           │
 │  infra         基础设施层：存储、模型客户端、外部接口、系统调用、事件、文件          │
-│  config        配置：.env、persona.yaml、Settings 加载                         │
+│  config        配置：.env、personas/<id>.yaml、Settings 加载                         │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,7 +75,7 @@
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
 | 模型 | LangChain：`langchain-openai`（chat_completions、responses），`langchain-anthropic`（messages） |
-| 配置 | `.env`（通用配置与 provider 引用）+ `llm.yaml`（模型预设）+ `persona.yaml`；LLM 配置支持热更新 |
+| 配置 | `.env`（通用配置与 provider 引用）+ `llm.yaml`（模型预设）+ `personas/<id>.yaml`；LLM 配置支持热更新 |
 | 依赖管理 | 前端 npm（`package.json` + `package-lock.json`），后端 uv（`pyproject.toml` + `uv.lock`） |
 | 版本管理 | Git |
 
@@ -191,7 +191,7 @@ backend/
 ├─ config/                   # 【配置】.env、llm.yaml、角色卡；解析为不可变快照
 │  ├─ .env.example           # 环境变量模板，入 Git（本机 .env 不入 Git）
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
-│  ├─ persona.yaml           # 角色卡，入 Git
+│  ├─ personas/              # 人设卡片，每卡一个 <id>.yaml，入 Git（D-13）
 │  ├─ persona.py             # 角色卡读取、校验与规范化，产出 PersonaConfig
 │  ├─ settings.py            # 解析入口：.env 与 llm.yaml → ModelSettings；PET_* → ServiceSettings
 │  └─ README.md              # 配置目录说明与解析规则
@@ -217,7 +217,7 @@ backend/
 │  ├─ llm/
 │  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、重载、装配 client（按快照缓存）
 │  ├─ persona/
-│  │  └─ persona_service.py  # 角色卡版本同步（persona_version）
+│  │  └─ persona_service.py  # 人设卡片：列出、启用、按修改时间重新解析、按卡记录版本（D-13）
 │  ├─ memory/
 │  │  ├─ memory_service.py   # 结构化记忆增删改、写入规则、daily_memory 行号视图、行号 helper、MemoryReader
 │  │  ├─ core_memory.py      # 核心典藏：加入、移出、排序（上限 20 条）
@@ -520,7 +520,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | 本机配置 | `backend/config/.env` | 否 | 通用配置、provider 列表、各 provider 的 base_url 与 api_key 引用名 |
 | 环境变量模板 | `backend/config/.env.example` | 是 | 与 `.env` 结构一致，不含真实值 |
 | 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设 |
-| 人设 | `backend/config/persona.yaml` | 是（不含密钥） | 人设与语气 |
+| 人设卡片 | `backend/config/personas/<id>.yaml` | 是（不含密钥） | 每张卡一个文件，id 为文件名（D-13） |
 | 解析规则 | `backend/config/README.md` | 是 | `.env`、`llm.yaml`、默认模型的解析与校验规则 |
 
 读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。`PET_*` 相对路径按项目根目录解析。完整解析规则见 `backend/config/README.md`。角色卡的主题与解析方式（`role` 为编码填充，`personality` 与 `language_style` 为可扩展列表）见该文件 §12。
@@ -533,7 +533,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | `PET_PORT` | `0` | `0` 为随机端口，由前端通过 stdout 读取 |
 | `PET_TOKEN` | 必填 | 启动令牌 |
 | `PET_DATA_DIR` | `backend/data` | 数据目录：数据库、记忆文件、日志都在其下；相对路径按项目根目录解析 |
-| `PET_PERSONA_FILE` | `backend/config/persona.yaml` | 角色卡文件 |
+| `PET_PERSONAS_DIR` | `backend/config/personas` | 人设卡片目录，每卡一个 `<id>.yaml`（D-13） |
 | `PET_TIMEZONE` | `Asia/Shanghai` | 时区 |
 | `PET_LOG_LEVEL` | `INFO` | 日志级别 |
 | `PET_LOG_QUEUE_SIZE` | `20` | 数据库日志每批条数 |
@@ -721,8 +721,8 @@ providers:
 
 1. **infra 与 service 的划分标准**（§5.3）是否认可；存在争议的组件以 §5.4 为准。
 2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。已采用集中放在 `service/`。
-3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 是 LLM 与通用配置的解析入口，产出 `model_settings`；`persona.py` 负责角色卡；client 装配由 `service/llm` 负责。
+3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `personas/<id>.yaml`**：`settings.py` 是 LLM 与通用配置的解析入口，产出 `model_settings`；`persona.py` 负责角色卡；client 装配由 `service/llm` 负责。
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
-5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
+5. **人设卡片是否入 Git**（若含个人信息，改为忽略）。当前设计为 `backend/config/personas/` 入 Git。
 6. **Windows 系统环境变量的热读取**：当前设计为修改后需重启后端。若希望免重启，可在重载时通过 `winreg` 读取用户与系统环境变量，但要额外处理优先级，待确认。
 7. **当前模型选择的优先级**：数据库 `app_setting`（设置页切换） > `.env` 的 `DEFAULT_<能力>_MODEL`。两者都未设置时，该能力不可用。是否需要为 `DEFAULT_*` 增加“设置页恢复默认”的入口，待确认。

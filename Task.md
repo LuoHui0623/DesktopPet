@@ -59,6 +59,7 @@
 | T-043 | 设置页：记忆（查看、编辑、删除、临时模式、核心典藏） | T-035、T-037、T-038、T-039 | 已完成 |
 | T-044 | 回复中的记忆来源 | T-036、T-041 | 已完成 |
 | T-045 | 阶段收尾：端到端验证与文档同步 | T-039 至 T-044 | 已完成 |
+| T-046 | 人设卡片：多卡选择与切换（D-13） | T-018、T-019、T-024 | 已完成 |
 
 ## 二、当前业务工作流（mermaid）[可选]
 
@@ -100,16 +101,17 @@
 | D-5 | 记忆管理是否纳入本阶段 | 已定 | 纳入（2026-10-24） |
 | D-6 | 结构化记忆如何写入 | 已定 | 关键词触发或用户明确要求，由 sub agent 写入；纳入本阶段（修订原“仅手动”） |
 | D-7 | 流式传输协议 | 已定 | WebSocket（2026-10-24） |
-| D-9 | 人设如何修改 | 已定 | 只允许手动修改 `persona.yaml`；对话中的“扮演”仅对本次有效（PRD §6.3） |
+| D-9 | 人设如何修改 | 已定（2026-10-27 修订） | 人设内容只允许手动修改 `backend/config/personas/<id>.yaml`；设置页只切换“启用哪一张卡”，不编辑内容；对话中的“扮演”仅对本次有效（PRD §6.3） |
 | D-10 | 临时模式状态存放在哪里 | 已定 | 存入 `app_setting`，键为 `memory.temporary_mode`；开启时不写 `daily_log`，不写结构化记忆 |
 | D-11 | 悬浮窗状态由谁决定 | 已定 | 由后端决定，通过 WebSocket 下发（PRD §3.1） |
 | D-12 | 桌面壳技术选型 | 已定 | 改用 Tauri 2（Rust 核心），替代 Electron（2026-10-26）。M0 的 `frontend/electron/` 代码由 T-039 迁移 |
+| D-13 | 人设卡片 | 已定（2026-10-27） | 多张人设卡，每卡一个文件 `backend/config/personas/<id>.yaml`，id 为文件名（允许中文、字母、数字、下划线、连字符）。默认 id 为 `芙芙`，由 `constants/agent.py` 的 `DEFAULT_PERSONA_ID` 定义。启用状态存 `app_setting`（键 `persona.active`），未设置时用默认 id。切换后下一次对话生效：写入一条会话边界记录（`daily_log` 的 `event` 行，供历史显示“新会话”），近期对话保留在上下文中。记忆不按人设隔离。卡片每次请求检查修改时间，变化则重新解析；解析失败的卡标为不可用，不能启用 |
 | 口径-1 | 任务编号规则 | 已定 | 本阶段任务编号从 T-018 开始，不使用里程碑序号 |
 | A-1 | artifact 定义 | 已定 | Agent 产出、可再次引用、允许 CRUD；persona 不属于 artifact |
 | A-2 | 结构化记忆与索引的真相 | 已定 | 真相为结构化记忆 JSON 文件与 SQLite `daily_log`；记忆索引 JSON 由代码根据存储生成，不手工编辑 |
 | A-3 | 角色卡结构 | 已定（2026-10-25 修订） | 角色卡为通用 YAML 映射，不对字段名做约束；值为字符串、字符串列表或映射；列表规范化时去重排序 |
 | A-4 | 提示词管理 | 已定 | `prompt.py` 负责构建、拼接、注入；模板为 `.md`，用 `string.Template` 占位，不引入新依赖；模板只保留当前版本，历史由 Git 保留，每次调用记录模板哈希 |
-| A-5 | 人设注入路径 | 已定 | `persona.yaml` → 模板占位 → 系统提示词固定首段；不走记忆检索，不被裁剪；人设保留 DB 历史版本（`persona_version`） |
+| A-5 | 人设注入路径 | 已定（2026-10-27 修订） | 当前启用的人设卡（`personas/<id>.yaml`）→ 模板占位 → 系统提示词固定首段；不走记忆检索，不被裁剪；每张卡的历史版本分别保存在 `persona_version`（按 `persona_id` 区分） |
 | A-6 | 对话检查点与日整理 | 已定 | 检查点每日 reset（每天新 session）；日整理指主对话完整保留到 `daily_log`，不做摘要 |
 | A-7 | 记忆分类 | 已定 | `daily_memory`（只读，存储表为 `daily_log`）与结构化记忆（可写、可编辑，由 sub agent 维护） |
 | A-8 | 结构化记忆写入触发 | 已定 | 关键词触发（类似 skills）或用户明确要求；纳入本阶段 |
@@ -706,3 +708,35 @@
     - 类别标签前后端用词不同，见第三节。
     - 主动消息、天气、感知、能力执行、聊天记录导入、日终摘要属于 M3–M6，见 PRD §8 与 Arch §3.3。
   - 提交号：关键词写入接入与端到端验证 `47b5fc3`；本任务文档随后续提交记录。
+
+### T-046 人设卡片（多卡选择）
+
+**目的**：预先设置多张人设卡片，并选择启用其中一张（D-13）。
+
+**依赖**：T-018、T-019、T-024
+
+**任务状态**：已完成
+
+**范围**：
+- 目录 `backend/config/personas/`，每卡一个文件，id 为文件名；默认卡 id 为 `芙芙`（`constants/agent.py` 的 `DEFAULT_PERSONA_ID`）。卡片内容格式沿用 T-018 的主题规则。
+- `PersonaService`：列出各卡（可用性与不可用原因）、读取当前启用卡（每次请求检查修改时间，变化则重新解析）、切换启用（写入 `app_setting` 键 `persona.active`，并写入会话边界记录）。
+- 版本：`persona_version` 按 `persona_id` 分别记录（迁移 `0004`，不改已应用的迁移）；`llm_usage.prompt_hash` 由模板哈希、人设 id 与人设版本共同决定。
+- 接口：`GET /api/personas`、`PUT /api/personas/active`。
+- 设置窗口增加“人设”标签页：列出卡片、启用、显示不可用原因；编辑内容仍只在文件中进行。
+- 现有 `backend/config/persona.yaml` 迁移为 `backend/config/personas/芙芙.yaml`，内容不变。环境变量 `PET_PERSONA_FILE` 替换为 `PET_PERSONAS_DIR`（默认 `backend/config/personas`）。
+
+**验收/验证结果**：
+- [x] 多张卡可列出；不可用卡显示原因，且不能启用（方式：`tests/service/test_persona_service.py::test_listing_shows_every_card_with_name_status_and_reason`、`test_unavailable_card_cannot_be_activated`、`test_missing_card_and_invalid_id_are_unavailable`；`tests/api/test_personas_routes.py` 的列表与 422 用例；E2E 第 9 步。结果：通过）
+- [x] 切换后下一次对话使用新人设；近期对话保留；历史中出现会话边界（方式：`tests/service/test_chat_persona.py::test_reply_uses_the_active_card`、`test_switch_keeps_recent_turns_and_marks_a_new_session`、`test_event_rows_are_not_sent_to_the_model`；E2E 第 9、10 步。结果：通过）
+- [x] 修改卡片文件后，下一次请求生效，无需重启（方式：`tests/service/test_persona_service.py::test_editing_the_file_takes_effect_on_the_next_request`、`test_breaking_the_active_file_makes_it_unavailable_until_fixed`；结果：通过）
+- [x] 迁移后原有 `persona_version` 记录仍可读，且归属 `芙芙`（方式：`tests/infra/test_persona_version.py::test_migration_keeps_existing_versions_under_default_card`，按 0001–0003 建库、插入旧记录后执行 0004；`tests/infra/test_store.py` 迁移版本列表已更新；结果：通过）
+- [x] 所有检查通过（方式：后端 `uv run pytest` 509 项通过，3 项符号链接测试因本机权限跳过；`ruff check`、`ruff format` 通过。前端 `npm run check`、`typecheck`、`eslint`、`vitest`（83 项）、`npm run vite:build`、`gen:api:check` 通过；`uv run python scripts/e2e/run_e2e.py` 12 步通过，退出码 0）
+- [x] 文档同步：PRD §6、Arch §3.3、§8.1、§8.2、`config/README.md` §12、README 与 `.env.example`（方式：逐处核对并修改；结果：通过）
+- 备注：
+  - 实现要点：`config/personas/<id>.yaml` 每卡一个文件，id 为文件名（`validate_persona_id` 允许文字、数字、下划线、连字符，1–32 字符）；默认 id 为 `DEFAULT_PERSONA_ID = "芙芙"`（`constants/agent.py`）。`PersonaService` 按文件修改时间缓存解析结果，并按卡在 `persona_version` 中记录版本（迁移 `0004_persona_card.sql`）。启用状态存 `app_setting`（`persona.active`）。
+  - 切换的会话边界：切换启用的卡时，`daily_log` 写入一条 `event` 行（内容“切换人设为 X，新会话开始”）。该行不进入模型上下文，历史中显示为“会话”。近期对话保留在上下文中。
+  - 启动行为：没有任何可用的卡时启动失败（退出码 1）；有可用卡但启用的卡不可用时启动并记录警告，对话返回 `persona_unavailable`（HTTP 503）。
+  - 提示词哈希：`llm_usage.prompt_hash` 由模板哈希、人设 id 与人设版本共同计算。
+  - 配置变化：`PET_PERSONA_FILE` 替换为 `PET_PERSONAS_DIR`（默认 `backend/config/personas`）。`backend/config/persona.yaml` 迁移为 `backend/config/personas/芙芙.yaml`，内容保持迁移时的本地版本。
+  - 未做：设置页“人设”标签的界面目视核验。
+  - 提交号待提交后补充。
