@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage
 
-from config.persona import PersonaConfig
+from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.files.json_store import JsonDirectory
 from infra.llm.usage import db_usage_sink
@@ -27,7 +27,7 @@ from service.memory.index import MemoryIndexService
 from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
 
 TZ = ZoneInfo("Asia/Shanghai")
-PERSONA = PersonaConfig(content={"role": {"name": "小桌", "personality": ("温和",)}})
+PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
 
 LLM_YAML = """
 providers:

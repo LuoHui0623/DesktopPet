@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from config.persona import PersonaConfig
+from config.persona import parse_persona
 from constants.path import PROMPTS_DIR
 from service.agent.prompt import (
     NO_CAPABILITIES,
@@ -17,14 +17,11 @@ from service.agent.prompt import (
     render_persona,
 )
 
-PERSONA = PersonaConfig(
-    content={
-        "role": {
-            "name": "小桌",
-            "identity": "桌面陪伴助手",
-            "personality": ("好奇", "温和"),
-        },
-        "language_style": ("口语化",),
+PERSONA = parse_persona(
+    {
+        "role": {"名字": "小桌", "人设": "桌面陪伴助手", "口头禅": "嗯哼"},
+        "personality": ["好奇", "温和"],
+        "language_style": ["口语化"],
     }
 )
 
@@ -50,12 +47,25 @@ def build(templates, **overrides):
     return build_system_prompt("chat", PERSONA, templates, **kwargs)
 
 
-def test_persona_is_rendered_as_nested_lines():
+def test_role_is_filled_into_its_sentence_and_extras_follow():
     text = render_persona(PERSONA)
-    assert "role:" in text
-    assert "  name: 小桌" in text
-    assert "  personality:\n    - 好奇\n    - 温和" in text
-    assert "language_style:\n  - 口语化" in text
+    assert text.startswith("你的名字是小桌。桌面陪伴助手\n口头禅：嗯哼")
+
+
+def test_list_themes_are_rendered_with_heading_and_sorted_bullets():
+    text = render_persona(PERSONA)
+    assert "性格：\n- 好奇\n- 温和" in text
+    assert "说话风格：\n- 口语化" in text
+
+
+def test_themes_are_rendered_in_fixed_order():
+    text = render_persona(PERSONA)
+    assert text.index("你的名字是") < text.index("性格：") < text.index("说话风格：")
+
+
+def test_missing_optional_theme_has_no_block():
+    persona = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}})
+    assert render_persona(persona) == "你的名字是小桌。陪伴"
 
 
 def test_sections_follow_fixed_order(templates):
@@ -68,7 +78,7 @@ def test_sections_follow_fixed_order(templates):
         text.index("【固定约束】"),
     ]
     assert positions == sorted(positions)
-    assert text.index("  name: 小桌") < text.index("【可用能力】")
+    assert text.index("你的名字是小桌") < text.index("【可用能力】")
 
 
 def test_capabilities_are_listed_one_per_line(templates):
@@ -111,9 +121,9 @@ def test_same_input_renders_same_prompt(templates):
 
 
 def test_persona_values_are_not_interpolated_again(templates):
-    persona = PersonaConfig(content={"role": {"name": "$capabilities"}})
+    persona = parse_persona({"role": {"名字": "$capabilities", "人设": "$resources"}})
     text = build_system_prompt("chat", persona, templates, capabilities=CAPABILITIES).text
-    assert "name: $capabilities" in text
+    assert "你的名字是$capabilities。$resources" in text
     assert "- 打开网址" in text
 
 

@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
-from config.persona import PersonaConfig
+from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.events.bus import EventBus
 from infra.llm.usage import db_usage_sink
@@ -45,7 +45,7 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 """
 
-PERSONA = PersonaConfig(content={"role": {"name": "小桌"}})
+PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}})
 LONG = "很" * 41 + "。"
 
 

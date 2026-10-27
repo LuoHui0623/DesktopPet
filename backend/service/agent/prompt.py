@@ -3,9 +3,9 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from string import Template
-from typing import Any, Literal
+from typing import Literal
 
-from config.persona import PersonaConfig
+from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListTheme, PersonaConfig
 from constants.path import DRAFT_PATH, EMOJI_DIR, PROMPTS_DIR, ROOT_DIR
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS
 
@@ -94,23 +94,31 @@ def read_template(directory: Path, name: str, placeholders: frozenset[str]) -> s
     return text
 
 
-def _render_value(key: str, value: Any, indent: int) -> list[str]:
-    pad = "  " * indent
-    if isinstance(value, str):
-        return [f"{pad}{key}: {value}"]
-    if isinstance(value, tuple):
-        return [f"{pad}{key}:", *(f"{pad}  - {item}" for item in value)]
-    lines = [f"{pad}{key}:"]
-    for child_key, child in value.items():
-        lines.extend(_render_value(child_key, child, indent + 1))
-    return lines
+def _render_fields(spec: FieldsSpec, theme: FieldsTheme) -> str:
+    head = spec.template.format(**{key: theme.values[key] for key in spec.required})
+    extras = [
+        f"{key}：{theme.values[key]}" for key in sorted(theme.values) if key not in spec.required
+    ]
+    return "\n".join([head, *extras])
+
+
+def _render_list(spec: ListSpec, theme: ListTheme) -> str:
+    return "\n".join([f"{spec.heading}：", *(f"- {item}" for item in theme.items)])
 
 
 def render_persona(persona: PersonaConfig) -> str:
-    lines: list[str] = []
-    for key, value in persona.content.items():
-        lines.extend(_render_value(key, value, 0))
-    return "\n".join(lines)
+    blocks: list[str] = []
+    for key, spec in THEME_SPECS.items():
+        theme = persona.themes.get(key)
+        if theme is None:
+            continue
+        if isinstance(spec, FieldsSpec) and isinstance(theme, FieldsTheme):
+            blocks.append(_render_fields(spec, theme))
+        elif isinstance(spec, ListSpec) and isinstance(theme, ListTheme):
+            blocks.append(_render_list(spec, theme))
+        else:
+            raise PromptError(f"主题 {key} 的解析方式与渲染方式不一致")
+    return "\n\n".join(blocks)
 
 
 def _render_capabilities(capabilities: Sequence[CapabilityDescription]) -> str:

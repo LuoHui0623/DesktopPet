@@ -4,7 +4,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage, SystemMessage
 
-from config.persona import PersonaConfig
+from config.persona import parse_persona
 from config.settings import ModelSettingsSource
 from infra.llm.usage import db_usage_sink
 from infra.store.app_settings import DbAppSettings
@@ -42,7 +42,7 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 """
 
-PERSONA = PersonaConfig(content={"role": {"name": "小桌", "personality": ("温和",)}})
+PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
 SHORT = "你好呀，今天过得怎么样？"
 LONG = "很" * 41 + "。"
 
@@ -125,7 +125,7 @@ def test_system_prompt_comes_first_and_contains_persona(tmp_path: Path):
     harness.chat.reply("你好")
     first = harness.fake.calls[0][0]
     assert isinstance(first, SystemMessage)
-    assert "  name: 小桌" in first.content
+    assert "你的名字是小桌" in first.content
 
 
 def test_overlong_sentence_is_regenerated_once(tmp_path: Path):

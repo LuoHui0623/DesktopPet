@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from config.persona import PersonaConfig
+from config.persona import PersonaConfig, parse_persona
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from service.persona.persona_service import sync_persona_version
@@ -19,7 +19,7 @@ def conn(tmp_path: Path):
 
 
 def persona(name: str, personality: tuple[str, ...] = ("温和", "好奇")) -> PersonaConfig:
-    return PersonaConfig(content={"role": {"name": name, "personality": personality}})
+    return parse_persona({"role": {"名字": name, "人设": "陪伴"}, "personality": list(personality)})
 
 
 def count_versions(conn) -> int:

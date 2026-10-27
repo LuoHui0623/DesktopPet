@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.persona import PersonaConfig
+from config.persona import parse_persona
 from infra.files.json_store import JsonDirectory
 from infra.store.app_settings import DbAppSettings
 from infra.store.core_memory import DbCoreMemory
@@ -21,7 +21,7 @@ from service.memory.memory_service import MemorySource, StructuredMemoryService
 
 TZ = ZoneInfo("Asia/Shanghai")
 SOURCE = MemorySource(type="keyword", date="2026-10-18")
-PERSONA = PersonaConfig(content={"role": {"name": "小桌", "personality": ("温和",)}})
+PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
 
 
 class DictSettings:

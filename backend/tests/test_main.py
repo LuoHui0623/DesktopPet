@@ -133,7 +133,7 @@ def persona_versions(data_dir: Path) -> list[tuple[int, str]]:
 
 def test_persona_version_is_recorded_on_startup(tmp_path: Path):
     persona_file = tmp_path / "persona.yaml"
-    persona_file.write_text("role:\n  name: 小桌\n", encoding="utf-8")
+    persona_file.write_text("role:\n  名字: 小桌\n  人设: 陪伴\n", encoding="utf-8")
     extra = {"PET_PERSONA_FILE": str(persona_file)}
 
     first = start_with_data_dir(tmp_path, **extra)
@@ -142,7 +142,7 @@ def test_persona_version_is_recorded_on_startup(tmp_path: Path):
     assert first.communicate(timeout=20)[0] == ""
     assert [version for version, _ in persona_versions(tmp_path)] == [1]
 
-    persona_file.write_text("role:\n  name: 小宠\n", encoding="utf-8")
+    persona_file.write_text("role:\n  名字: 小宠\n  人设: 陪伴\n", encoding="utf-8")
     second = start_with_data_dir(tmp_path, **extra)
     assert second.stdout.readline().startswith("PET_PORT=")
     second.stdin.close()
