@@ -16,7 +16,7 @@
 
 | 部分 | 技术 |
 |---|---|
-| 桌面端 | Tauri 2（Rust 核心）+ React + TypeScript（Vite），样式 Tailwind，状态 Zustand |
+| 桌面端 | Tauri 2（Rust 核心）+ React + TypeScript（Vite），样式为内联样式，状态 Zustand |
 | 后端 | Python 3.12 + FastAPI + uvicorn |
 | 数据库 | SQLite |
 | 模型 | LangChain（OpenAI 兼容接口） |
@@ -31,37 +31,37 @@
 |---|---|
 | [`桌面宠物PRD.md`](桌面宠物PRD.md) | 产品需求、场景、功能设计、技术选型、里程碑 |
 | [`Arch.md`](Arch.md) | 架构设计：前后端分离、目录结构、分层说明、接口与配置 |
+| [`Task.md`](Task.md) | 行动计划、工作单、当前进度与验收记录 |
 
 ## 目录速览
 
 ```
 桌宠/
-├─ frontend/     前端：Tauri 2 + React（src-tauri/ Rust 核心，src/ 界面）
-├─ backend/      后端：Python + FastAPI（api / service / capabilities / infra / config）
-├─ README.md     项目介绍
-├─ Arch.md       架构设计
-├─ Task.md       行动计划与工作单
-└─ 桌面宠物PRD.md  需求与技术选型
+├─ frontend/        前端：Tauri 2 + React（src-tauri/ Rust 核心，src/ 界面）
+├─ backend/         后端：Python + FastAPI（api / service / infra / config）
+├─ README.md        项目介绍（本文件）
+├─ Arch.md          架构设计
+├─ Task.md          行动计划与工作单
+└─ 桌面宠物PRD.md    需求与技术选型
 ```
-| [`Task.md`](Task.md) | 行动计划、工作单、当前进度 |
-| `README.md` | 本文件：项目介绍与运行方式 |
 
 ## 当前进度
 
-**M0「骨架」已完成**（标签 `m0-skeleton`）。当前可以运行的内容：
+**M0「骨架」「M1 基础对话」「M2 记忆」已完成**（M0 标签 `m0-skeleton`）。当前可以运行的内容：
 
-- Tauri 启动后自动拉起 Python 后端，读取端口并建立连接，窗口显示后端健康状态。
-- 后端：配置解析（`.env`、`llm.yaml`、`PET_*`）、LLM 三种接口范式的装配与热更新、SQLite 连接与迁移、文件日志与数据库日志（批量写入）、单实例锁、三种安全退出通道（stdin、HTTP、信号）、令牌鉴权与健康检查。
-- 前端：Tauri 壳（后端拉起与退出联动、悬浮窗、最小权限的应用命令）、接口契约生成（`npm run gen:api`）、api 层、WebSocket 连接与健康检查。
-- 代码检查：ruff（后端），ESLint 与 Prettier（前端），pre-commit 钩子覆盖两者。
+- 悬浮窗：占位形象与状态标签（待机、思考、说话、执行中、休眠；断开显示“未连接”），可拖动、记住位置、点击打开对话。
+- 对话窗口：多轮对话，流式展示，历史查看与关键词搜索；回复引用记忆时，下方显示来源日期与原文。
+- 设置窗口：模型列表与可用性，切换对话模型与整理模型，手动重载配置；记忆的查看、编辑、删除，核心典藏（最多 20 条），临时模式，每日对话只读查看。
+- 记忆写入：对话中包含“记住”“记一下”“我喜欢”等关键词时，由子代理写入结构化记忆，并告知用户；敏感信息（证件号、银行卡、密码、健康细节）不写入。
+- 后端：配置解析、LLM 装配与热更新、用量记录、SQLite 与迁移、日志、单实例锁、三种安全退出通道、令牌鉴权、CORS（仅桌面壳页面来源）。
 
-尚未实现：对话、记忆、天气、主动消息、能力扩展、聊天记录导入等功能，见 PRD §8 的 M1–M6。
+尚未实现：主动消息与反馈、天气、感知、能力执行、聊天记录导入、日终摘要，以及主 agent 决定是否检索记忆（Q-4）。对应 PRD §8 的 M3–M6。已知限制见 `Task.md` 第三节。
 
 里程碑与任务记录见 [`Task.md`](Task.md)。
 
 ## 快速开始
 
-以下步骤已在 M0 中验证。
+以下步骤已在 M0、M2 中验证。
 
 ### 环境要求
 
@@ -136,6 +136,17 @@ cd backend
 uv run pytest
 ```
 
+### 5.1 端到端验证
+
+不需要真实的模型密钥。脚本会启动真实的后端进程，并用本地假模型服务走完整流程（启动、切换模型、流式对话、关键词写入、编辑、核心典藏与引用来源、临时模式、正常关闭），数据写入临时目录：
+
+```powershell
+cd backend
+uv run python scripts/e2e/run_e2e.py
+```
+
+全部通过时输出“端到端验证通过：10 步”，退出码为 0。
+
 ### 6. 前端代码检查
 
 ```powershell
@@ -163,8 +174,8 @@ uv run ruff check --fix .
 
 ## 数据与备份
 
-- 运行数据保存在 `backend/data/`，核心文件是 `backend/data/pet.db`。
-- 备份时复制 `backend/data/pet.db` 与 `backend/config/persona.yaml`，并自行保管 `backend/config/.env`。
+- 运行数据保存在 `PET_DATA_DIR` 指定的目录（默认 `backend/data/`），包括数据库 `pet.db`、结构化记忆 `memory/structured/`、记忆索引 `memory/index.json` 与日志 `logs/`。
+- 备份时复制整个数据目录，以及 `backend/config/persona.yaml`，并自行保管 `backend/config/.env`。
 - 复制数据库前先停止后端，避免写入中途备份。
 
 ## 注意事项

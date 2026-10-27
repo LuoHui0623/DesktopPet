@@ -1,6 +1,6 @@
 # 桌面宠物 · 架构设计
 
-- 版本：v0.4
+- 版本：v0.5（与 M0–M2 的实现状态一致，见 Task.md T-045）
 - 对应需求与技术选型：`桌面宠物PRD.md`（v0.7）
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD，行动计划见 `Task.md`。
 
@@ -13,7 +13,7 @@
 - **`frontend/`**：Tauri 2（Rust 核心）+ React + TypeScript。负责窗口、界面、用户输入与前端状态展示，不含业务规则。
 - **`backend/`**：Python 3.12 + FastAPI。负责全部业务逻辑、数据存储、模型调用与系统能力。
 
-二者只通过**本地 HTTP（REST）与 WebSocket** 通信。前端的接口类型从后端 OpenAPI 文档生成，不手写。
+二者只通过**本地 HTTP（REST）与 WebSocket** 通信。后端 OpenAPI 导出为接口契约文件 `api-contracts.json`，前端的接口类型当前手写于 `src/api/types.ts`，并由 `gen:api:check` 校验与契约一致（见 §4.3）。
 
 ```
 ┌──────────────── frontend/（Tauri 2 · React · TypeScript）─────────────────┐
@@ -23,7 +23,6 @@
 │  src/modules       功能模块层：chat、settings、pet（只展示与转发）               │
 │  src/service       服务层：应用状态（Zustand）、业务编排、WebSocket 事件分发       │
 │  src/api           接口层：类型化请求、WebSocket 连接                           │
-│  src/shared        共享：颜色、文案、样式、工具、通用组件                        │
 └────────────┬─────────────────────────────────────────────────▲───────────────┘
              │ 启动：python main.py                             │ WebSocket 推送
              │ 环境变量：PET_PORT=0、PET_TOKEN=<随机>           │ 状态 / 主动消息 / 流式片段
@@ -71,7 +70,7 @@
 |---|---|
 | 桌面壳 | Tauri 2（Rust 核心），标准库 `std::process` 拉起后端 |
 | 界面 | React + TypeScript + Vite |
-| 样式 | Tailwind CSS |
+| 样式 | 内联样式（Tailwind 尚未引入） |
 | 状态 | Zustand（每个窗口一份展示缓存，数据源为后端） |
 | 后端 | Python 3.12、FastAPI、uvicorn |
 | 数据库 | SQLite（标准库 `sqlite3`） |
@@ -87,7 +86,7 @@
 1. **展示与决策分离**：前端只渲染与转发用户动作，所有业务判断在后端。
 2. **依赖单向**：上层依赖下层，下层不反向依赖上层。前后端之间只依赖接口契约。
 3. **基础设施可替换**：模型 provider、数据库、天气源、操作系统调用都封装在 `infra`，业务层不直接接触第三方 SDK。
-4. **契约自动生成**：前端类型由后端 OpenAPI 生成，接口变更只需改后端。
+4. **契约可校验**：后端 OpenAPI 导出为 `api-contracts.json`，`gen:api:check` 发现前后端不一致即失败。接口类型当前手写，后续可改为由契约生成。
 5. **模型只提议，后端裁决**：LLM 输出的能力计划必须经过白名单与参数校验后才能执行。
 6. **配置集中**：所有配置从 `backend/config/` 读取，业务代码不直接读取环境变量。
 7. **数据可见可控**：数据落在 `backend/data/`，单文件 SQLite，便于备份与查看。
@@ -115,74 +114,63 @@
 
 ```
 frontend/
-├─ package.json               # 依赖与脚本（dev、build、gen:api、lint）
+├─ package.json               # 依赖与脚本（dev、build、gen:api、check）
 ├─ package-lock.json          # 前端依赖锁定，入 Git
-├─ vite.config.ts             # Vite：构建界面（renderer）
+├─ vite.config.mjs            # Vite：构建三个窗口的界面（pet、chat、settings）
+├─ vitest.config.mjs          # 单元测试配置（根目录固定为 frontend/）
 ├─ tsconfig.json              # TypeScript 配置
+├─ eslint.config.mjs          # ESLint（flat config）
+├─ .prettierrc.json           # Prettier（endOfLine: auto，兼容 Windows 换行）
 │
 ├─ scripts/                   # 构建期脚本（在 Node 中运行，不进入产物）
-│  └─ gen-api-contracts.ts    # 读取 backend 的 OpenAPI，生成 src/api/api-contracts.json
+│  ├─ gen-api-contracts.mts   # 调用后端导出 OpenAPI，生成 src/api/api-contracts.json；--check 仅校验
+│  └─ check.mjs               # pre-commit 调用的 ESLint + Prettier 检查
 │
 ├─ src-tauri/                 # Tauri 核心（Rust）
 │  ├─ Cargo.toml              # Rust 依赖
-│  ├─ build.rs                # 构建脚本：声明应用命令（get_backend_info）
+│  ├─ build.rs                # 构建脚本：声明应用命令（get_backend_info、open_chat_window、open_settings_window）
 │  ├─ tauri.conf.json         # 应用配置、CSP、打包；窗口由代码在后端就绪后创建
-│  ├─ capabilities/           # 权限白名单：悬浮窗只能调用 get_backend_info
+│  ├─ capabilities/           # 权限白名单，按窗口划分
+│  │  ├─ default.json         # 悬浮窗：拖动、get_backend_info、open_chat_window
+│  │  ├─ chat.json            # 对话窗口：get_backend_info、open_settings_window
+│  │  └─ settings.json        # 设置窗口：get_backend_info
+│  ├─ icons/                  # 应用图标（tauri icon 生成）
 │  └─ src/
 │     ├─ main.rs              # 入口
 │     ├─ lib.rs               # 应用装配、应用命令、退出联动、启动失败与意外退出的提示
 │     ├─ backend.rs           # 后端进程：拉起（端口握手、令牌）、监控、stdin 退出
-│     └─ window.rs            # 悬浮窗创建（透明、置顶、无边框）
-│     # 托盘、快捷键、开机自启尚未实现，由后续任务补充
+│     └─ window.rs            # 窗口创建：悬浮窗（透明、置顶、无边框）、对话窗口、设置窗口
+│     # 托盘、全局快捷键、开机自启尚未实现
 │
 └─ src/                       # 渲染进程（React）
-   ├─ app/                    # 【应用层】入口与装配，不含业务
-   │  ├─ entries/             # 每个窗口的入口文件
-   │  │  ├─ pet.tsx           # 悬浮窗入口
-   │  │  ├─ chat.tsx          # 对话窗入口
-   │  │  └─ settings.tsx      # 设置窗入口
-   │  ├─ providers/           # 全局 Provider（主题、错误边界）
-   │  └─ bootstrap.ts         # 启动流程：获取后端地址与令牌、健康检查、建立 WebSocket
+   ├─ app/                    # 【应用层】窗口入口与装配，不含业务
+   │  ├─ entries/             # 每个窗口的 html 与入口：pet、chat、settings
+   │  └─ env.d.ts
    │
    ├─ modules/                # 【功能模块层】按功能划分的页面与组件
-   │  ├─ pet/                 # 悬浮形象与主动消息气泡
-   │  │  ├─ PetView.tsx       # 形象占位图与状态标签
-   │  │  ├─ Bubble.tsx        # 主动消息气泡
-   │  │  └─ FeedbackButtons.tsx # 喜欢 / 别这样 / 忽略
-   │  ├─ chat/                # 对话
-   │  │  ├─ ChatPage.tsx      # 多轮对话、流式展示
-   │  │  ├─ HistoryList.tsx   # 历史与关键词搜索
-   │  │  └─ MemoryRef.tsx     # “你上次说过…”的记忆来源
-   │  └─ settings/            # 设置
-   │     ├─ ModelSettings.tsx     # 模型 provider、Base URL、模型名
-   │     ├─ PerceptionSettings.tsx# 感知开关、勿扰时段
-   │     ├─ WeatherSettings.tsx   # 城市与定位权限
-   │     ├─ MemorySettings.tsx    # 记忆查看、编辑、删除、导出
-   │     ├─ CapabilitySettings.tsx# 扩展列表与执行日志
-   │     └─ ImportSettings.tsx    # 聊天记录导入与历史
+   │  ├─ memory-labels.ts     # 记忆类别的中文标签（聊天与设置共用）
+   │  ├─ pet/                 # 悬浮窗：占位形象、状态标签、拖动、点击打开对话
+   │  ├─ chat/                # 对话窗口：标签页、多轮对话、流式展示、历史搜索、记忆来源
+   │  └─ settings/            # 设置窗口：模型（列表、可用性、切换、重载）、记忆（查看、编辑、删除、核心典藏、临时模式）
    │
    ├─ service/                # 【服务层】应用状态与业务编排
-   │  ├─ stores/              # Zustand store（每窗口的展示缓存）
-   │  │  ├─ pet.store.ts      # 宠物状态、当前气泡
-   │  │  ├─ chat.store.ts     # 会话消息、流式片段
-   │  │  └─ settings.store.ts # 非敏感设置
-   │  ├─ chat.service.ts      # 发送消息、拉取历史（调用 api，更新 store）
-   │  ├─ settings.service.ts  # 读写设置、测试模型连通
-   │  ├─ proactive.service.ts # 主动消息反馈
-   │  └─ events.ts            # WebSocket 事件 → store 的分发
+   │  ├─ stores/              # Zustand（vanilla）store，每窗口一份展示缓存
+   │  │  ├─ pet.store.ts      # 连接状态、宠物状态
+   │  │  └─ chat.store.ts     # 会话消息、流式片段、记忆来源
+   │  ├─ api-client.ts        # 获取后端客户端（经 get_backend_info）、统一错误文案
+   │  ├─ backend.service.ts   # 后端连接信息与健康检查
+   │  ├─ events.ts            # WebSocket 事件 → store 的分发（宠物、对话）
+   │  ├─ chat.service.ts      # 发送消息、搜索历史
+   │  ├─ model.service.ts     # 模型列表、切换、重载
+   │  ├─ memory.service.ts    # 记忆列表、编辑、删除、核心典藏、临时模式
+   │  └─ window.service.ts    # 打开对话与设置窗口
    │
-   ├─ api/                    # 【接口层】与后端通信
-   │  ├─ api-contracts.json   # 由 scripts 生成，禁止手改
-   │  ├─ client.ts            # 基础请求：baseURL、X-Pet-Token、统一错误结构
-   │  ├─ endpoints.ts         # 按 api-contracts.json 类型化的接口函数
-   │  └─ ws.ts                # WebSocket 连接、重连、心跳
-   │
-   └─ shared/                 # 【共享层】与业务无关，可被任何层引用
-      ├─ color.ts             # 色系定义（主题色、状态色）
-      ├─ message.ts           # 文案（界面文字、错误提示）
-      ├─ style/               # 共享样式：Tailwind 入口、全局 CSS、主题变量
-      ├─ utils/               # 工具函数（时间格式化、字符串、类型守卫）
-      └─ components/          # 通用组件（按钮、弹窗、列表、空状态）
+   └─ api/                    # 【接口层】与后端通信
+      ├─ client.ts            # 基础请求：baseUrl、X-Pet-Token、统一错误结构（ApiError）
+      ├─ endpoints.ts         # 接口函数
+      ├─ types.ts             # 请求与响应类型（手写，与 api-contracts.json 保持一致）
+      ├─ ws.ts                # WebSocket 连接、退避重连、事件解析
+      └─ api-contracts.json   # 由 gen:api 生成，入 Git，禁止手改
 ```
 
 ### 3.3 backend/
@@ -192,133 +180,97 @@ backend/
 ├─ .python-version           # 固定 Python 3.12
 ├─ pyproject.toml            # 项目元数据与依赖（uv 管理），含 ruff 配置
 ├─ uv.lock                   # 依赖锁定，入 Git
-├─ main.py                   # 入口：加载配置、创建应用、启动 uvicorn、打印端口握手
+├─ main.py                   # 入口：加载配置、迁移、装配服务、绑定端口、打印端口握手、运行 uvicorn
 │
 ├─ constants/                # 【常数】不随运行变化的常量；不依赖任何其他层
-│  ├─ __init__.py
-│  └─ path.py                # 目录常量：项目根、后端根、前端根、配置、数据、日志、导出、迁移、资源库（RESOURCE_DIR）；resolve_from_root()。文件路径由使用处用目录拼接
+│  ├─ path.py                # 目录常量：项目根、后端根、配置、数据（默认 backend/data）、日志、导出、资源库
+│  ├─ agent.py               # 子代理常量（最大步数等）
+│  ├─ memory.py              # 记忆常量：核心典藏上限、上下文预算
+│  └─ speech.py              # 句长上限（40 字符）
 │
-├─ config/                   # 【配置】.env、llm.yaml、角色卡；settings.py 解析为 model_settings
-│  ├─ .env                   # 本机配置：provider 列表、base_url、默认模型，不入 Git
-│  ├─ .env.example           # 环境变量模板，入 Git
+├─ config/                   # 【配置】.env、llm.yaml、角色卡；解析为不可变快照
+│  ├─ .env.example           # 环境变量模板，入 Git（本机 .env 不入 Git）
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
-│  ├─ persona.yaml           # 角色卡：role 结构化，其余属性为无序列表，入 Git
-│  ├─ persona.py             # 角色卡读取、校验与规范化（列表排序），产出 PersonaConfig
-│  ├─ README.md              # 配置目录说明与解析规则
-│  └─ settings.py            # 解析入口：读取 .env 与 llm.yaml，产出 ModelSettings（model_settings）；PET_* 通用配置
+│  ├─ persona.yaml           # 角色卡，入 Git
+│  ├─ persona.py             # 角色卡读取、校验与规范化，产出 PersonaConfig
+│  ├─ settings.py            # 解析入口：.env 与 llm.yaml → ModelSettings；PET_* → ServiceSettings
+│  └─ README.md              # 配置目录说明与解析规则
 │
 ├─ api/                      # 【接口层】只做 HTTP 相关工作
-│  ├─ app.py                 # create_app()：挂载路由、鉴权中间件、异常处理
-│  ├─ deps.py                # 依赖注入：令牌校验、服务实例获取（组装点）
-│  ├─ schemas/               # 请求与响应模型（Pydantic），即对外契约
-│  │  ├─ chat.py
-│  │  ├─ memory.py
-│  │  ├─ settings.py
-│  │  ├─ capability.py
-│  │  └─ events.py           # 推送事件结构
+│  ├─ app.py                 # create_app()：路由、令牌鉴权、CORS（仅桌面壳页面来源）、异常处理、事件 schema
+│  ├─ auth.py                # 令牌校验：X-Pet-Token 请求头；WebSocket 经子协议 pet.v1 携带令牌
+│  ├─ errors.py              # 统一错误结构 {"error": {"code", "message"}}
+│  ├─ event_publisher.py     # 服务层事件接口 → 事件总线（BusEventPublisher）
+│  ├─ schemas/               # 请求与响应模型（Pydantic），即对外契约：chat、events、llm、memories
 │  └─ routers/               # 路由，每个文件对应一组接口
-│     ├─ system.py           # 健康检查、紧急停止
+│     ├─ system.py           # 健康检查、安全退出
 │     ├─ chat.py             # 发送消息、历史查询
-│     ├─ memory.py           # 记忆查看、编辑、删除、临时模式
-│     ├─ settings.py         # 设置读写、模型连通性测试
-│     ├─ llm.py              # 模型预设列表、当前对话与整理模型、手动重载
-│     ├─ proactive.py        # 主动消息反馈
-│     ├─ capabilities.py     # 计划确认、执行日志、撤销
-│     ├─ imports.py          # 聊天记录导入
+│     ├─ llm.py              # 模型列表、当前对话与整理模型、手动重载
+│     ├─ memories.py         # 记忆列表、查看、编辑、删除、核心典藏、临时模式
 │     └─ ws.py               # WebSocket 事件推送
 │
 ├─ service/                  # 【服务层】业务规则与用例编排
 │  ├─ chat/
-│  │  ├─ chat_service.py     # 对话用例：组装 → 调模型 → 句长校验 → 写 daily_log
-│  │  └─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检查点记忆片段 → 近期对话
+│  │  ├─ chat_service.py     # 对话用例：关键词写入分支、组装上下文、调模型、句长校验、引用解析、写 daily_log、推送事件
+│  │  ├─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检索片段 → 引用规则 → 近期对话 → 当前输入
+│  │  └─ citations.py        # 引用标记 [引用 ID] 的解析与来源过滤（只保留本次注入的记忆）
 │  ├─ llm/
-│  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、触发重载、连通性测试
+│  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、重载、装配 client（按快照缓存）
 │  ├─ persona/
-│  │  └─ persona_service.py    # 角色卡版本同步：规范化 JSON 与最新版本比较，变化时追加 persona_version
+│  │  └─ persona_service.py  # 角色卡版本同步（persona_version）
 │  ├─ memory/
-│  │  ├─ memory_service.py   # 记忆用例：结构化记忆增删改、daily_memory 行号视图、行号 helper（仅供 sub agent）
-│  │  └─ index.py            # 记忆索引生成：由代码根据 JSON 文件与 daily_log 生成，不手工编辑
-│  ├─ agent/
-│  │  ├─ orchestrator.py     # 主 agent：输出执行计划，派发任务，接收检查点结果
-│  │  ├─ subagent.py         # ReAct 执行循环（提示词中不出现 sub agent 概念）
-│  │  ├─ skills.py           # 能力描述注册与关键词触发
-│  │  ├─ prompt.py           # 提示词构建、拼接、注入：角色卡、资源库、发言规则
-│  │  ├─ prompts/            # 提示词模板（.md，string.Template 占位）
-│  │  └─ tools/
-│  │     └─ file.py          # agent 文件工具：读取、写入、编辑、清空（调用 infra/files）
-│  ├─ proactive/
-│  │  ├─ proactive_service.py# 主动消息用例：判定 → 生成文案 → 推送
-│  │  ├─ rules.py            # 触发源、勿扰、每小时 / 每天上限、降频与抑制
-│  │  └─ scheduler.py        # tick 循环与任务表（记录上次运行，支持补跑）
-│  ├─ weather/
-│  │  ├─ weather_service.py  # 天气用例：缓存策略、失败降级与告知
-│  │  └─ location_policy.py  # 定位失败回退手动城市的规则
-│  ├─ perception/
-│  │  └─ perception_service.py # 把原始元数据解读为事件（离开 / 回来、久坐）
-│  └─ chat_import/
-│     ├─ import_service.py   # 导入用例：解析 → 标准化 → 切分 → 摘要 → 待办
-│     ├─ normalize.py        # 统一为标准结构，时间转本地 ISO 8601，去重排序
-│     └─ split.py            # 按天切分
-│
-├─ capabilities/             # 【原子能力层】复杂原子能力与受限动作，模型可提议，但只能通过本层执行
-│  ├─ registry.py            # 能力注册表，声明描述、风险等级（L0–L2）
-│  ├─ validator.py           # 白名单校验（应用、域名）；路径权限由 infra/files/access.py 提供
-│  ├─ executor.py            # 逐步执行、写执行日志、失败即停、支持撤销
-│  └─ actions/               # 具体能力（只能由 executor 调用）
-│     ├─ weather.py          # 天气查询（L0）
-│     ├─ open_app.py         # 启动白名单应用（L1）
-│     ├─ open_url.py         # 打开白名单域名（L1）
-│     ├─ file_ops.py         # 授权目录内移动、重命名、新建（L2，调用 infra/files）
-│     └─ append_text.py      # 授权文本追加（L2，调用 infra/files）
+│  │  ├─ memory_service.py   # 结构化记忆增删改、写入规则、daily_memory 行号视图、行号 helper、MemoryReader
+│  │  ├─ core_memory.py      # 核心典藏：加入、移出、排序（上限 20 条）
+│  │  ├─ daily_log_service.py# 每日对话：写入、读取、临时模式
+│  │  ├─ index.py            # 记忆索引生成：由代码生成，不手工编辑
+│  │  ├─ sensitive.py        # 敏感信息识别（证件号、银行卡、密码、健康细节）
+│  │  └─ services.py         # 记忆服务装配（MemoryServices）
+│  └─ agent/
+│     ├─ orchestrator.py     # 派发：按能力运行子代理，记录 agent_run，生成检查点
+│     ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步
+│     ├─ skills.py           # 能力注册表与关键词匹配；记忆写入能力（记住、记一下、我喜欢）
+│     ├─ memory_capture.py   # 关键词写入：命中后派发记忆写入能力，返回告知用户的回复
+│     ├─ prompt.py           # 提示词构建与注入（角色卡、发言规则）
+│     ├─ prompts/            # 提示词模板（.md，string.Template 占位）：chat、persona、subagent
+│     └─ tools/
+│        ├─ memory.py        # 记忆工具：describe / index / read（行号区间）、create / update
+│        └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程
 │
 ├─ infra/                    # 【基础设施层】技术适配，不含业务规则
 │  ├─ store/
 │  │  ├─ db.py               # SQLite 连接：WAL、外键、事务封装
-│  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version
-│  │  ├─ migrations/         # 迁移 SQL，只增不改
-│  │  │  ├─ 0001_init.sql    # 初始表结构（PRD §7.7）
-│  │  │  └─ 0002_log_record.sql # 日志入库表
-│  │  └─ repositories/       # 各表的增删改查，只返回数据，不做规则判断
+│  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version（含 SHA-256 校验）
+│  │  ├─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent
+│  │  ├─ repositories/       # 各表的读写，只返回数据，不做规则判断
+│  │  └─ *.py                # 存储适配：daily_log、core_memory、app_settings、agent_runs
 │  ├─ llm/
 │  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
 │  │  ├─ paradigms.py        # build_chat_model(spec)：三种范式的 LangChain 构造
-│  │  └─ usage.py            # 调用用量记录（写入 store，待实现）
-│  ├─ weather/
-│  │  ├─ provider.py         # 天气数据源统一接口
-│  │  └─ qweather.py         # 和风天气 HTTP 客户端
-│  ├─ system/                # 操作系统适配
-│  │  ├─ idle.py             # 键鼠空闲时长（ctypes · GetLastInputInfo）
-│  │  ├─ foreground.py       # 前台窗口与进程（ctypes + psutil）
-│  │  ├─ location.py         # Windows 定位（pywinrt）
-│  │  ├─ process.py          # 启动应用进程
-│  │  └─ fs.py               # 文件系统操作（移动、重命名、写入）
+│  │  └─ usage.py            # 调用用量记录（TrackedChatModel，写入 llm_usage）
 │  ├─ files/
-│  │  ├─ io.py               # 文件读写：读取、按行读取、写入、替换段落、清空（只做 IO）
+│  │  ├─ io.py               # 文件读写（只做 IO）
 │  │  ├─ access.py           # 文件权限：允许根目录、路径规范化、拒绝穿越与符号链接逃逸
-│  │  ├─ yaml_io.py          # 读写 YAML
-│  │  └─ export.py           # 导出 Markdown 等文件
+│  │  └─ json_store.py       # 结构化记忆的 JSON 文件存储（<id>.json）
 │  ├─ events/
 │  │  └─ bus.py              # 进程内发布 / 订阅，供 WebSocket 推送
-│  ├─ logging.py             # 日志配置：文件日志与数据库日志（DbLogHandler，批次写入）
+│  ├─ logging.py             # 日志：文件日志与数据库日志（批次写入）
 │  ├─ lifecycle.py           # 安全退出：ShutdownController 与 stdin 监听
 │  └─ lock.py                # 单实例锁：操作系统文件锁，进程结束自动释放
 │
 ├─ scripts/
-│  └─ export_openapi.py      # 导出 OpenAPI 到 backend/openapi.json，供前端生成契约
+│  ├─ export_openapi.py      # 导出 OpenAPI 到 backend/openapi.json，供前端生成契约
+│  └─ e2e/                   # 端到端验证：fake_llm.py（本地假模型）与 run_e2e.py（真实后端进程）
 │
-├─ data/                     # 运行数据，不入 Git
-│  ├─ pet.db                 # SQLite 数据库（daily_log 等）
-│  ├─ memory/                # 结构化记忆 JSON（structured/<id>.json）与记忆索引 index.json（由代码生成）
-│  ├─ resources/             # 资源库（草稿本、表情包），内容不入库，路径由 constants/path.py 定义
+├─ data/                     # 运行数据（PET_DATA_DIR 指定，默认 backend/data），不入 Git
+│  ├─ pet.db                 # SQLite：daily_log、llm_usage、agent_run、core_memory、app_setting 等
+│  ├─ memory/                # structured/<id>.json（结构化记忆）与 index.json（由代码生成）
 │  ├─ logs/                  # 后端日志
-│  ├─ exports/               # 导出的整理文件
 │  └─ backend.lock           # 单实例锁
 │
-└─ tests/                    # pytest，针对纯逻辑（service、capabilities）
-   ├─ service/
-   ├─ capabilities/
-   └─ infra/                 # 仅少量集成测试（如迁移、仓储）
+└─ tests/                    # pytest：service、api、infra、config 的测试
 ```
+
+以下模块在 PRD 中规划、尚未实现（对应 PRD §8 的后续里程碑）：`capabilities/`（能力注册、校验、执行，M6）、`service/proactive/`（主动消息，M3）、`service/weather/` 与 `infra/weather/`（天气，M3）、`infra/system/`（空闲、前台窗口、定位，M3）、`service/perception/`（M3）、`service/chat_import/`（M5），以及设置、主动消息、能力、导入相关的路由。
 
 ---
 
@@ -332,7 +284,6 @@ backend/
 | 功能模块层 | `src/modules/` | 页面与组件，按功能划分（chat、settings、pet） | 直接调用 `api/`，跨模块 import 内部文件 |
 | 服务层 | `src/service/` | Zustand store、业务编排、WebSocket 事件分发 | 渲染 JSX |
 | 接口层 | `src/api/` | 类型化请求、WebSocket 连接、统一错误处理 | 业务判断、维护 UI 状态 |
-| 共享层 | `src/shared/` | 色系、文案、样式、工具、通用组件 | 依赖任何业务模块 |
 | Tauri 核心 | `src-tauri/src/` | 窗口、托盘、快捷键、拉起后端 | 业务规则 |
 | 命令与权限 | `src-tauri/capabilities/` | 白名单桥接，只暴露必要命令 | 暴露文件系统、进程执行等通用能力 |
 
@@ -346,7 +297,7 @@ app ──► modules ──► service ──► api
 
 - `modules` 只通过 `service` 获取数据和触发动作，不直接访问 `api`。
 - `service` 调用 `api`，并把结果写入 `stores/`。
-- `shared` 不依赖任何其他层。
+- 共享层（`src/shared/`：色系、文案、样式）尚未建立，当前界面文字与样式直接写在组件中。
 
 ### 4.3 接口契约生成
 
@@ -356,7 +307,7 @@ app ──► modules ──► service ──► api
 backend: uv run python scripts/export_openapi.py
          └─► backend/openapi.json
 
-frontend: npm run gen:api   （即 scripts/gen-api-contracts.ts）
+frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:api:check 只校验，不写文件）
          ├─ 先调用后端导出 openapi.json
          ├─ 解析每个 path + method 的请求体与响应体，解析 $ref
          └─► src/api/api-contracts.json
@@ -386,9 +337,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.ts）
 
 ### 4.4 前端约定
 
-- 颜色只从 `shared/color.ts` 取，不在组件中写死色值。
-- 界面文字只从 `shared/message.ts` 取，便于统一修改与后续国际化。
-- 通用样式写在 `shared/style/`，组件优先使用 Tailwind 类名。
+- 当前界面使用内联样式，颜色与文案直接写在组件中。统一的颜色、文案与样式（共享层）尚未建立，后续需要时再引入。
 - 每个窗口一份 store，不跨窗口共享内存；跨窗口同步靠后端 WebSocket 事件。
 
 ---
@@ -443,7 +392,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量与起止时间，写入 `llm_usage` |
 | **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
 | **LLM 客户端装配、缓存、热更新** | `service/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
-| **当前模型选择** | `service/llm/llm_service.py`（待 M1 接入数据库的 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
+| **当前模型选择** | `service/llm/llm_service.py`（设置页切换的结果保存在数据库 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
 | **提示词构建与注入** | `service/agent/prompt.py`，模板在 `service/agent/prompts/` | 决定模型看到什么，属于业务 |
 | **上下文组装** | `service/chat/context.py` | 决定哪些记忆片段进入对话，是业务规则 |
 | **结构化输出的数据模型** | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
@@ -452,18 +401,19 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | **结构化记忆读写、行号 helper、索引生成** | `service/memory/` | 记忆是 Pet 自身的数据，业务用例；JSON 的文件 IO 在 `infra/files/` |
 | **文件读写与权限** | `infra/files/io.py`、`infra/files/access.py` | IO 与路径白名单、穿越防护，供 agent 工具与 capabilities 共用 |
 | **sub agent 编排与 ReAct 循环** | `service/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
-| **天气 HTTP 客户端** | `infra/weather/qweather.py` | 外部接口适配 |
-| **天气缓存策略、失败降级文案** | `service/weather/` | 业务规则 |
-| **Windows 定位、空闲、前台窗口** | `infra/system/` | 操作系统适配 |
-| **离开 / 回来、久坐的判断** | `service/perception/` | 由原始元数据推导的业务事件 |
-| **勿扰、频率上限、降频规则** | `service/proactive/rules.py` | 业务规则 |
-| **调度 tick 循环** | `service/proactive/scheduler.py` | 编排规则的运行时，业务相关 |
+| **关键词写入与记忆来源** | `service/agent/memory_capture.py`（触发）、`service/chat/citations.py`（引用过滤） | 业务规则：关键词命中才写入；只有本次注入上下文中的记忆可作为来源 |
+| **天气 HTTP 客户端**（未实现，M3） | `infra/weather/qweather.py` | 外部接口适配 |
+| **天气缓存策略、失败降级文案**（未实现，M3） | `service/weather/` | 业务规则 |
+| **Windows 定位、空闲、前台窗口**（未实现，M3） | `infra/system/` | 操作系统适配 |
+| **离开 / 回来、久坐的判断**（未实现，M3） | `service/perception/` | 由原始元数据推导的业务事件 |
+| **勿扰、频率上限、降频规则**（未实现，M3） | `service/proactive/rules.py` | 业务规则 |
+| **调度 tick 循环**（未实现，M3） | `service/proactive/scheduler.py` | 编排规则的运行时，业务相关 |
 | **角色卡解析与校验** | `config/persona.py` | 配置层，启动时执行；YAML 读取复用 `infra/files/yaml_io.py` |
-| **聊天记录解析** | 文件读取在 `infra/files/`，格式解析与标准化在 `service/chat_import/` | 格式标准由业务定义 |
+| **聊天记录解析**（未实现，M5） | 文件读取在 `infra/files/`，格式解析与标准化在 `service/chat_import/` | 格式标准由业务定义 |
 | **事件总线** | `infra/events/bus.py` | 技术机制，业务层只发布事件 |
-| **能力校验（应用、域名白名单）** | `capabilities/validator.py` | 安全规则，单独成层便于审查 |
+| **能力校验（应用、域名白名单）**（未实现，M6） | `capabilities/validator.py` | 安全规则，单独成层便于审查 |
 | **文件路径权限** | `infra/files/access.py` | 允许根目录与穿越防护，由 IO 与 capabilities 共用 |
-| **文件移动、进程启动** | `infra/system/fs.py`、`process.py` | 由 capabilities 的 actions 调用 |
+| **文件移动、进程启动**（未实现，M6） | `infra/system/fs.py`、`process.py` | 由 capabilities 的 actions 调用 |
 
 ### 5.5 常见疑问
 
@@ -485,87 +435,76 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 ```
 前端 chat 模块 ─► service/chat.service.ts ─► api（POST /api/chat）
 后端 api/routers/chat.py ─► service/chat/chat_service.py
-   ├─ service/agent/prompt       构建系统提示词：角色卡 + 资源库 + 发言规则
-   ├─ service/agent/orchestrator （需要时）派发 sub agent 读取记忆，返回检查点结果
-   ├─ service/chat/context       组装：系统提示词 → 核心典藏 → 检查点记忆片段 → 近期对话
-   ├─ infra/llm/client           调用对话模型（流式），记录用量
-   ├─ 句长校验                    单句 ≤ 40 字符，超限重新生成一次
-   ├─ infra/store/repositories   写入 daily_log（临时模式下不写）
-   └─ infra/events/bus           推送流式片段
+   ├─ 关键词命中（§6.3）：service/agent/memory_capture 派发记忆写入能力，状态“执行中”，回复写入结果，不调用对话模型
+   ├─ service/agent/prompt        构建系统提示词：角色卡 + 发言规则
+   ├─ service/chat/context        组装：系统提示词 → 核心典藏 → 检索片段（由调用方提供）→ 引用规则 → 近期对话
+   ├─ infra/llm                   调用对话模型（非流式），记录用量
+   ├─ 句长校验                     单句 ≤ 40 字符，超限重新生成一次
+   ├─ service/chat/citations      去除 [引用 ID] 标记；来源只保留本次注入上下文中的记忆
+   ├─ infra/store/repositories    写入 daily_log（临时模式下不写）
+   └─ infra/events/bus            按句段推送 chat.chunk，完成后推送 chat.done（含 sources）
 前端 api/ws.ts ─► service/events.ts ─► stores/chat.store.ts ─► modules/chat 渲染
 ```
 
+- 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
+- 检索：主 agent 决定是否检索记忆（Q-4）的规划调用尚未实现。当前进入上下文的记忆只有核心典藏；`ChatService.reply` 接受的检索片段目前没有调用方提供。
+
 ### 6.2 主动消息
 
-```
-service/proactive/scheduler（tick）
-  ─► rules.py 判定：触发源 + 勿扰 + 频率 + 抑制规则
-  ─► proactive_service 生成短文案（infra/llm）
-  ─► infra/events/bus 推送 ─► 前端气泡
-  ─► 反馈 POST /api/proactive/{id}/feedback ─► service 调整规则，infra/store 记录
-```
+未实现（PRD §4.4，对应 M3）。规划中的流程：调度器 tick → 规则判定（触发源、勿扰、频率上限）→ 生成文案 → 推送气泡 → 反馈写入规则。
 
 ### 6.3 结构化记忆写入
 
-日常对话每天完整保留在 `daily_log`，不做日终摘要。结构化记忆由关键词触发或用户明确要求时写入：
+日常对话每天完整保留在 `daily_log`，不做日终摘要。关键词命中时写入结构化记忆（用户明确要求的写入尚未单独实现）：
 
 ```
-对话消息命中关键词（或用户明确要求）
-  ─► service/agent/skills 匹配能力描述
-  ─► service/agent/orchestrator 派发 sub agent（consolidate 角色模型，ReAct）
-       ├─ service/agent/tools/file 与 service/memory 读取索引、行号区间片段
-       ├─ service/memory 写入 data/memory/structured/<id>.json（经 infra/files/io）
+对话消息命中关键词（记住、记一下、我喜欢）
+  ─► service/agent/memory_capture 匹配记忆写入能力（skills.py）
+  ─► 临时模式开启：直接回复提示，不写入
+  ─► 敏感信息检查（service/memory/sensitive）：命中则回复原因，不写入
+  ─► service/agent/orchestrator 派发子代理（consolidate 模型，ReAct，最多 8 步）
+       ├─ tools/memory：memory_index、memory_read 查看已有记忆，避免重复
+       ├─ tools/memory：memory_create、memory_update 写入（service/memory，经 infra/files 写 data/memory/structured/<id>.json）
        └─ service/memory/index 重新生成记忆索引
-  ─► agent_run 记录行为路径与输出；检查点只保留能力名与输出结果
+  ─► agent_run 记录行为路径与输出；输出作为回复告知用户（无输出时为“我记住啦。”）
 ```
 
-### 6.3.1 记忆读取（翻阅记忆）
+写入后，用户可在设置页查看、编辑、删除（T-043）。
 
-```
-主 agent：读取记忆索引的“描述”，输出执行计划，派发任务
-sub agent（ReAct）：打开记忆图书馆 → 查看记忆索引 → 读取 <类型><id> → 获取记忆片段（行号区间 from-to）
-  ─► 行号 helper 在每行开头补填行号（仅 sub agent 使用）
-  ─► 返回结果，检查点记录为“执行：<能力>”加输出结果
-```
+### 6.3.1 记忆查看
+
+设置页的记忆列表与每日对话通过 `GET /api/memories` 读取，不经过子代理。子代理的读取工具（`memory_describe`、`memory_index`、`memory_read`，支持行号区间）已实现，目前只随记忆写入能力提供。把读取能力接入对话，依赖主 agent 的检索规划（Q-4），尚未实现。
 
 ### 6.4 能力执行
 
-```
-模型输出计划（动作 + 参数）
-  ─► capabilities/validator   白名单、路径规范化、风险等级
-  ─► L0–L1 直接执行；L2 生成待确认项，等待用户确认
-  ─► capabilities/executor    逐步执行，写 capability_run，失败即停
-  ─► infra/system 完成实际操作；可撤销动作记录原路径
-```
+未实现（M6）。模型输出计划 → 白名单与参数校验 → 分级确认 → 执行与撤销。见 §3.3 末尾的未实现模块列表。
 
 ---
 
 ## 7. 接口契约
 
-所有接口前缀 `/api`，需携带 `X-Pet-Token`。前端接口类型由 OpenAPI 生成（见 §4.3），不手写。
+所有接口前缀 `/api`，需携带 `X-Pet-Token`。前端接口类型当前手写于 `frontend/src/api/types.ts`，并以 `api-contracts.json` 校验与后端一致（`npm run gen:api:check`），见 §4.3。
 
 | 方法 | 路径 | operationId | 用途 |
 |---|---|---|---|
 | GET | `/api/health` | `health` | 健康检查 |
-| POST | `/api/chat` | `send_chat` | 发送消息，流式回复经 WebSocket 推送 |
-| GET | `/api/chat/history` | `list_chat_history` | 历史对话，支持关键词搜索 |
-| GET | `/api/memories` | `list_memories` | 记忆列表，按类别与有效性筛选 |
-| PATCH | `/api/memories/{id}` | `update_memory` | 编辑记忆 |
-| DELETE | `/api/memories/{id}` | `delete_memory` | 删除记忆 |
-| POST | `/api/memories/temporary-mode` | `set_temporary_mode` | 切换临时模式 |
-| GET / PUT | `/api/settings` | `get_settings` / `update_settings` | 读取 / 更新非敏感设置 |
-| POST | `/api/settings/llm/test` | `test_llm` | 测试模型连通性 |
+| POST | `/api/shutdown` | `shutdown` | 安全退出后端，返回 202（见 §1.3） |
+| POST | `/api/chat` | `send_chat` | 发送消息，返回完整回复与记忆来源（`sources`） |
+| GET | `/api/chat/history` | `list_chat_history` | 每日对话记录，支持关键词、日期范围与分页 |
+| GET | `/api/memories` | `list_memories` | 结构化记忆、核心典藏、每日索引；可按类别与日期筛选 |
+| GET | `/api/memories/{id}` | `get_memory` | 查看一条结构化记忆（每日对话日期返回 403） |
+| PATCH | `/api/memories/{id}` | `update_memory` | 编辑记忆（标题、类别、内容、重要性） |
+| DELETE | `/api/memories/{id}` | `delete_memory` | 删除记忆，同步移出核心典藏 |
+| POST | `/api/memories/temporary-mode` | `set_memory_temporary_mode` | 开启或关闭临时模式 |
+| POST | `/api/memories/core` | `add_core_memory` | 加入核心典藏（上限 20 条） |
+| DELETE | `/api/memories/core/{id}` | `remove_core_memory` | 移出核心典藏 |
+| PUT | `/api/memories/core/order` | `reorder_core_memory` | 调整核心典藏顺序 |
 | GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
 | GET / PUT | `/api/llm/active` | `get_active_llm` / `set_active_llm` | 当前对话模型与整理模型 |
 | POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |
-| POST | `/api/proactive/{id}/feedback` | `submit_proactive_feedback` | 主动消息反馈 |
-| GET | `/api/capabilities/runs` | `list_capability_runs` | 执行日志 |
-| POST | `/api/capabilities/plans/{id}/confirm` | `confirm_plan` | 确认计划 |
-| POST | `/api/capabilities/runs/{id}/undo` | `undo_run` | 撤销 |
-| POST | `/api/imports` | `import_chat` | 导入聊天记录 |
-| POST | `/api/emergency-stop` | `emergency_stop` | 紧急停止 |
-| POST | `/api/shutdown` | `shutdown` | 安全退出后端，返回 202（见 §1.3） |
-| WS | `/ws` | — | 事件推送：状态、主动消息、流式片段 |
+| WS | `/ws` | — | 事件推送：宠物状态、流式片段、`chat.done`（含 sources） |
+
+未实现的接口（PRD 后续里程碑）：`GET/PUT /api/settings`、`POST /api/settings/llm/test`（设置页的非模型部分）、`POST /api/proactive/{id}/feedback`（M3）、`/api/capabilities/*`（M6）、`POST /api/imports`（M5）、`POST /api/emergency-stop`（M3）。
 
 - 错误响应统一为 `{ "error": { "code": "...", "message": "..." } }`，前端按 `code` 处理，不解析 `message`。
 - 模型调用失败时返回明确错误，不编造回复。
@@ -593,26 +532,20 @@ sub agent（ReAct）：打开记忆图书馆 → 查看记忆索引 → 读取 <
 | `PET_HOST` | `127.0.0.1` | 只允许 `127.0.0.1`，其他值启动报错 |
 | `PET_PORT` | `0` | `0` 为随机端口，由前端通过 stdout 读取 |
 | `PET_TOKEN` | 必填 | 启动令牌 |
-| `PET_DATA_DIR` | `backend/data` | 数据目录 |
-| `PET_PERSONA_FILE` | `backend/config/persona.yaml` | 人设文件 |
+| `PET_DATA_DIR` | `backend/data` | 数据目录：数据库、记忆文件、日志都在其下；相对路径按项目根目录解析 |
+| `PET_PERSONA_FILE` | `backend/config/persona.yaml` | 角色卡文件 |
 | `PET_TIMEZONE` | `Asia/Shanghai` | 时区 |
 | `PET_LOG_LEVEL` | `INFO` | 日志级别 |
-| `PET_QUIET_HOURS` | `23:00-08:00` | 勿扰时段 |
-| `PET_PROACTIVE_MAX_PER_HOUR` | `2` | 主动消息每小时上限 |
-| `PET_PROACTIVE_MAX_PER_DAY` | `15` | 主动消息每天上限 |
+| `PET_LOG_QUEUE_SIZE` | `20` | 数据库日志每批条数 |
+| `PET_LOG_MAX_WAIT_SECONDS` | `30` | 数据库日志批次最长等待秒数 |
 | `LLM_PROVIDERS` | 空 | 启用的 provider 列表，逗号分隔，见 §8.3 |
 | `<PROVIDER>_BASE_URL` | 无 | 某 provider 的 Base URL（OpenAI 兼容），如 `DEEPSEEK_BASE_URL` |
 | `DEFAULT_CHAT_MODEL` | 无 | 对话默认模型，`<name>` 或 `<provider>/<name>`（`name` 为 llm.yaml 中的模型标签） |
 | `DEFAULT_CONSOLIDATE_MODEL` | 无 | 整理默认模型，格式同上 |
 
 密钥不在此表中：每个 provider 的密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，见 §8.3.1。
-| `WEATHER_SOURCE` | `qweather` | 天气数据源 |
-| `WEATHER_LOCATION_MODE` | `auto` | `auto` 定位，或 `manual` 手动城市 |
-| `WEATHER_MANUAL_CITY` | `上海` | 手动城市 |
-| `QWEATHER_API_HOST` | 无 | 和风天气 API Host |
-| `QWEATHER_CREDENTIAL` | 无 | 和风天气鉴权凭据（待确认格式） |
-| `CAPABILITY_ALLOWED_APPS` | 空 | 允许启动的应用，逗号分隔，绝对路径 |
-| `CAPABILITY_ALLOWED_DOMAINS` | 空 | 允许打开的域名，逗号分隔 |
+
+`.env.example` 中还列有以下变量，但对应功能尚未实现，当前无效果：`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY`（主动消息，M3）；`WEATHER_*`、`QWEATHER_*`（天气，M3）；`CAPABILITY_ALLOWED_*`（能力，M6）。
 
 `.env.example` 与本表保持一致，新增变量时两处同步修改。
 
@@ -764,7 +697,8 @@ providers:
 - 注意：进程被强制结束（如 Windows 上的 `TerminateProcess`）时，尚未写入的记录会丢失，最多为一个未满批次的内容（默认最长 30 秒）。需要完整记录时应使用优雅退出，见 Task.md。
 
 ### 9.3 测试
-- `pytest`，放在 `backend/tests/`，以 service 与 capabilities 的纯逻辑为主。
+- `pytest`，放在 `backend/tests/`，以 service 的纯逻辑为主，另有 api 与 infra 的测试。
+- 端到端：`backend/scripts/e2e/run_e2e.py` 启动真实后端进程，并用本地假模型（`fake_llm.py`）走完整的 HTTP 与 WebSocket 流程，不需要真实密钥。
 - 不做 LLM 输出质量的自动评估（PRD 非目标）。
 
 ### 9.4 代码检查
@@ -786,7 +720,7 @@ providers:
 ## 10. 待确认
 
 1. **infra 与 service 的划分标准**（§5.3）是否认可；存在争议的组件以 §5.4 为准。
-2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。当前设计为集中放在 `service/`。
+2. **前端 Zustand store 放在 `service/stores/`**，还是放在各模块内部。已采用集中放在 `service/`。
 3. **`config/` 中同时存放 `.env`、`llm.yaml` 与 `persona.yaml`**：`settings.py` 是 LLM 与通用配置的解析入口，产出 `model_settings`；`persona.py` 负责角色卡；client 装配由 `service/llm` 负责。
 4. **`api-contracts.json` 的生成方式**：当前设计为调用后端脚本导出 OpenAPI，不要求后端先启动。
 5. **`backend/config/persona.yaml` 是否入 Git**（若含个人信息，改为忽略并提供 `persona.example.yaml`）。
