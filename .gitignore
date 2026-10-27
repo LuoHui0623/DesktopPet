@@ -38,3 +38,6 @@ backend/openapi.json
 
 # 授权目录（读取对象，不由项目管理，不入 Git）
 /授权目录/
+
+# 本地任务记录，不纳入 git 追踪
+Task.md
