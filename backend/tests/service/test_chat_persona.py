@@ -62,7 +62,7 @@ def env(tmp_path: Path):
     (tmp_path / ".env").write_text(ENV, encoding="utf-8")
     (tmp_path / "llm.yaml").write_text(LLM_YAML, encoding="utf-8")
     environ = {"DEEPSEEK_API_KEY": "sk-test"}
-    model = ScriptedChat(["你好呀"] * 10)
+    model = ScriptedChat(['{"type": "chat", "text": "你好呀"}'] * 10)
     llm = LlmService(
         ModelSettingsSource(tmp_path, environ=environ),
         builder=lambda spec: model,

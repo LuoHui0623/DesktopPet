@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -59,9 +60,18 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
 LONG = "很" * 41 + "。"
 
 
+class RawOutput(str):
+    """模型原样输出的内容。"""
+
+
 class FakeChat:
     def __init__(self, outcomes: list) -> None:
-        self.outcomes = list(outcomes)
+        self.outcomes = [
+            outcome
+            if isinstance(outcome, (Exception, RawOutput))
+            else json.dumps({"type": "chat", "text": outcome}, ensure_ascii=False)
+            for outcome in outcomes
+        ]
 
     def invoke(self, messages, config=None, **kwargs):
         outcome = self.outcomes.pop(0)
@@ -161,6 +171,13 @@ def test_model_failure_maps_to_502(tmp_path: Path):
     response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "model_failed"
+
+
+def test_invalid_output_maps_to_502(tmp_path: Path):
+    client = make_client(tmp_path, [RawOutput("not json"), RawOutput("still not json")])
+    response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "invalid_output"
 
 
 def test_overlong_reply_maps_to_502_without_text(tmp_path: Path):

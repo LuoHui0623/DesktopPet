@@ -6,7 +6,7 @@ from string import Template
 from typing import Literal
 
 from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListTheme, PersonaConfig
-from constants.path import DRAFT_PATH, EMOJI_DIR, PROMPTS_DIR, ROOT_DIR
+from constants.path import CAPABILITIES_FILE, DRAFT_PATH, EMOJI_DIR, PROMPTS_DIR, ROOT_DIR
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS
 
 AgentRole = Literal["chat"]
@@ -54,6 +54,24 @@ class PromptTemplates:
 class SystemPrompt:
     text: str
     template_digest: str
+
+
+def load_capabilities(path: Path = CAPABILITIES_FILE) -> tuple[CapabilityDescription, ...]:
+    if not path.exists():
+        return ()
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PromptError(f"无法读取能力列表：{exc}") from exc
+    capabilities: list[CapabilityDescription] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.startswith("- "):
+            continue
+        name, separator, description = line[2:].partition("：")
+        if not separator or not name.strip() or not description.strip():
+            raise PromptError(f"能力列表第 {number} 行格式不正确，应为“- 名称：描述”")
+        capabilities.append(CapabilityDescription(name.strip(), description.strip()))
+    return tuple(capabilities)
 
 
 def default_resources() -> tuple[ResourceItem, ...]:

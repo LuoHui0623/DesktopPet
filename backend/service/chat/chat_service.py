@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from collections.abc import Callable, Sequence
@@ -15,7 +16,7 @@ from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
 from service.agent.memory_capture import DEFAULT_NOTICE, MemoryCapture
-from service.agent.prompt import PromptTemplates
+from service.agent.prompt import CapabilityDescription, PromptTemplates
 from service.chat.citations import CitedSource, resolve_sources, split_citations
 from service.chat.context import ContextBuilder, MemoryFragment
 from service.llm import LlmService, LlmUnavailableError
@@ -90,6 +91,33 @@ def _text_of(content: Any) -> str:
     return ""
 
 
+class ModelOutputError(Exception):
+    pass
+
+
+def parse_chat_output(content: str) -> str:
+    try:
+        data = json.loads(content)
+    except ValueError as exc:
+        raise ModelOutputError("回复不是合法的 JSON") from exc
+    if not isinstance(data, dict) or not data:
+        raise ModelOutputError("回复必须是 JSON 对象")
+    if next(iter(data)) != "type":
+        raise ModelOutputError("type 必须是第一个字段")
+    if data["type"] == "dispatch":
+        raise ModelOutputError("派发尚未启用，只能输出 chat")
+    if data["type"] != "chat":
+        raise ModelOutputError(f"type 不合法：{data['type']}")
+    if set(data) != {"type", "text"}:
+        raise ModelOutputError("chat 只能包含 type 与 text 两个字段")
+    text = data["text"]
+    if not isinstance(text, str) or not text.strip():
+        raise ModelOutputError("text 必须是非空字符串")
+    if not split_citations(text.strip())[0]:
+        raise ModelOutputError("text 为空，只有引用标记")
+    return text.strip()
+
+
 def _prompt_digest(template_digest: str, persona_id: str, persona_version: int) -> str:
     return sha256(f"{template_digest}|{persona_id}|{persona_version}".encode()).hexdigest()
 
@@ -109,6 +137,7 @@ class ChatService:
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capture: MemoryCapture | None = None,
+        capabilities: Sequence[CapabilityDescription] = (),
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
@@ -121,6 +150,7 @@ class ChatService:
         self._structured = structured
         self._timezone = timezone or DEFAULT_TIMEZONE
         self._clock = clock
+        self._capabilities = tuple(capabilities)
 
     def reply(self, user_text: str, fragments: Sequence[MemoryFragment] = ()) -> ChatReply:
         text = user_text.strip()
@@ -137,6 +167,7 @@ class ChatService:
             core=self._core,
             structured=self._structured,
             clock=self._clock,
+            capabilities=self._capabilities,
         )
         assembled = builder.build(text, fragments)
         messages = assembled.messages
@@ -209,15 +240,24 @@ class ChatService:
         messages: list[BaseMessage],
         digest: str,
     ) -> str:
+        failure: ChatError | None = None
         for _ in range(MAX_ATTEMPTS):
             content = self._invoke(client, messages, digest)
-            body, _ = split_citations(content)
-            if not overlong_sentences(body):
-                return content
-        raise ChatError(
-            "sentence_too_long",
-            f"回复中有单句超过 {SENTENCE_MAX_CHARS} 字符，重新生成后仍超限",
-        )
+            try:
+                text = parse_chat_output(content)
+            except ModelOutputError as exc:
+                failure = ChatError("invalid_output", f"模型输出不符合规定：{exc}")
+                continue
+            body, _ = split_citations(text)
+            if overlong_sentences(body):
+                failure = ChatError(
+                    "sentence_too_long",
+                    f"回复中有单句超过 {SENTENCE_MAX_CHARS} 字符，重新生成后仍超限",
+                )
+                continue
+            return text
+        assert failure is not None
+        raise failure
 
     def _invoke(self, client: TrackedChatModel, messages: list[BaseMessage], digest: str) -> str:
         with usage_scope("chat", prompt_hash=digest):
@@ -225,11 +265,7 @@ class ChatService:
                 response = client.invoke(messages)
             except Exception as exc:
                 raise ChatError("model_failed", f"模型调用失败：{exc}") from exc
-        content = _text_of(response.content).strip()
-        body, _ = split_citations(content)
-        if not body:
-            raise ChatError("model_failed", "模型返回了空回复")
-        return content
+        return _text_of(response.content).strip()
 
     def _record_unavailable(self, digest: str) -> None:
         active = self._llm.active_model("chat")

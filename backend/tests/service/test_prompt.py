@@ -13,6 +13,7 @@ from service.agent.prompt import (
     ResourceItem,
     build_system_prompt,
     default_resources,
+    load_capabilities,
     load_templates,
     render_persona,
 )
@@ -71,14 +72,53 @@ def test_missing_optional_theme_has_no_block():
 def test_sections_follow_fixed_order(templates):
     text = build(templates).text
     positions = [
-        text.index("【人设】"),
+        text.index("你的名字是小桌"),
+        text.index("【行动规则】"),
         text.index("【可用能力】"),
         text.index("【可用资源】"),
         text.index("【发言规则】"),
         text.index("【固定约束】"),
     ]
     assert positions == sorted(positions)
-    assert text.index("你的名字是小桌") < text.index("【可用能力】")
+
+
+def test_action_rules_describe_the_chat_output_format(templates):
+    text = build(templates).text
+    rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
+    assert '{"type": "chat", "text": "要说给主人的话"}' in rules
+    assert "type 必须是第一个字段" in rules
+
+
+def test_capabilities_are_listed_inside_action_rules(templates):
+    text = build(templates).text
+    assert text.index("【行动规则】") < text.index("- 打开网址") < text.index("【可用资源】")
+
+
+def test_capabilities_file_is_read_from_dash_lines(tmp_path: Path):
+    path = tmp_path / "capabilities.md"
+    path.write_text(
+        "# 可用能力\n\n说明文字。\n- 记忆：记录主人告诉你的稳定信息\n- 天气：查询天气\n",
+        encoding="utf-8",
+    )
+    assert load_capabilities(path) == (
+        CapabilityDescription(name="记忆", description="记录主人告诉你的稳定信息"),
+        CapabilityDescription(name="天气", description="查询天气"),
+    )
+
+
+def test_missing_capabilities_file_means_none(tmp_path: Path):
+    assert load_capabilities(tmp_path / "missing.md") == ()
+
+
+def test_malformed_capability_line_is_reported_with_line_number(tmp_path: Path):
+    path = tmp_path / "capabilities.md"
+    path.write_text("- 记忆：好\n- 没有分隔符\n", encoding="utf-8")
+    with pytest.raises(PromptError, match="第 2 行"):
+        load_capabilities(path)
+
+
+def test_real_capabilities_file_loads():
+    assert load_capabilities() == ()
 
 
 def test_capabilities_are_listed_one_per_line(templates):

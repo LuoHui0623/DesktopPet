@@ -32,7 +32,13 @@ from infra.store.migrate import MigrationError, migrate
 from infra.store.persona_versions import DbPersonaVersions
 from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
-from service.agent.prompt import PromptError, PromptTemplates, load_templates
+from service.agent.prompt import (
+    CapabilityDescription,
+    PromptError,
+    PromptTemplates,
+    load_capabilities,
+    load_templates,
+)
 from service.agent.skills import SkillRegistry, memory_write_skill
 from service.agent.subagent import SubAgent
 from service.agent.tools.memory import make_memory_tools, make_memory_write_tools
@@ -72,6 +78,7 @@ def serve(
     settings: ServiceSettings,
     llm_service: LlmService,
     templates: PromptTemplates,
+    capabilities: tuple[CapabilityDescription, ...],
 ) -> int:
     try:
         applied = initialize_database(settings.data_dir)
@@ -173,6 +180,7 @@ def serve(
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
         capture=MemoryCapture(skills, orchestrator, memory_writer),
+        capabilities=capabilities,
     )
     app = create_app(
         settings.token.get_secret_value(),
@@ -252,6 +260,13 @@ def main() -> int:
         return 1
     logger.info("提示词模板已加载，哈希：%s", templates.digest)
 
+    try:
+        capabilities = load_capabilities()
+    except PromptError as exc:
+        logger.error("能力列表错误：%s", exc)
+        print(f"能力列表错误：{exc}", file=sys.stderr)
+        return 1
+
     lock = SingleInstanceLock(settings.data_dir / "backend.lock")
     try:
         lock.acquire()
@@ -264,7 +279,7 @@ def main() -> int:
         return 1
 
     try:
-        return serve(settings, llm_service, templates)
+        return serve(settings, llm_service, templates, capabilities)
     finally:
         lock.release()
 

@@ -6,6 +6,7 @@ FRONTEND_DIR = ROOT_DIR / "frontend"
 
 CONFIG_DIR = BACKEND_DIR / "config"
 PERSONAS_DIR = CONFIG_DIR / "personas"
+CAPABILITIES_FILE = CONFIG_DIR / "capabilities.md"
 DATA_DIR = BACKEND_DIR / "data"
 LOG_DIR = DATA_DIR / "logs"
 EXPORT_DIR = DATA_DIR / "exports"

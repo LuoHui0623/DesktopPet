@@ -230,8 +230,8 @@ backend/
 │     ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步
 │     ├─ skills.py           # 能力注册表与关键词匹配；记忆写入能力（记住、记一下、我喜欢）
 │     ├─ memory_capture.py   # 关键词写入：命中后派发记忆写入能力，返回告知用户的回复
-│     ├─ prompt.py           # 提示词构建与注入（角色卡、发言规则）
-│     ├─ prompts/            # 提示词模板（.md，string.Template 占位）：chat、persona、subagent
+│     ├─ prompt.py           # 提示词构建与注入（角色卡、行动规则、能力列表、发言规则）
+│     ├─ prompts/            # 提示词模板（.md，string.Template 占位）：chat（含行动规则）、persona、subagent
 │     └─ tools/
 │        ├─ memory.py        # 记忆工具：describe / index / read（行号区间）、create / update
 │        └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程

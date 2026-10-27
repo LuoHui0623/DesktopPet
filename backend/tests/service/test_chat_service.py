@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -15,7 +16,9 @@ from service.agent.prompt import load_templates
 from service.chat.chat_service import (
     ChatError,
     ChatService,
+    ModelOutputError,
     overlong_sentences,
+    parse_chat_output,
     split_sentences,
 )
 from service.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
@@ -57,9 +60,20 @@ SHORT = "你好呀，今天过得怎么样？"
 LONG = "很" * 41 + "。"
 
 
+class Raw(str):
+    """模型原样输出的内容，用于验证协议错误。"""
+
+
+def chat_output(text: str) -> str:
+    return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
+
+
 class FakeChat:
     def __init__(self, outcomes: list) -> None:
-        self.outcomes = list(outcomes)
+        self.outcomes = [
+            outcome if isinstance(outcome, (Exception, Raw)) else chat_output(outcome)
+            for outcome in outcomes
+        ]
         self.calls: list[list] = []
 
     def invoke(self, messages, config=None, **kwargs):
@@ -186,10 +200,54 @@ def test_model_failure_is_reported_without_fabricated_reply(tmp_path: Path):
 
 
 def test_empty_model_reply_is_a_failure(tmp_path: Path):
-    harness = Harness(tmp_path, ["   "])
+    harness = Harness(tmp_path, [Raw("   "), Raw("   ")])
     with pytest.raises(ChatError) as exc:
         harness.chat.reply("你好")
-    assert exc.value.code == "model_failed"
+    assert exc.value.code == "invalid_output"
+    assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0
+
+
+def test_non_json_reply_is_regenerated_once(tmp_path: Path):
+    harness = Harness(tmp_path, [Raw(SHORT), Raw(chat_output(SHORT))])
+    result = harness.chat.reply("你好")
+    assert result.text == SHORT
+    assert len(harness.fake.calls) == 2
+
+
+def test_non_json_twice_returns_reason(tmp_path: Path):
+    harness = Harness(tmp_path, [Raw(SHORT), Raw(SHORT)])
+    with pytest.raises(ChatError) as exc:
+        harness.chat.reply("你好")
+    assert exc.value.code == "invalid_output"
+    assert "JSON" in str(exc.value)
+
+
+def test_type_must_be_the_first_field():
+    with pytest.raises(ModelOutputError, match="第一个字段"):
+        parse_chat_output(json.dumps({"text": SHORT, "type": "chat"}, ensure_ascii=False))
+
+
+def test_chat_output_accepts_only_type_and_text():
+    with pytest.raises(ModelOutputError, match="两个字段"):
+        parse_chat_output(
+            json.dumps({"type": "chat", "text": SHORT, "extra": "x"}, ensure_ascii=False)
+        )
+
+
+def test_dispatch_is_not_enabled_yet():
+    with pytest.raises(ModelOutputError, match="尚未启用"):
+        parse_chat_output(json.dumps({"type": "dispatch", "plan": []}, ensure_ascii=False))
+
+
+def test_unknown_type_and_empty_text_are_rejected():
+    with pytest.raises(ModelOutputError, match="type 不合法"):
+        parse_chat_output(json.dumps({"type": "weather", "text": SHORT}, ensure_ascii=False))
+    with pytest.raises(ModelOutputError, match="非空字符串"):
+        parse_chat_output(json.dumps({"type": "chat", "text": "  "}, ensure_ascii=False))
+
+
+def test_chat_output_text_is_returned_stripped():
+    assert parse_chat_output(chat_output(f"  {SHORT}  ")) == SHORT
 
 
 def test_temporary_mode_replies_without_writing_log(tmp_path: Path):
@@ -327,8 +385,9 @@ def test_injected_fragments_carry_their_ids_and_the_citation_rule(tmp_path: Path
 
 
 def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
-    harness = Harness(tmp_path, ["[引用 m_20261018_001]"])
+    marker = "[引用 m_20261018_001]"
+    harness = Harness(tmp_path, [marker, marker])
     with pytest.raises(ChatError) as exc:
         harness.chat.reply("你好", CITED_FRAGMENTS)
-    assert exc.value.code == "model_failed"
+    assert exc.value.code == "invalid_output"
     assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0

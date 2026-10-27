@@ -19,6 +19,7 @@ CHAT_ERROR_STATUS = {
     "model_unavailable": 503,
     "model_failed": 502,
     "sentence_too_long": 502,
+    "invalid_output": 502,
     "persona_unavailable": 503,
 }
 

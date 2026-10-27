@@ -15,7 +15,21 @@ MEMORY_ID = re.compile(r"（id：(m_[0-9_]+)）")
 WRITE_CAPABILITY = "当前能力：记忆写入"
 
 
+CHAT_RULES = "【行动规则】"
+
+
 def reply_for(body: dict) -> str:
+    text = _reply_text(body)
+    system = next(
+        (str(m.get("content", "")) for m in body.get("messages", []) if m.get("role") == "system"),
+        "",
+    )
+    if CHAT_RULES in system:
+        return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
+    return text
+
+
+def _reply_text(body: dict) -> str:
     messages = body.get("messages", [])
     system = next((str(m.get("content", "")) for m in messages if m.get("role") == "system"), "")
     last_user = next(

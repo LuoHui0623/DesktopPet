@@ -10,7 +10,7 @@ from constants.memory import (
     CORE_MEMORY_TOKEN_BUDGET,
     FRAGMENT_TOKEN_BUDGET,
 )
-from service.agent.prompt import PromptTemplates, build_system_prompt
+from service.agent.prompt import CapabilityDescription, PromptTemplates, build_system_prompt
 from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_events import event_in_context, event_text
 from service.memory.daily_log_service import DailyLogService
@@ -78,6 +78,7 @@ class ContextBuilder:
         core: CoreMemoryService | None = None,
         structured: StructuredMemoryService | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
+        capabilities: Sequence[CapabilityDescription] = (),
     ) -> None:
         self._persona = persona
         self._templates = templates
@@ -86,13 +87,16 @@ class ContextBuilder:
         self._core = core
         self._structured = structured
         self._clock = clock or (lambda zone: datetime.now(zone))
+        self._capabilities = tuple(capabilities)
 
     def build(
         self,
         user_text: str,
         fragments: Sequence[MemoryFragment] = (),
     ) -> AssembledContext:
-        prompt = build_system_prompt("chat", self._persona, self._templates)
+        prompt = build_system_prompt(
+            "chat", self._persona, self._templates, capabilities=self._capabilities
+        )
         warnings: list[str] = []
 
         core_fragments = self._core_fragments(warnings)

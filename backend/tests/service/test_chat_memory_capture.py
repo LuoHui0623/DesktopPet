@@ -195,7 +195,7 @@ def test_keyword_message_writes_memory_and_replies_with_the_notice(tmp_path: Pat
 
 def test_ordinary_message_goes_to_the_chat_model_only(tmp_path: Path):
     events = RecordingEvents()
-    env = build_chat(tmp_path, ["你好呀"], events)
+    env = build_chat(tmp_path, ['{"type": "chat", "text": "你好呀"}'], events)
     result = env["chat"].reply("你好")
     assert result.text == "你好呀"
     assert env["chat_model"].calls == 1
