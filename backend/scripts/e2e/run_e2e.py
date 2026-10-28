@@ -64,6 +64,10 @@ class Api:
 class EventTap:
     def __init__(self, port: int) -> None:
         self.events: list[dict] = []
+        self.approvals: list[dict] = []
+        self.errors: list[str] = []
+        self.reject_next = False
+        self._api = Api(port)
         self._connection = ws_connect(
             f"ws://127.0.0.1:{port}/ws", subprotocols=["pet.v1", TOKEN], open_timeout=10
         )
@@ -80,11 +84,39 @@ class EventTap:
     def _read(self) -> None:
         try:
             while True:
-                self.events.append(json.loads(self._socket.recv()))
+                event = json.loads(self._socket.recv())
+                self.events.append(event)
+                if event.get("type") == "approval.request":
+                    threading.Thread(target=self._decide, args=(event,), daemon=True).start()
         except Exception:
             return
 
+    def _decide(self, event: dict) -> None:
+        approved = not self.reject_next
+        self.reject_next = False
+        try:
+            for item in event.get("items", []):
+                self.approvals.append(
+                    self._api.call(
+                        "POST",
+                        "/api/agent/approvals",
+                        {"approval_id": item["approval_id"], "approved": approved},
+                    )
+                )
+        except Exception as error:
+            self.errors.append(str(error))
+
+    def wait_for_approvals(self, count: int, timeout: float = 10) -> list[dict]:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if len(self.approvals) >= count:
+                return self.approvals
+            time.sleep(0.02)
+        raise AssertionError(f"审批结论未提交：期望 {count} 条，实际 {len(self.approvals)} 条")
+
     def wait_until_idle_after(self, start: int, timeout: float = 10) -> list[dict]:
+        if self.errors:
+            raise AssertionError(f"审批提交失败：{self.errors[0]}")
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             fresh = self.events[start:]
@@ -260,11 +292,30 @@ def check_keyword_write(api: Api, tap: EventTap) -> dict:
     fresh = tap.wait_until_idle_after(mark)
     states = [event["state"] for event in fresh if event["type"] == "status"]
     check(states[0] == "executing", f"写入时应进入执行中：{states}")
+    approvals = [event for event in fresh if event["type"] == "approval.request"]
+    check(len(approvals) == 1, f"应推送一次审批：{approvals}")
+    check(len(approvals[0]["items"]) == 1, f"应只有一个审批项：{approvals[0]}")
+    item = approvals[0]["items"][0]
+    check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
+    check(item["task"] == "记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
+    check(item["tools"] == ["memory_create"], f"审批项应带草案声明的工具：{item}")
+    check(item["content"], "审批项应带草案内容")
+    decided = tap.wait_for_approvals(1)
+    check(len(decided) == 1 and decided[0]["approved"] is True, f"审批应被接受：{decided}")
+    kinds = [
+        event["type"] if event["type"] != "status" else f"status:{event['state']}"
+        for event in fresh
+    ]
+    check(
+        "status:speaking" in kinds
+        and kinds.index("approval.request") < kinds.index("status:speaking"),
+        f"审批应早于回复：{kinds}",
+    )
     memories = api.call("GET", "/api/memories")
     check(len(memories["structured"]) == 1, f"应只写入一条记忆：{memories['structured']}")
     memory = memories["structured"][0]
     check(memory["source"]["type"] == "keyword", f"来源类型应为 keyword：{memory}")
-    step("关键词写入：“记住”触发子代理，写入一条结构化记忆并告知用户")
+    step("关键词写入：“记住”触发子代理起草并请求审批，同意后写入一条结构化记忆")
 
     edited = api.call("PATCH", f"/api/memories/{memory['id']}", {"title": "咖啡偏好"})
     check(edited["title"] == "咖啡偏好", f"编辑未生效：{edited}")
@@ -272,6 +323,24 @@ def check_keyword_write(api: Api, tap: EventTap) -> dict:
     check(listed["structured"][0]["title"] == "咖啡偏好", "编辑后列表未更新")
     step("翻阅与编辑：修改标题后列表立即更新")
     return memory
+
+
+def check_write_rejected(api: Api, tap: EventTap) -> None:
+    mark = len(tap.events)
+    approvals_before = len(tap.approvals)
+    tap.reject_next = True
+    notice = api.call("POST", "/api/chat", {"text": "记住，我喜欢拿铁"})
+    check(notice["text"] == "这次没能记住：用户拒绝执行", f"拒绝后回复异常：{notice}")
+    fresh = tap.wait_until_idle_after(mark)
+    approvals = [event for event in fresh if event["type"] == "approval.request"]
+    check(len(approvals) == 1, f"拒绝场景也应推送审批：{approvals}")
+    decided = tap.wait_for_approvals(approvals_before + 1)
+    check(len(decided) == approvals_before + 1, "拒绝也需提交审批结论")
+    check(decided[-1]["approved"] is False, f"审批结论应为拒绝：{decided[-1]}")
+    check(not tap.reject_next, "拒绝标记应被一次性消费")
+    memories = api.call("GET", "/api/memories")
+    check(len(memories["structured"]) == 1, f"拒绝后不应新增记忆：{memories['structured']}")
+    step("审批拒绝：拒绝草案后不写入记忆，回复说明未记住")
 
 
 def check_citation(api: Api, tap: EventTap, memory: dict) -> None:
@@ -383,6 +452,7 @@ def run() -> Path:
             check_dispatch(api, tap, llm)
             check_invalid_output_regenerates(api, tap, llm)
             memory = check_keyword_write(api, tap)
+            check_write_rejected(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)
             check_persona_switch(api, tap, llm, data_dir)

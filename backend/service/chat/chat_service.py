@@ -15,8 +15,18 @@ from constants.speech import SENTENCE_MAX_CHARS
 from infra.llm.usage import TrackedChatModel, UsageSink, usage_scope
 from infra.store.repositories.daily_log import DailyLogRecord
 from infra.store.repositories.llm_usage import UsageRecord
+from service.agent.approval import (
+    ApprovalDraft,
+    ApprovalGate,
+    ApprovalOutcome,
+    ApprovalRegistry,
+    ApprovalTicket,
+    AutoApprovalGate,
+)
 from service.agent.memory_capture import DEFAULT_NOTICE, MemoryCapture
 from service.agent.orchestrator import (
+    STATUS_REJECTED,
+    Checkpoint,
     Orchestrator,
     PlanError,
     PlanStep,
@@ -58,6 +68,8 @@ class ChatEvents(Protocol):
 
     def chunk(self, message_id: str, text: str) -> None: ...
 
+    def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None: ...
+
     def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None: ...
 
 
@@ -68,8 +80,25 @@ class NoChatEvents:
     def chunk(self, message_id: str, text: str) -> None:
         return None
 
+    def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
+        return None
+
     def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
         return None
+
+
+class EventApprovalGate:
+    """把草案推给前端并阻塞等待裁决，超时按拒绝处理。"""
+
+    def __init__(self, events: ChatEvents, registry: ApprovalRegistry) -> None:
+        self._events = events
+        self._registry = registry
+
+    def request(self, plan_id: str, drafts: Sequence[ApprovalDraft]) -> dict[str, ApprovalOutcome]:
+        tickets = self._registry.open(drafts)
+        self._events.status("executing")
+        self._events.approval_request(plan_id, tickets)
+        return self._registry.wait(tickets)
 
 
 @dataclass(frozen=True)
@@ -183,6 +212,7 @@ class ChatService:
         capture: MemoryCapture | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
         orchestrator: Orchestrator | None = None,
+        approvals: ApprovalRegistry | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
@@ -197,6 +227,16 @@ class ChatService:
         self._clock = clock
         self._capabilities = tuple(capabilities)
         self._orchestrator = orchestrator
+        self._approvals = approvals
+
+    @property
+    def approvals(self) -> ApprovalRegistry | None:
+        return self._approvals
+
+    def _gate(self) -> ApprovalGate:
+        if self._approvals is None:
+            return AutoApprovalGate()
+        return EventApprovalGate(self._events, self._approvals)
 
     def reply(self, user_text: str, fragments: Sequence[MemoryFragment] = ()) -> ChatReply:
         text = user_text.strip()
@@ -261,7 +301,8 @@ class ChatService:
             raise ChatError("invalid_output", "派发执行器未配置，只能输出 chat")
         self._events.status("executing")
         plan_id = uuid4().hex
-        checkpoints = self._orchestrator.run_plan(output.plan)
+        checkpoints = self._orchestrator.run_plan(output.plan, gate=self._gate(), plan_id=plan_id)
+        self._record_rejections(checkpoints)
         blocks = "\n".join(checkpoint_block(plan_id, item) for item in checkpoints)
         follow_up = [
             *messages,
@@ -293,7 +334,9 @@ class ChatService:
         assert self._capture is not None
         self._events.status("executing")
         try:
-            captured = self._capture.handle(text)
+            captured = self._capture.handle(text, gate=self._gate())
+            if captured.checkpoint is not None:
+                self._record_rejections([captured.checkpoint])
             notice = captured.notice or DEFAULT_NOTICE
             recorded = self._daily_log.record_turn(text, notice)
             message_id = uuid4().hex
@@ -361,6 +404,19 @@ class ChatService:
             return output
         assert failure is not None
         raise failure
+
+    def _record_rejections(self, checkpoints: Sequence[Checkpoint]) -> None:
+        for checkpoint in checkpoints:
+            if checkpoint.status != STATUS_REJECTED:
+                continue
+            try:
+                self._daily_log.record_event(
+                    "approval_rejected",
+                    capability=checkpoint.capability,
+                    reason=checkpoint.error or "",
+                )
+            except Exception:
+                logger.exception("审批拒绝事件写入失败")
 
     def _record_dispatch_failed(self, content: str, reason: str) -> None:
         try:

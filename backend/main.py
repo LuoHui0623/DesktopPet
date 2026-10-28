@@ -30,6 +30,7 @@ from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 from infra.store.persona_versions import DbPersonaVersions
+from service.agent.approval import ApprovalRegistry
 from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import (
@@ -154,6 +155,7 @@ def serve(
         skills,
         ZoneInfo(settings.timezone),
     )
+    approvals = ApprovalRegistry()
     personas = PersonaService(
         settings.personas_dir,
         DbAppSettings(db_file),
@@ -182,6 +184,7 @@ def serve(
         capture=MemoryCapture(skills, orchestrator, memory_writer),
         capabilities=capabilities,
         orchestrator=orchestrator,
+        approvals=approvals,
     )
     app = create_app(
         settings.token.get_secret_value(),
@@ -191,6 +194,7 @@ def serve(
         chat_service=chat_service,
         memories=memory_services,
         persona_service=personas,
+        approvals=approvals,
     )
     config = uvicorn.Config(
         app,

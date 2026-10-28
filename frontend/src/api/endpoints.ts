@@ -2,6 +2,8 @@ import { request, type ApiClient } from "./client";
 import type {
   ActiveLlmRequest,
   ActiveLlmResponse,
+  ApprovalAck,
+  ApprovalDecision,
   ChatHistoryQuery,
   ChatHistoryResponse,
   ChatReplyResponse,
@@ -34,6 +36,13 @@ export function listChatHistory(
   query: ChatHistoryQuery = {},
 ): Promise<ChatHistoryResponse> {
   return request<ChatHistoryResponse>(client, "GET", "/api/chat/history", { query });
+}
+
+export function submitApproval(
+  client: ApiClient,
+  decision: ApprovalDecision,
+): Promise<ApprovalAck> {
+  return request<ApprovalAck>(client, "POST", "/api/agent/approvals", { body: decision });
 }
 
 export function listLlmProviders(client: ApiClient): Promise<LlmProvidersResponse> {

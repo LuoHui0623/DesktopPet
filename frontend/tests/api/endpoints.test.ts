@@ -15,6 +15,7 @@ import {
   sendChat,
   setActiveLlm,
   setMemoryTemporaryMode,
+  submitApproval,
   updateMemory,
 } from "../../src/api/endpoints";
 
@@ -131,6 +132,12 @@ describe("endpoint functions match the API contract", () => {
       template: "/api/memories/temporary-mode",
       expectedPath: "/api/memories/temporary-mode",
     },
+    {
+      operationId: "submit_approval",
+      run: (c) => submitApproval(c, { approval_id: "ap_1", approved: true }),
+      template: "/api/agent/approvals",
+      expectedPath: "/api/agent/approvals",
+    },
   ];
 
   for (const testCase of cases) {
@@ -189,6 +196,14 @@ describe("request bodies and queries", () => {
 
     await setMemoryTemporaryMode(client, false);
     expect(bodyOf(calls[1]?.init)).toEqual({ enabled: false });
+  });
+
+  it("sends the approval decision as JSON", async () => {
+    const { client, calls } = recordingClient();
+    await submitApproval(client, { approval_id: "ap_1", approved: false });
+    expect(calls[0]?.url).toBe(`${BASE}/api/agent/approvals`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual({ approval_id: "ap_1", approved: false });
   });
 
   it("sends the model selection as the PUT body", async () => {

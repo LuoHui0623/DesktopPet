@@ -7,10 +7,11 @@ from starlette.middleware.cors import CORSMiddleware
 
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
-from api.routers import chat, llm, personas, system, ws
+from api.routers import agent, chat, llm, personas, system, ws
 from api.routers import memories as memory_routes
 from api.schemas.events import event_component_schemas
 from infra.events.bus import EventBus
+from service.agent.approval import ApprovalRegistry
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.services import MemoryServices
@@ -25,6 +26,7 @@ def create_app(
     chat_service: ChatService | None = None,
     memories: MemoryServices | None = None,
     persona_service: PersonaService | None = None,
+    approvals: ApprovalRegistry | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Desktop Pet Backend")
     app.state.request_shutdown = request_shutdown or (lambda reason: False)
@@ -33,10 +35,12 @@ def create_app(
     app.state.chat_service = chat_service
     app.state.memories = memories
     app.state.personas = persona_service
+    app.state.approvals = approvals
     register_error_handlers(app)
     app.include_router(system.router)
     app.include_router(llm.router)
     app.include_router(chat.router)
+    app.include_router(agent.router)
     app.include_router(memory_routes.router)
     app.include_router(personas.router)
     app.include_router(ws.router)

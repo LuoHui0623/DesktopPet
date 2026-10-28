@@ -196,4 +196,22 @@ describe("event stream connection", () => {
     expect(parseServerEvent(null)).toBeNull();
     expect(parseServerEvent(JSON.stringify([]))).toBeNull();
   });
+
+  it("keeps approval requests instead of dropping them", () => {
+    const payload = {
+      type: "approval.request",
+      plan_id: "plan_1",
+      items: [
+        {
+          approval_id: "ap_1",
+          run_id: "r_1",
+          capability: "记忆写入",
+          task: "记住用户喜欢美式咖啡",
+          content: "写入一条偏好记忆",
+          tools: ["memory_create"],
+        },
+      ],
+    };
+    expect(parseServerEvent(JSON.stringify(payload))).toEqual(payload);
+  });
 });

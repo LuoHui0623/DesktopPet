@@ -13,12 +13,29 @@ from infra.llm.usage import db_usage_sink
 from infra.store.agent_runs import DbAgentRuns
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from service.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
 from service.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
 from service.agent.skills import Skill, SkillRegistry
-from service.agent.subagent import SubAgent, SubAgentResult
+from service.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
 from service.llm import LlmService
 
 TZ = ZoneInfo("Asia/Shanghai")
+GATE = AutoApprovalGate()
+DRAFT_MARK = "提交草案"
+
+
+class FakeGate:
+    """记录审批内容并按预设结果放行或拒绝。"""
+
+    def __init__(self, approved: bool = True) -> None:
+        self.approved = approved
+        self.calls: list[tuple[str, list[ApprovalDraft]]] = []
+
+    def request(self, plan_id: str, drafts: list[ApprovalDraft]) -> dict[str, ApprovalOutcome]:
+        self.calls.append((plan_id, list(drafts)))
+        reason = None if self.approved else "用户拒绝执行"
+        return {draft.run_id: ApprovalOutcome(self.approved, reason) for draft in drafts}
+
 
 LLM_YAML = """
 providers:
@@ -69,6 +86,11 @@ class ScriptedChat:
         return AIMessage(content=outcome)
 
 
+def draft_reply(content: str, tools: list[str] | None = None) -> str:
+    payload = {"action": "draft", "content": content, "tools": tools or []}
+    return json.dumps(payload, ensure_ascii=False)
+
+
 class BarrierChat:
     """只有两项派发真的并行时，两次调用才会同时到达栅栏。"""
 
@@ -81,6 +103,8 @@ class BarrierChat:
         with self._lock:
             self.reached += 1
         self._barrier.wait(timeout=10)
+        if DRAFT_MARK in messages[0].content:
+            return AIMessage(content=draft_reply("按任务执行"))
         return AIMessage(content='{"action": "finish", "output": "完成"}')
 
 
@@ -140,11 +164,12 @@ def rows(db_file: Path) -> list[tuple]:
 def test_dispatch_writes_one_run_row_and_returns_checkpoint(setup):
     orchestrator = setup["build"](
         [
+            draft_reply("记下牛奶", ["write_note"]),
             '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶")
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
     stored = rows(setup["db_file"])
     assert len(stored) == 1
     run_id, capability, instruction, status, error_code, output, steps = stored[0]
@@ -156,26 +181,33 @@ def test_dispatch_writes_one_run_row_and_returns_checkpoint(setup):
         None,
     )
     assert output == "已记下牛奶"
-    assert [step["action"] for step in json.loads(steps)] == ["tool", "finish"]
+    assert [step["action"] for step in json.loads(steps)] == ["draft", "tool", "finish"]
 
 
 def test_checkpoint_has_capability_and_output_only(setup):
     orchestrator = setup["build"](
         [
+            draft_reply("记下牛奶", ["write_note"]),
             '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶")
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
     assert checkpoint.ok is True
+    assert checkpoint.status == "succeeded"
     assert checkpoint.text == "执行：写笔记\n已记下牛奶"
     assert "write_note" not in checkpoint.text
     assert "args" not in checkpoint.text
 
 
 def test_failed_dispatch_is_recorded_and_reported(setup):
-    orchestrator = setup["build"](["不是动作"] * 8)
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶")
+    orchestrator = setup["build"](
+        [
+            draft_reply("记下牛奶", ["write_note"]),
+            *(['{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}'] * 8),
+        ]
+    )
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
     assert checkpoint.ok is False
     assert checkpoint.text.startswith("执行：写笔记\n失败：")
     assert "超过最大步数" in checkpoint.text
@@ -184,9 +216,67 @@ def test_failed_dispatch_is_recorded_and_reported(setup):
     assert (stored[0][3], stored[0][4]) == ("failed", "max_steps")
 
 
+def test_execute_only_sees_the_declared_tools(setup, monkeypatch):
+    seen: dict[str, tuple[str, ...]] = {}
+    orchestrator = setup["build"]([draft_reply("直接作答")])
+    monkeypatch.setattr(
+        orchestrator._subagent,
+        "run",
+        lambda skill, task, run_id, *, tools, draft: (
+            seen.update(tools=tools, draft=draft),
+            SubAgentResult(True, "好", None, None, []),
+        )[1],
+    )
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    assert checkpoint.ok is True
+    assert seen == {"tools": (), "draft": "直接作答"}
+
+
+def test_draft_only_sees_the_read_only_tools(setup, monkeypatch):
+    seen: dict[str, tuple[str, ...]] = {}
+    orchestrator = setup["build"]([])
+    monkeypatch.setattr(
+        orchestrator._subagent,
+        "draft",
+        lambda skill, task, run_id, *, tools: (
+            seen.update(tools=tools),
+            SubAgentDraft(False, error_code="stop", error="停"),
+        )[1],
+    )
+    orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    assert seen == {"tools": ()}
+
+
+def test_invalid_draft_marks_the_item_failed_without_approval(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"](["不是动作"] * 8)
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate)
+    assert checkpoint.ok is False
+    assert checkpoint.status == "failed"
+    assert "失败：" in checkpoint.text
+    assert gate.calls == []
+    assert (rows(setup["db_file"])[0][3], rows(setup["db_file"])[0][4]) == (
+        "failed",
+        "invalid_output",
+    )
+
+
+def test_rejected_dispatch_never_runs_the_agent(setup):
+    gate = FakeGate(approved=False)
+    orchestrator = setup["build"]([draft_reply("记下牛奶", ["write_note"])])
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate)
+    assert checkpoint.ok is False
+    assert checkpoint.status == "rejected"
+    assert checkpoint.text == "执行：写笔记\n拒绝：用户拒绝执行"
+    assert (rows(setup["db_file"])[0][3], rows(setup["db_file"])[0][4]) == (
+        "rejected",
+        "rejected",
+    )
+
+
 def test_unknown_capability_still_writes_one_row(setup):
     orchestrator = setup["build"]([])
-    checkpoint = orchestrator.dispatch("不存在", "任务")
+    checkpoint = orchestrator.dispatch("不存在", "任务", gate=GATE)
     assert checkpoint.ok is False
     assert checkpoint.text == "执行：不存在\n失败：未知能力：不存在"
     stored = rows(setup["db_file"])
@@ -202,14 +292,17 @@ class TaskEchoChat:
         task = ""
         if "当前任务：" in prompt:
             task = prompt.split("当前任务：", 1)[1].splitlines()[0].strip()
-        output = json.dumps({"action": "finish", "output": f"完成 {task}"}, ensure_ascii=False)
-        return AIMessage(content=output)
+        if DRAFT_MARK in prompt:
+            return AIMessage(content=draft_reply(f"方案 {task}"))
+        payload = {"action": "finish", "output": f"完成 {task}"}
+        return AIMessage(content=json.dumps(payload, ensure_ascii=False))
 
 
 def test_run_plan_keeps_plan_order(setup):
     orchestrator = setup["build"]([], chat=TaskEchoChat())
     checkpoints = orchestrator.run_plan(
-        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")]
+        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")],
+        gate=GATE,
     )
     assert [checkpoint.text for checkpoint in checkpoints] == [
         "执行：写笔记\n完成 一",
@@ -225,20 +318,33 @@ def test_run_plan_dispatches_in_parallel(setup):
     chat = BarrierChat(3)
     orchestrator = setup["build"]([], chat=chat)
     checkpoints = orchestrator.run_plan(
-        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")]
+        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")],
+        gate=GATE,
     )
-    assert chat.reached == 3
+    assert chat.reached == 6
     assert [checkpoint.ok for checkpoint in checkpoints] == [True, True, True]
+
+
+def test_run_plan_approves_every_draft_in_one_request(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"]([], chat=TaskEchoChat())
+    orchestrator.run_plan(
+        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二")], gate=gate, plan_id="p-1"
+    )
+    assert [call[0] for call in gate.calls] == ["p-1"]
+    drafts = gate.calls[0][1]
+    assert [draft.task for draft in drafts] == ["一", "二"]
+    assert [draft.content for draft in drafts] == ["方案 一", "方案 二"]
 
 
 def test_run_plan_accepts_empty_plan(setup):
     orchestrator = setup["build"]([])
-    assert orchestrator.run_plan([]) == []
+    assert orchestrator.run_plan([], gate=GATE) == []
     assert rows(setup["db_file"]) == []
 
 
 def test_invalid_subagent_result_becomes_failed_checkpoint(setup, monkeypatch):
-    orchestrator = setup["build"]([])
+    orchestrator = setup["build"]([draft_reply("记下牛奶")])
     monkeypatch.setattr(
         orchestrator._subagent,
         "run",
@@ -250,38 +356,35 @@ def test_invalid_subagent_result_becomes_failed_checkpoint(setup, monkeypatch):
             steps=[{"step": 1, "phase": "execute", "action": "finish"}],
         ),
     )
-    checkpoint = orchestrator.dispatch("写笔记", "任务")
+    checkpoint = orchestrator.dispatch("写笔记", "任务", gate=GATE)
     assert checkpoint.ok is False
     assert checkpoint.text == "执行：写笔记\n失败：子 agent 输出不合法：成功的结果缺少 output"
     stored = rows(setup["db_file"])
     assert (stored[0][3], stored[0][4]) == ("failed", "invalid_output")
 
 
-def test_steps_carry_execute_phase(setup):
+def test_steps_carry_both_phases(setup):
     orchestrator = setup["build"](
         [
+            draft_reply("记下牛奶", ["write_note"]),
             '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    orchestrator.dispatch("写笔记", "记一下牛奶")
+    orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
     stored = rows(setup["db_file"])
-    assert [step["phase"] for step in json.loads(stored[0][6])] == ["execute", "execute"]
+    assert [step["phase"] for step in json.loads(stored[0][6])] == ["draft", "execute", "execute"]
 
 
 def test_model_usage_links_to_the_dispatched_run(setup):
-    orchestrator = setup["build"](
-        [
-            '{"action": "finish", "output": "好"}',
-        ]
-    )
-    checkpoint = orchestrator.dispatch("写笔记", "任务")
+    orchestrator = setup["build"]([draft_reply("直接作答"), '{"action": "finish", "output": "好"}'])
+    checkpoint = orchestrator.dispatch("写笔记", "任务", gate=GATE)
     conn = connect(setup["db_file"])
     try:
         run_ids = [row[0] for row in conn.execute("SELECT run_id FROM llm_usage")]
     finally:
         conn.close()
-    assert run_ids == [checkpoint.run_id]
+    assert set(run_ids) == {checkpoint.run_id}
 
 
 def test_parse_plan_accepts_json_array_in_fence():

@@ -12,6 +12,7 @@ from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from infra.store.persona_versions import DbPersonaVersions
+from service.agent.approval import ApprovalDraft
 from service.agent.orchestrator import Checkpoint, PlanStep
 from service.agent.prompt import load_templates
 from service.chat.chat_service import (
@@ -449,10 +450,23 @@ class FakeOrchestrator:
     def __init__(self, ok: bool = True) -> None:
         self.plans: list[list[PlanStep]] = []
         self.ok = ok
+        self.calls: list[tuple[str, list]] = []
 
-    def run_plan(self, plan) -> list[Checkpoint]:
+    def run_plan(self, plan, *, gate, plan_id=None) -> list[Checkpoint]:
         steps = list(plan)
         self.plans.append(steps)
+        drafts = [
+            ApprovalDraft(
+                run_id=f"run-{index}",
+                capability=step.capability,
+                task=step.task,
+                content=f"草案：{step.capability}",
+                tools=("memory_create",),
+            )
+            for index, step in enumerate(steps, start=1)
+        ]
+        outcomes = gate.request(plan_id or "", drafts)
+        self.calls.append((plan_id or "", list(outcomes.values())))
         return [
             Checkpoint(
                 run_id=f"run-{index}",
@@ -461,6 +475,41 @@ class FakeOrchestrator:
                 text=f"执行：{step.capability}",
                 output="已写入" if self.ok else None,
                 error=None if self.ok else "写入失败",
+                status="succeeded" if self.ok else "failed",
+            )
+            for index, step in enumerate(steps, start=1)
+        ]
+
+
+class RejectingOrchestrator(FakeOrchestrator):
+    """把整批草案都拒掉，返回 rejected 检查点。"""
+
+    def __init__(self) -> None:
+        super().__init__(ok=False)
+
+    def run_plan(self, plan, *, gate, plan_id=None) -> list[Checkpoint]:
+        steps = list(plan)
+        self.plans.append(steps)
+        drafts = [
+            ApprovalDraft(
+                run_id=f"run-{index}",
+                capability=step.capability,
+                task=step.task,
+                content=f"草案：{step.capability}",
+                tools=("memory_create",),
+            )
+            for index, step in enumerate(steps, start=1)
+        ]
+        gate.request(plan_id or "", drafts)
+        return [
+            Checkpoint(
+                run_id=f"run-{index}",
+                capability=step.capability,
+                ok=False,
+                text=f"执行：{step.capability}",
+                output=None,
+                error="用户拒绝执行",
+                status="rejected",
             )
             for index, step in enumerate(steps, start=1)
         ]
@@ -540,6 +589,20 @@ def test_second_dispatch_in_the_same_turn_is_rejected(tmp_path: Path):
     assert "不能再次派发" in str(exc.value)
     assert len(orchestrator.plans) == 1
     assert harness.query("SELECT COUNT(*) FROM daily_log WHERE role = 'me'")[0][0] == 0
+
+
+def test_rejected_dispatch_writes_an_approval_event(tmp_path: Path):
+    orchestrator = RejectingOrchestrator()
+    harness = Harness(tmp_path, [Raw(DISPATCH), "那就不记了。"], orchestrator=orchestrator)
+    result = harness.chat.reply("记一下我喜欢猫")
+    assert result.text == "那就不记了。"
+    events = harness.query("SELECT content FROM daily_log WHERE role = 'event'")
+    assert len(events) == 1
+    assert json.loads(events[0][0]) == {
+        "type": "approval_rejected",
+        "capability": "记忆写入",
+        "reason": "用户拒绝执行",
+    }
 
 
 def test_invalid_dispatch_writes_an_event_then_regenerates(tmp_path: Path):

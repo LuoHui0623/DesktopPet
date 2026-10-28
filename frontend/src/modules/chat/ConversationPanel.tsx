@@ -2,11 +2,15 @@ import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useStore } from "zustand";
 import { sendMessage } from "../../service/chat.service";
 import { chatStore } from "../../service/stores/chat.store";
+import { ApprovalCard } from "./ApprovalCard";
 import { MessageBubble } from "./MessageBubble";
 
 export function ConversationPanel() {
   const messages = useStore(chatStore, (state) => state.messages);
   const sending = useStore(chatStore, (state) => state.sending);
+  const approvals = useStore(chatStore, (state) => state.approvals);
+  const approvalSubmitting = useStore(chatStore, (state) => state.approvalSubmitting);
+  const approvalError = useStore(chatStore, (state) => state.approvalError);
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -51,6 +55,30 @@ export function ConversationPanel() {
           messages.map((message) => <MessageBubble key={message.localId} message={message} />)
         )}
       </div>
+      {approvals.length > 0 ? (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            padding: 12,
+            borderTop: "1px solid #ddd",
+            maxHeight: "40%",
+            overflowY: "auto",
+          }}
+        >
+          {approvals.map((approval) => (
+            <ApprovalCard
+              key={approval.approval_id}
+              approval={approval}
+              busy={approvalSubmitting !== null}
+            />
+          ))}
+          {approvalError ? (
+            <p style={{ color: "#c0392b", fontSize: 12, margin: 0 }}>{approvalError}</p>
+          ) : null}
+        </div>
+      ) : null}
       <div style={{ display: "flex", gap: 8, padding: 12, borderTop: "1px solid #ddd" }}>
         <textarea
           aria-label="输入消息"

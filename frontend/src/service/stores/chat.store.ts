@@ -1,5 +1,10 @@
 import { createStore } from "zustand/vanilla";
-import type { ChatReplyResponse, MemorySourceRef, ServerEvent } from "../../api/types";
+import type {
+  ApprovalItem,
+  ChatReplyResponse,
+  MemorySourceRef,
+  ServerEvent,
+} from "../../api/types";
 
 export type ChatRole = "user" | "assistant";
 export type ChatMessageStatus = "done" | "pending" | "streaming" | "error";
@@ -13,13 +18,23 @@ export interface ChatMessage {
   sources: MemorySourceRef[];
 }
 
+export interface PendingApproval extends ApprovalItem {
+  planId: string;
+}
+
 export interface ChatStoreState {
   messages: ChatMessage[];
   sending: boolean;
   pendingLocalId: string | null;
+  approvals: PendingApproval[];
+  approvalSubmitting: string | null;
+  approvalError: string | null;
   beginSend: (text: string) => string | null;
   completeSend: (localId: string, reply: ChatReplyResponse) => void;
   failSend: (localId: string, message: string) => void;
+  beginApproval: (approvalId: string) => boolean;
+  completeApproval: (approvalId: string) => void;
+  failApproval: (approvalId: string, message: string) => void;
   applyEvent: (event: ServerEvent) => void;
 }
 
@@ -55,6 +70,9 @@ export function createChatStore() {
       messages: [],
       sending: false,
       pendingLocalId: null,
+      approvals: [],
+      approvalSubmitting: null,
+      approvalError: null,
       beginSend: (text) => {
         const trimmed = text.trim();
         if (!trimmed || get().sending) return null;
@@ -107,7 +125,37 @@ export function createChatStore() {
           pendingLocalId: null,
         }));
       },
+      beginApproval: (approvalId) => {
+        const state = get();
+        if (state.approvalSubmitting !== null) return false;
+        if (!state.approvals.some((item) => item.approval_id === approvalId)) return false;
+        set({ approvalSubmitting: approvalId, approvalError: null });
+        return true;
+      },
+      completeApproval: (approvalId) => {
+        set((state) => ({
+          approvals: state.approvals.filter((item) => item.approval_id !== approvalId),
+          approvalSubmitting:
+            state.approvalSubmitting === approvalId ? null : state.approvalSubmitting,
+          approvalError: null,
+        }));
+      },
+      failApproval: (approvalId, message) => {
+        set((state) => ({
+          approvalSubmitting:
+            state.approvalSubmitting === approvalId ? null : state.approvalSubmitting,
+          approvalError: message,
+        }));
+      },
       applyEvent: (event) => {
+        if (event.type === "approval.request") {
+          set({
+            approvals: event.items.map((item) => ({ ...item, planId: event.plan_id })),
+            approvalSubmitting: null,
+            approvalError: null,
+          });
+          return;
+        }
         if (event.type === "chat.chunk") {
           const localId = resolveTarget(event.message_id);
           if (!localId) return;

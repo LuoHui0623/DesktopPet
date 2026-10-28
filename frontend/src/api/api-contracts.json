@@ -283,6 +283,28 @@
       }
     },
     {
+      "operationId": "submit_approval",
+      "method": "POST",
+      "path": "/api/agent/approvals",
+      "tags": [
+        "agent"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ApprovalDecision"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ApprovalAck"
+        },
+        "404": null,
+        "409": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        },
+        "503": null
+      }
+    },
+    {
       "operationId": "update_memory",
       "method": "PATCH",
       "path": "/api/memories/{memory_id}",
@@ -408,6 +430,110 @@
           "model"
         ],
         "title": "ActiveSelection",
+        "type": "object"
+      },
+      "ApprovalAck": {
+        "properties": {
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "approval_id",
+          "approved"
+        ],
+        "title": "ApprovalAck",
+        "type": "object"
+      },
+      "ApprovalDecision": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_id": {
+            "minLength": 1,
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "approved": {
+            "title": "Approved",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "approval_id",
+          "approved"
+        ],
+        "title": "ApprovalDecision",
+        "type": "object"
+      },
+      "ApprovalItem": {
+        "properties": {
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "capability": {
+            "title": "Capability",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "task": {
+            "title": "Task",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "approval_id",
+          "run_id",
+          "capability",
+          "task",
+          "content"
+        ],
+        "title": "ApprovalItem",
+        "type": "object"
+      },
+      "ApprovalRequestEvent": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalItem"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "plan_id": {
+            "title": "Plan Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "approval.request",
+            "default": "approval.request",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "plan_id"
+        ],
+        "title": "ApprovalRequestEvent",
         "type": "object"
       },
       "ChatChunkEvent": {
@@ -1112,6 +1238,7 @@
       "ServerEvent": {
         "discriminator": {
           "mapping": {
+            "approval.request": "#/components/schemas/ApprovalRequestEvent",
             "chat.chunk": "#/components/schemas/ChatChunkEvent",
             "chat.done": "#/components/schemas/ChatDoneEvent",
             "status": "#/components/schemas/StatusEvent"
@@ -1127,6 +1254,9 @@
           },
           {
             "$ref": "#/components/schemas/ChatDoneEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ApprovalRequestEvent"
           }
         ]
       },

@@ -110,6 +110,67 @@ describe("chat store: failure", () => {
   });
 });
 
+describe("chat store: approvals", () => {
+  const item = {
+    approval_id: "ap_1",
+    run_id: "r_1",
+    capability: "记忆写入",
+    task: "记住用户喜欢美式咖啡",
+    content: "将写入一条偏好记忆：喜欢美式咖啡，不加糖",
+    tools: ["memory_create"],
+  };
+
+  it("stores the drafts pushed by the approval request event", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
+    expect(store.getState().approvals).toEqual([{ ...item, planId: "plan_1" }]);
+  });
+
+  it("marks an approval as in flight and drops it once resolved", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
+    expect(store.getState().beginApproval("ap_1")).toBe(true);
+    expect(store.getState().approvalSubmitting).toBe("ap_1");
+    store.getState().completeApproval("ap_1");
+    expect(store.getState().approvals).toEqual([]);
+    expect(store.getState().approvalSubmitting).toBeNull();
+  });
+
+  it("ignores unknown ids and a second submission while one is in flight", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({
+      type: "approval.request",
+      plan_id: "plan_1",
+      items: [item, { ...item, approval_id: "ap_2" }],
+    });
+    expect(store.getState().beginApproval("ap_unknown")).toBe(false);
+    expect(store.getState().beginApproval("ap_1")).toBe(true);
+    expect(store.getState().beginApproval("ap_2")).toBe(false);
+  });
+
+  it("keeps the card and reports the error when the submission fails", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
+    store.getState().beginApproval("ap_1");
+    store.getState().failApproval("ap_1", "审批已关闭");
+    expect(store.getState().approvals).toHaveLength(1);
+    expect(store.getState().approvalSubmitting).toBeNull();
+    expect(store.getState().approvalError).toBe("审批已关闭");
+  });
+
+  it("replaces stale cards when a new approval request arrives", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
+    store.getState().applyEvent({
+      type: "approval.request",
+      plan_id: "plan_2",
+      items: [{ ...item, approval_id: "ap_9", capability: "记忆写入" }],
+    });
+    expect(store.getState().approvals.map((entry) => entry.approval_id)).toEqual(["ap_9"]);
+    expect(store.getState().approvals[0]?.planId).toBe("plan_2");
+  });
+});
+
 describe("chat store: sources", () => {
   const source = {
     id: "m_20261018_001",

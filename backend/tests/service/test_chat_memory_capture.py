@@ -14,6 +14,7 @@ from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from infra.store.persona_versions import DbPersonaVersions
+from service.agent.approval import ApprovalRegistry
 from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import load_templates
@@ -71,6 +72,14 @@ CREATE = json.dumps(
     },
     ensure_ascii=False,
 )
+DRAFT = json.dumps(
+    {
+        "action": "draft",
+        "content": "用 memory_create 记下咖啡偏好",
+        "tools": ["memory_create"],
+    },
+    ensure_ascii=False,
+)
 FINISH = json.dumps(
     {"action": "finish", "output": "我记住啦：喜欢美式咖啡，不加糖"}, ensure_ascii=False
 )
@@ -105,6 +114,8 @@ class ScriptedChat:
 class RecordingEvents:
     def __init__(self) -> None:
         self.log: list[tuple] = []
+        self.registry: ApprovalRegistry | None = None
+        self.plan_ids: list[str] = []
 
     def status(self, state):
         self.log.append(("status", state))
@@ -114,6 +125,13 @@ class RecordingEvents:
 
     def done(self, message_id, text, sources):
         self.log.append(("done", message_id, text))
+
+    def approval_request(self, plan_id, tickets):
+        self.plan_ids.append(plan_id)
+        self.log.append(("approval", plan_id, len(tickets)))
+        assert self.registry is not None
+        for ticket in tickets:
+            self.registry.resolve(ticket.approval_id, True)
 
 
 def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
@@ -147,6 +165,8 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     skills.register(memory_write_skill())
     tools = [*make_memory_tools(reader), *make_memory_write_tools(writer)]
     orchestrator = Orchestrator(SubAgent(llm, tools), DbAgentRuns(db_file), skills, TZ)
+    approvals = ApprovalRegistry()
+    events.registry = approvals
     chat = ChatService(
         llm,
         daily,
@@ -156,6 +176,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         events,
         timezone=TZ,
         capture=MemoryCapture(skills, orchestrator, writer),
+        approvals=approvals,
     )
     return {
         "chat": chat,
@@ -178,18 +199,20 @@ def logged_turns(db_file: Path) -> list[tuple]:
 
 def test_keyword_message_writes_memory_and_replies_with_the_notice(tmp_path: Path):
     events = RecordingEvents()
-    env = build_chat(tmp_path, [CREATE, FINISH], events)
+    env = build_chat(tmp_path, [DRAFT, CREATE, FINISH], events)
     result = env["chat"].reply("记住，我喜欢美式咖啡，不加糖")
     assert result.text == "我记住啦：喜欢美式咖啡，不加糖"
     assert [item.title for item in env["memories"].list().items] == ["咖啡偏好"]
-    assert env["chat_model"].calls == 2
+    assert env["chat_model"].calls == 3
+    assert len(events.plan_ids) == 1
     assert logged_turns(env["db_file"]) == [
         ("master", "记住，我喜欢美式咖啡，不加糖"),
         ("me", "我记住啦：喜欢美式咖啡，不加糖"),
     ]
     kinds = [entry[0] if entry[0] != "status" else entry[1] for entry in events.log]
     assert kinds[0] == "executing"
-    assert kinds[1] == "speaking"
+    assert "approval" in kinds
+    assert "speaking" in kinds
     assert kinds[-1] == "idle"
 
 

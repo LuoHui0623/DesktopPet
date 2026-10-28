@@ -1,6 +1,7 @@
 """本地假模型服务：提供 OpenAI 兼容的 chat/completions 接口，供端到端验证使用。
 
 回复规则固定：
+- 子代理起草“记忆写入”能力时，直接提交一份声明 memory_create 的草案。
 - 子代理执行“记忆写入”能力时，先调用 memory_create；收到观察后直接结束。
 - 主对话中，用户提到“咖啡”且上下文里有记忆 id 时，按 [引用 ID] 标注引用。
 - 主对话中，用户提到“派发测试”时返回只含一项的合法 dispatch（能力名故意写成未注册的
@@ -15,6 +16,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MEMORY_ID = re.compile(r"（id：(m_[0-9_]+)）")
 WRITE_CAPABILITY = "当前能力：记忆写入"
+DRAFT_MARK = "提交草案"
+DRAFT_CONTENT = "把「喜欢美式咖啡，不加糖」写进记忆，分类为偏好。"
 
 
 CHAT_RULES = "【行动规则】"
@@ -54,6 +57,11 @@ def _reply_text(body: dict) -> str:
     last_user = next(
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
+    if DRAFT_MARK in system:
+        return json.dumps(
+            {"action": "draft", "content": DRAFT_CONTENT, "tools": ["memory_create"]},
+            ensure_ascii=False,
+        )
     if WRITE_CAPABILITY in system:
         observed = any(str(m.get("content", "")).startswith("观察：") for m in messages)
         if observed:

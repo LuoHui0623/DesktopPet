@@ -2,6 +2,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
 
+from api.schemas.approval import ApprovalItem
 from api.schemas.chat import SourceOut
 
 EVENT_SCHEMA_NAME = "ServerEvent"
@@ -25,8 +26,14 @@ class ChatDoneEvent(BaseModel):
     sources: list[SourceOut] = Field(default_factory=list)
 
 
+class ApprovalRequestEvent(BaseModel):
+    type: Literal["approval.request"] = "approval.request"
+    plan_id: str
+    items: list[ApprovalItem] = Field(default_factory=list)
+
+
 ServerEvent = Annotated[
-    StatusEvent | ChatChunkEvent | ChatDoneEvent,
+    StatusEvent | ChatChunkEvent | ChatDoneEvent | ApprovalRequestEvent,
     Field(discriminator="type"),
 ]
 

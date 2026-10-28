@@ -4,7 +4,7 @@ import type { PetState, ServerEvent } from "./types";
 export const WS_SUBPROTOCOL = "pet.v1";
 export const WS_PATH = "/ws";
 
-const EVENT_TYPES = new Set(["status", "chat.chunk", "chat.done"]);
+const EVENT_TYPES = new Set(["status", "chat.chunk", "chat.done", "approval.request"]);
 const PET_STATES = new Set<PetState>(["idle", "thinking", "speaking", "executing", "sleeping"]);
 
 export interface SocketLike {

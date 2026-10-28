@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 
+from service.agent.approval import ApprovalGate
 from service.agent.orchestrator import Checkpoint, Orchestrator
 from service.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry
 from service.memory.memory_service import MemoryWriter
@@ -33,7 +34,7 @@ class MemoryCapture:
     def matches(self, user_text: str) -> bool:
         return any(skill.name == self._capability for skill in self._skills.match(user_text))
 
-    def handle(self, user_text: str) -> CaptureResult:
+    def handle(self, user_text: str, *, gate: ApprovalGate) -> CaptureResult:
         if not self.matches(user_text):
             return CaptureResult(triggered=False, ok=False)
         if self._writer.temporary_mode():
@@ -42,7 +43,7 @@ class MemoryCapture:
         if reason is not None:
             return CaptureResult(True, False, notice=f"这条没有记下：{reason}")
 
-        checkpoint = self._orchestrator.dispatch(self._capability, user_text)
+        checkpoint = self._orchestrator.dispatch(self._capability, user_text, gate=gate)
         if not checkpoint.ok:
             return CaptureResult(
                 True, False, notice=f"这次没能记住：{checkpoint.error}", checkpoint=checkpoint

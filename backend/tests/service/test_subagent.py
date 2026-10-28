@@ -4,12 +4,12 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from config.settings import ModelSettingsSource
-from constants.agent import PHASE_EXECUTE
+from constants.agent import DRAFT_INVALID_LIMIT, PHASE_DRAFT, PHASE_EXECUTE
 from infra.llm.usage import db_usage_sink
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from service.agent.skills import Skill
-from service.agent.subagent import SubAgent, parse_action
+from service.agent.subagent import NO_DRAFT, SubAgent, parse_action
 from service.llm import LlmService
 
 LLM_YAML = """
@@ -217,3 +217,121 @@ def test_model_usage_is_linked_to_the_run(tmp_path: Path):
     finally:
         conn.close()
     assert tuple(row) == ("subagent", "run-42", 1)
+
+
+def test_draft_returns_content_and_declared_tools(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "先回声再作答", "tools": ["echo"]}'])
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.ok is True
+    assert draft.content == "先回声再作答"
+    assert draft.tools == ("echo",)
+    assert draft.error_code is None
+    assert [step["action"] for step in draft.steps] == ["draft"]
+    assert draft.steps[0]["phase"] == PHASE_DRAFT
+
+
+def test_draft_prompt_uses_the_planner_wording_and_read_only_tools(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "方案"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).draft(SKILL, "任务", "run-1", tools=())
+    system = chat.calls[0][0].content
+    assert "当前任务：任务" in system
+    assert "提交草案" in system
+    assert "- echo:" not in system
+    assert "$task" not in system
+
+
+def test_draft_empty_content_is_retried_once_then_fails(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "  "}'] * 2)
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.ok is False
+    assert draft.error_code == "invalid_output"
+    assert "草案内容不能为空" in draft.error
+    assert len(draft.steps) == DRAFT_INVALID_LIMIT
+    assert "草案内容不能为空" in chat.calls[1][-1].content
+
+
+def test_draft_cannot_finish(tmp_path: Path):
+    chat = ScriptedChat(
+        ['{"action": "finish", "output": "好"}', '{"action": "draft", "content": "方案"}']
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.ok is True
+    assert draft.steps[0]["action"] == "invalid"
+    assert "只能使用 tool 或 draft" in chat.calls[1][-1].content
+
+
+def test_draft_tools_must_be_a_string_array(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "方案", "tools": "echo"}'] * 2)
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.error_code == "invalid_output"
+    assert "tools 必须是工具名字符串数组" in draft.error
+
+
+WRITE_SKILL = Skill(
+    name="回声写入",
+    description="先回声，再写入。",
+    keywords=("回声",),
+    tools=("echo", "boom"),
+)
+
+
+def test_draft_can_declare_tools_that_are_not_callable_yet(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "先回声再写入", "tools": ["boom"]}'])
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(WRITE_SKILL, "任务", "run-1", tools=("echo",))
+    assert draft.ok is True
+    assert draft.tools == ("boom",)
+    system = chat.calls[0][0].content
+    declarable = system.split("可声明的工具：")[1].split("本阶段可以调用的只读工具：")[0]
+    assert "boom" in declarable
+    assert "- echo:" in system
+
+
+def test_draft_cannot_declare_a_tool_outside_the_skill(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "方案", "tools": ["nope"]}'] * 2)
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.ok is False
+    assert draft.error_code == "invalid_output"
+    assert "nope" in draft.error
+    assert "nope" in chat.calls[1][-1].content
+
+
+def test_execute_cannot_touch_tools_outside_the_approved_list(tmp_path: Path):
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "boom", "args": {"text": "x"}}',
+            '{"action": "finish", "output": "好"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "任务", "run-1", tools=("echo",), draft="只用 echo")
+    assert result.ok is True
+    assert "工具 boom 不可用" in chat.calls[1][-1].content
+
+
+def test_execute_prompt_carries_the_approved_draft(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "好"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).run(SKILL, "任务", "run-1", draft="先回声再作答")
+    system = chat.calls[0][0].content
+    assert "先回声再作答" in system
+    assert "$draft" not in system
+
+
+def test_execute_prompt_without_draft_says_so(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "好"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).run(SKILL, "任务", "run-1")
+    assert NO_DRAFT in chat.calls[0][0].content
+
+
+def test_execute_rejects_an_unknown_approved_tool(tmp_path: Path):
+    llm, _ = make_llm(tmp_path, ScriptedChat([]))
+    result = make_agent(llm).run(SKILL, "任务", "run-1", tools=("ghost",))
+    assert result.error_code == "tool_missing"

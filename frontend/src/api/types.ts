@@ -10,10 +10,30 @@ export interface MemorySourceRef {
   text: string;
 }
 
+export interface ApprovalItem {
+  approval_id: string;
+  run_id: string;
+  capability: string;
+  task: string;
+  content: string;
+  tools: string[];
+}
+
+export interface ApprovalDecision {
+  approval_id: string;
+  approved: boolean;
+}
+
+export interface ApprovalAck {
+  approval_id: string;
+  approved: boolean;
+}
+
 export type ServerEvent =
   | { type: "status"; state: PetState }
   | { type: "chat.chunk"; message_id: string; text: string }
-  | { type: "chat.done"; message_id: string; text: string; sources: MemorySourceRef[] };
+  | { type: "chat.done"; message_id: string; text: string; sources: MemorySourceRef[] }
+  | { type: "approval.request"; plan_id: string; items: ApprovalItem[] };
 
 export interface ChatReplyResponse {
   message_id: string;
