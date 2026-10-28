@@ -132,7 +132,6 @@ def setup(tmp_path: Path):
             Skill(
                 name="写笔记",
                 description="把用户给的内容记到便签上。",
-                keywords=("记一下",),
                 tools=("write_note",),
             )
         )

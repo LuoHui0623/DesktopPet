@@ -31,7 +31,6 @@ from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
 from infra.store.persona_versions import DbPersonaVersions
 from service.agent.approval import ApprovalRegistry
-from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import (
     CapabilityDescription,
@@ -39,6 +38,7 @@ from service.agent.prompt import (
     PromptTemplates,
     load_capabilities,
     load_templates,
+    merge_capabilities,
 )
 from service.agent.skills import SkillRegistry, memory_write_skill
 from service.agent.subagent import SubAgent
@@ -181,8 +181,7 @@ def serve(
         core=core_memory,
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
-        capture=MemoryCapture(skills, orchestrator, memory_writer),
-        capabilities=capabilities,
+        capabilities=merge_capabilities(capabilities, skills.summaries()),
         orchestrator=orchestrator,
         approvals=approvals,
     )

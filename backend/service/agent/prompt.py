@@ -74,6 +74,17 @@ def load_capabilities(path: Path = CAPABILITIES_FILE) -> tuple[CapabilityDescrip
     return tuple(capabilities)
 
 
+def merge_capabilities(
+    *groups: Sequence[CapabilityDescription],
+) -> tuple[CapabilityDescription, ...]:
+    """按名称合并多组能力描述，先出现的优先，用于文件配置与注册表叠加。"""
+    merged: dict[str, CapabilityDescription] = {}
+    for group in groups:
+        for item in group:
+            merged.setdefault(item.name, item)
+    return tuple(merged.values())
+
+
 def default_resources() -> tuple[ResourceItem, ...]:
     return (
         ResourceItem("草稿本", _relative(DRAFT_PATH)),

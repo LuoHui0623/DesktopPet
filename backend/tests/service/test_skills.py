@@ -1,14 +1,12 @@
 import pytest
 
-from service.agent.skills import Skill, SkillRegistry
+from service.agent.skills import MEMORY_WRITE_CAPABILITY, Skill, SkillRegistry, memory_write_skill
 
 
 def make_registry() -> SkillRegistry:
     registry = SkillRegistry()
-    registry.register(
-        Skill(name="写笔记", description="记到便签上", keywords=("记一下", "记住"), tools=("note",))
-    )
-    registry.register(Skill(name="翻阅", description="查看历史", keywords=("上次说过",)))
+    registry.register(Skill(name="写笔记", description="记到便签上", tools=("note",)))
+    registry.register(Skill(name="翻阅", description="查看历史"))
     return registry
 
 
@@ -26,25 +24,10 @@ def test_duplicate_name_is_rejected():
         registry.register(Skill(name="写笔记", description="x"))
 
 
-def test_keyword_bound_twice_is_rejected():
-    registry = make_registry()
-    with pytest.raises(ValueError, match="已绑定能力 写笔记"):
-        registry.register(Skill(name="另一个", description="x", keywords=("记住",)))
-
-
-def test_empty_keyword_and_name_are_rejected():
+def test_empty_name_is_rejected():
     registry = SkillRegistry()
     with pytest.raises(ValueError):
         registry.register(Skill(name="", description="x"))
-    with pytest.raises(ValueError):
-        registry.register(Skill(name="a", description="x", keywords=("",)))
-
-
-def test_keyword_match_is_case_insensitive_substring():
-    registry = make_registry()
-    assert [skill.name for skill in registry.match("请帮我记一下牛奶")] == ["写笔记"]
-    assert [skill.name for skill in registry.match("你还记得上次说过什么吗")] == ["翻阅"]
-    assert registry.match("今天天气不错") == []
 
 
 def test_summaries_are_capability_descriptions():
@@ -53,3 +36,13 @@ def test_summaries_are_capability_descriptions():
         ("写笔记", "记到便签上"),
         ("翻阅", "查看历史"),
     ]
+
+
+def test_memory_write_skill_describes_when_to_use_it():
+    skill = memory_write_skill()
+    assert skill.name == MEMORY_WRITE_CAPABILITY
+    assert skill.tools == ("memory_index", "memory_read", "memory_create", "memory_update")
+    for hint in ("记住", "记一下"):
+        assert hint in skill.description
+    assert "memory_create" in skill.description
+    assert "memory_update" in skill.description

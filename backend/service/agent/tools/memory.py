@@ -68,13 +68,14 @@ def make_memory_write_tools(writer: MemoryWriter) -> list[BaseTool]:
         category: str,
         title: str,
         content: str,
-        trigger: str = "keyword",
+        trigger: str = "explicit",
         importance: int = 3,
     ) -> dict[str, Any]:
         """新增一条结构化记忆。
         category 为 profile（基础信息）、preference（偏好与禁忌）、habit（作息与习惯）、
         event（安排与事项）、interaction（与宠物的互动约定）之一。
-        trigger 为 keyword（关键词触发）或 explicit（用户明确要求）。
+        trigger 为该条记忆的来源：explicit（主人明确提出要记住）
+        或 keyword（从对话里判断出的稳定信息）。
         importance 为 1 到 5 的整数。"""
 
         def operation() -> str:

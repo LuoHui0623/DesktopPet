@@ -72,9 +72,16 @@ def test_remember_stores_memory_with_trigger_and_today(stack):
     memory = stack["writer"].remember(
         category="preference", title="咖啡", content="喜欢美式咖啡，不加糖"
     )
-    assert memory.source.type == "keyword"
+    assert memory.source.type == "explicit"
     assert memory.source.date == "2026-10-18"
     assert stack["memories"].get(memory.id) == memory
+
+
+def test_remember_with_keyword_trigger_is_still_accepted(stack):
+    memory = stack["writer"].remember(
+        category="preference", title="咖啡", content="喜欢美式咖啡", trigger="keyword"
+    )
+    assert memory.source.type == "keyword"
 
 
 def test_remember_with_explicit_trigger(stack):

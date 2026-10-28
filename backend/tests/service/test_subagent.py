@@ -82,7 +82,6 @@ def make_llm(tmp_path: Path, chat: ScriptedChat, keys: dict | None = None):
 SKILL = Skill(
     name="回声",
     description="把用户给的文本原样返回。",
-    keywords=("回声",),
     tools=("echo",),
 )
 
@@ -275,7 +274,6 @@ def test_draft_tools_must_be_a_string_array(tmp_path: Path):
 WRITE_SKILL = Skill(
     name="回声写入",
     description="先回声，再写入。",
-    keywords=("回声",),
     tools=("echo", "boom"),
 )
 

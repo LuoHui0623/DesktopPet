@@ -359,7 +359,7 @@ class MemoryWriter:
         category: str,
         title: str,
         content: str,
-        trigger: str = "keyword",
+        trigger: str = "explicit",
         importance: int = DEFAULT_IMPORTANCE,
     ) -> StructuredMemory:
         self._ensure_writable()

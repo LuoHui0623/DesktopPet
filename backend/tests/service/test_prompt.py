@@ -15,6 +15,7 @@ from service.agent.prompt import (
     default_resources,
     load_capabilities,
     load_templates,
+    merge_capabilities,
     render_persona,
 )
 
@@ -119,6 +120,25 @@ def test_malformed_capability_line_is_reported_with_line_number(tmp_path: Path):
 
 def test_real_capabilities_file_loads():
     assert load_capabilities() == ()
+
+
+def test_merge_capabilities_keeps_file_entries_and_appends_registry_ones():
+    merged = merge_capabilities(
+        (CapabilityDescription(name="记忆写入", description="来自文件"),),
+        (
+            CapabilityDescription(name="记忆写入", description="来自注册表"),
+            CapabilityDescription(name="打开网址", description="打开白名单内的网址"),
+        ),
+    )
+    assert merged == (
+        CapabilityDescription(name="记忆写入", description="来自文件"),
+        CapabilityDescription(name="打开网址", description="打开白名单内的网址"),
+    )
+
+
+def test_merge_capabilities_of_nothing_is_empty():
+    assert merge_capabilities() == ()
+    assert merge_capabilities((), ()) == ()
 
 
 def test_capabilities_are_listed_one_per_line(templates):

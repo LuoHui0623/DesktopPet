@@ -23,7 +23,6 @@ from service.agent.approval import (
     ApprovalTicket,
     AutoApprovalGate,
 )
-from service.agent.memory_capture import DEFAULT_NOTICE, MemoryCapture
 from service.agent.orchestrator import (
     STATUS_REJECTED,
     Checkpoint,
@@ -209,7 +208,6 @@ class ChatService:
         structured: StructuredMemoryService | None = None,
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
-        capture: MemoryCapture | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
         orchestrator: Orchestrator | None = None,
         approvals: ApprovalRegistry | None = None,
@@ -218,7 +216,6 @@ class ChatService:
         self._daily_log = daily_log
         self._usage_sink = usage_sink
         self._events = events or NoChatEvents()
-        self._capture = capture
         self._personas = personas
         self._templates = templates
         self._core = core
@@ -242,8 +239,6 @@ class ChatService:
         text = user_text.strip()
         if not text:
             raise ChatError("empty_input", "消息不能为空")
-        if self._capture is not None and self._capture.matches(text):
-            return self._reply_from_capture(text)
         snapshot = self._current_persona()
         builder = ContextBuilder(
             snapshot.config,
@@ -329,24 +324,6 @@ class ChatService:
             return self._personas.current()
         except PersonaUnavailableError as exc:
             raise ChatError(PersonaUnavailableError.code, str(exc)) from exc
-
-    def _reply_from_capture(self, text: str) -> ChatReply:
-        assert self._capture is not None
-        self._events.status("executing")
-        try:
-            captured = self._capture.handle(text, gate=self._gate())
-            if captured.checkpoint is not None:
-                self._record_rejections([captured.checkpoint])
-            notice = captured.notice or DEFAULT_NOTICE
-            recorded = self._daily_log.record_turn(text, notice)
-            message_id = uuid4().hex
-            self._events.status("speaking")
-            for segment in split_segments(notice):
-                self._events.chunk(message_id, segment)
-            self._events.done(message_id, notice, ())
-        finally:
-            self._events.status("idle")
-        return ChatReply(message_id=message_id, text=notice, recorded=recorded)
 
     def history(
         self,

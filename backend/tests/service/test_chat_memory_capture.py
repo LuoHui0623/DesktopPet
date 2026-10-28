@@ -15,10 +15,9 @@ from infra.store.db import connect
 from infra.store.migrate import migrate
 from infra.store.persona_versions import DbPersonaVersions
 from service.agent.approval import ApprovalRegistry
-from service.agent.memory_capture import MemoryCapture
 from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import load_templates
-from service.agent.skills import SkillRegistry, memory_write_skill
+from service.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
 from service.agent.subagent import SubAgent
 from service.agent.tools.memory import make_memory_tools, make_memory_write_tools
 from service.chat.chat_service import ChatService
@@ -59,19 +58,18 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 """
 
-CREATE = json.dumps(
-    {
-        "action": "tool",
-        "tool": "memory_create",
-        "args": {
-            "category": "preference",
-            "title": "咖啡偏好",
-            "content": "喜欢美式咖啡，不加糖",
-            "trigger": "keyword",
-        },
-    },
-    ensure_ascii=False,
-)
+
+def dispatch(task: str) -> str:
+    return json.dumps(
+        {"type": "dispatch", "plan": [{"capability": MEMORY_WRITE_CAPABILITY, "task": task}]},
+        ensure_ascii=False,
+    )
+
+
+def chat_reply(text: str) -> str:
+    return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
+
+
 DRAFT = json.dumps(
     {
         "action": "draft",
@@ -80,9 +78,26 @@ DRAFT = json.dumps(
     },
     ensure_ascii=False,
 )
-FINISH = json.dumps(
-    {"action": "finish", "output": "我记住啦：喜欢美式咖啡，不加糖"}, ensure_ascii=False
-)
+
+
+def create(title: str, content: str) -> str:
+    return json.dumps(
+        {
+            "action": "tool",
+            "tool": "memory_create",
+            "args": {
+                "category": "preference",
+                "title": title,
+                "content": content,
+                "trigger": "explicit",
+            },
+        },
+        ensure_ascii=False,
+    )
+
+
+def finish(output: str) -> str:
+    return json.dumps({"action": "finish", "output": output}, ensure_ascii=False)
 
 
 class DictSettings:
@@ -105,10 +120,15 @@ class ScriptedChat:
     def __init__(self, outcomes: list[str]) -> None:
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.seen: list[list[str]] = []
 
     def invoke(self, messages, config=None, **kwargs):
         self.calls += 1
+        self.seen.append([str(message.content) for message in messages])
         return AIMessage(content=self.outcomes.pop(0))
+
+    def observed(self, needle: str) -> bool:
+        return any(needle in content for call in self.seen for content in call)
 
 
 class RecordingEvents:
@@ -175,7 +195,8 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         db_usage_sink(db_file),
         events,
         timezone=TZ,
-        capture=MemoryCapture(skills, orchestrator, writer),
+        capabilities=skills.summaries(),
+        orchestrator=orchestrator,
         approvals=approvals,
     )
     return {
@@ -197,42 +218,95 @@ def logged_turns(db_file: Path) -> list[tuple]:
         conn.close()
 
 
-def test_keyword_message_writes_memory_and_replies_with_the_notice(tmp_path: Path):
+def states(events: RecordingEvents) -> list[str]:
+    return [entry[0] if entry[0] != "status" else entry[1] for entry in events.log]
+
+
+def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
     events = RecordingEvents()
-    env = build_chat(tmp_path, [DRAFT, CREATE, FINISH], events)
-    result = env["chat"].reply("记住，我喜欢美式咖啡，不加糖")
-    assert result.text == "我记住啦：喜欢美式咖啡，不加糖"
+    text = "我最近都在喝美式咖啡，不加糖"
+    env = build_chat(
+        tmp_path,
+        [
+            dispatch(text),
+            DRAFT,
+            create("咖啡偏好", "喜欢美式咖啡，不加糖"),
+            finish("已记下咖啡偏好"),
+            chat_reply("记住啦，美式不加糖～"),
+        ],
+        events,
+    )
+    result = env["chat"].reply(text)
+    assert result.text == "记住啦，美式不加糖～"
+    assert result.recorded is True
     assert [item.title for item in env["memories"].list().items] == ["咖啡偏好"]
-    assert env["chat_model"].calls == 3
+    assert env["chat_model"].calls == 5
     assert len(events.plan_ids) == 1
-    assert logged_turns(env["db_file"]) == [
-        ("master", "记住，我喜欢美式咖啡，不加糖"),
-        ("me", "我记住啦：喜欢美式咖啡，不加糖"),
-    ]
-    kinds = [entry[0] if entry[0] != "status" else entry[1] for entry in events.log]
-    assert kinds[0] == "executing"
+    kinds = states(events)
+    assert kinds[0] == "thinking"
+    assert "executing" in kinds
     assert "approval" in kinds
     assert "speaking" in kinds
     assert kinds[-1] == "idle"
+    assert logged_turns(env["db_file"]) == [
+        ("master", text),
+        ("me", "记住啦，美式不加糖～"),
+    ]
 
 
-def test_ordinary_message_goes_to_the_chat_model_only(tmp_path: Path):
+def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     events = RecordingEvents()
-    env = build_chat(tmp_path, ['{"type": "chat", "text": "你好呀"}'], events)
-    result = env["chat"].reply("你好")
-    assert result.text == "你好呀"
-    assert env["chat_model"].calls == 1
-    assert env["memories"].list().items == []
-    assert ("status", "executing") not in events.log
-
-
-def test_keyword_message_in_temporary_mode_writes_nothing(tmp_path: Path):
-    events = RecordingEvents()
-    env = build_chat(tmp_path, [], events)
-    env["daily"].set_temporary_mode(True)
+    env = build_chat(tmp_path, [chat_reply("好呀，我记着。")], events)
     result = env["chat"].reply("记住，我喜欢美式咖啡")
-    assert result.text == "临时模式开启，本次不写入记忆"
+    assert result.text == "好呀，我记着。"
+    assert env["memories"].list().items == []
+    assert env["chat_model"].calls == 1
+    assert events.plan_ids == []
+    assert "executing" not in states(events)
+    assert logged_turns(env["db_file"]) == [
+        ("master", "记住，我喜欢美式咖啡"),
+        ("me", "好呀，我记着。"),
+    ]
+
+
+def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
+    events = RecordingEvents()
+    text = "记住，我喜欢美式咖啡"
+    env = build_chat(
+        tmp_path,
+        [
+            dispatch(text),
+            DRAFT,
+            create("咖啡偏好", "喜欢美式咖啡"),
+            finish("临时模式，没写入"),
+            chat_reply("临时模式下，这次先不记。"),
+        ],
+        events,
+    )
+    env["daily"].set_temporary_mode(True)
+    result = env["chat"].reply(text)
+    assert result.text == "临时模式下，这次先不记。"
     assert result.recorded is False
     assert env["memories"].list().items == []
-    assert env["chat_model"].calls == 0
+    assert env["chat_model"].observed("临时模式开启，本次不写入结构化记忆")
     assert logged_turns(env["db_file"]) == []
+
+
+def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
+    events = RecordingEvents()
+    text = "记住，我的身份证号是 11010119900307123X"
+    env = build_chat(
+        tmp_path,
+        [
+            dispatch(text),
+            DRAFT,
+            create("证件号", "11010119900307123X"),
+            finish("这条没有记下"),
+            chat_reply("这个我就不记了。"),
+        ],
+        events,
+    )
+    result = env["chat"].reply(text)
+    assert result.text == "这个我就不记了。"
+    assert env["memories"].list().items == []
+    assert env["chat_model"].observed("敏感信息不写入记忆")

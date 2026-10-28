@@ -4,7 +4,7 @@
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
 覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
-关键词写入记忆、翻阅与编辑、核心典藏与引用来源、临时模式、正常关闭（stdin 指令）。
+记忆写入派发与审批、翻阅与编辑、核心典藏与引用来源、临时模式、正常关闭（stdin 指令）。
 """
 
 import json
@@ -285,19 +285,21 @@ def check_invalid_output_regenerates(api: Api, tap: EventTap, llm: FakeLlm) -> N
     step("结构化输出：非法 JSON 重新生成一次后返回 invalid_output，不推送")
 
 
-def check_keyword_write(api: Api, tap: EventTap) -> dict:
+def check_dispatched_write(api: Api, tap: EventTap) -> dict:
     mark = len(tap.events)
-    notice = api.call("POST", "/api/chat", {"text": "记住，我喜欢美式咖啡，不加糖"})
+    notice = api.call("POST", "/api/chat", {"text": "请记住，我喜欢美式咖啡，不加糖"})
     check(notice["text"] == "我记住啦：喜欢美式咖啡，不加糖", f"写入回复异常：{notice}")
     fresh = tap.wait_until_idle_after(mark)
     states = [event["state"] for event in fresh if event["type"] == "status"]
-    check(states[0] == "executing", f"写入时应进入执行中：{states}")
+    check(states[0] == "thinking", f"写入时应先进入思考：{states}")
+    check("executing" in states, f"写入时应进入执行中：{states}")
+    check(states[-2:] == ["speaking", "idle"], f"写入的状态收尾顺序异常：{states}")
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"应推送一次审批：{approvals}")
     check(len(approvals[0]["items"]) == 1, f"应只有一个审批项：{approvals[0]}")
     item = approvals[0]["items"][0]
     check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
-    check(item["task"] == "记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
+    check(item["task"] == "请记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
     check(item["tools"] == ["memory_create"], f"审批项应带草案声明的工具：{item}")
     check(item["content"], "审批项应带草案内容")
     decided = tap.wait_for_approvals(1)
@@ -314,8 +316,8 @@ def check_keyword_write(api: Api, tap: EventTap) -> dict:
     memories = api.call("GET", "/api/memories")
     check(len(memories["structured"]) == 1, f"应只写入一条记忆：{memories['structured']}")
     memory = memories["structured"][0]
-    check(memory["source"]["type"] == "keyword", f"来源类型应为 keyword：{memory}")
-    step("关键词写入：“记住”触发子代理起草并请求审批，同意后写入一条结构化记忆")
+    check(memory["source"]["type"] == "explicit", f"来源类型应为 explicit：{memory}")
+    step("记忆写入：主对话自行决定派发，子代理起草并请求审批，同意后写入一条结构化记忆")
 
     edited = api.call("PATCH", f"/api/memories/{memory['id']}", {"title": "咖啡偏好"})
     check(edited["title"] == "咖啡偏好", f"编辑未生效：{edited}")
@@ -329,8 +331,8 @@ def check_write_rejected(api: Api, tap: EventTap) -> None:
     mark = len(tap.events)
     approvals_before = len(tap.approvals)
     tap.reject_next = True
-    notice = api.call("POST", "/api/chat", {"text": "记住，我喜欢拿铁"})
-    check(notice["text"] == "这次没能记住：用户拒绝执行", f"拒绝后回复异常：{notice}")
+    notice = api.call("POST", "/api/chat", {"text": "请记住，我喜欢拿铁"})
+    check(notice["text"] == "这次没能做到：用户拒绝执行", f"拒绝后回复异常：{notice}")
     fresh = tap.wait_until_idle_after(mark)
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"拒绝场景也应推送审批：{approvals}")
@@ -367,8 +369,8 @@ def check_temporary_mode(api: Api, tap: EventTap) -> None:
     mark = len(tap.events)
     api.call("POST", "/api/memories/temporary-mode", {"enabled": True})
     history_before = api.call("GET", "/api/chat/history")["items"]
-    temp = api.call("POST", "/api/chat", {"text": "记住，我喜欢茶"})
-    check(temp["text"] == "临时模式开启，本次不写入记忆", f"临时模式回复异常：{temp}")
+    temp = api.call("POST", "/api/chat", {"text": "请记住，我喜欢茶"})
+    check(temp["text"] == "临时模式开启，本次不写入结构化记忆", f"临时模式回复异常：{temp}")
     check(temp["recorded"] is False, "临时模式下不应写入每日对话")
     tap.wait_until_idle_after(mark)
     check(len(api.call("GET", "/api/memories")["structured"]) == 1, "临时模式下不应新增记忆")
@@ -451,7 +453,7 @@ def run() -> Path:
             check_streaming_chat(api, tap, llm)
             check_dispatch(api, tap, llm)
             check_invalid_output_regenerates(api, tap, llm)
-            memory = check_keyword_write(api, tap)
+            memory = check_dispatched_write(api, tap)
             check_write_rejected(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)
