@@ -25,7 +25,6 @@ from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import (
-    DEFAULT_STRUCTURED_DOC,
     MemoryReader,
     MemoryWriter,
     StructuredMemoryDoc,
@@ -244,7 +243,7 @@ def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     env = build_chat(tmp_path, [chat_reply("好呀，我记着。")], events)
     result = env["chat"].reply("记住，我喜欢美式咖啡")
     assert result.text == "好呀，我记着。"
-    assert env["structured"].text() == DEFAULT_STRUCTURED_DOC
+    assert env["structured"].text() == ""
     assert env["chat_model"].calls == 1
     assert events.plan_ids == []
     assert "executing" not in states(events)

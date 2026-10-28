@@ -13,17 +13,15 @@ from service.agent.tools.explore import make_explore_tools
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import (
-    DEFAULT_STRUCTURED_DOC,
     MemoryReader,
     MemoryReadError,
     StructuredMemoryDoc,
     number_lines,
-    parse_range,
+    parse_ranges,
     section,
 )
 
 TZ = ZoneInfo("Asia/Shanghai")
-TEMPLATE_LINES = DEFAULT_STRUCTURED_DOC.rstrip("\n").split("\n")
 
 
 class Clock:
@@ -53,16 +51,16 @@ def parts(tmp_path: Path):
     }
 
 
-def test_parse_range_accepts_from_to():
-    assert parse_range("2-5") == (2, 5)
-    assert parse_range(" 1 - 1 ") == (1, 1)
-    assert parse_range("5") == (5, 5)
+def test_parse_ranges_accepts_single_and_multiple_specs():
+    assert parse_ranges([[2, 5]]) == [(2, 5)]
+    assert parse_ranges([[5]]) == [(5, 5)]
+    assert parse_ranges([[9, 10], [1, 2]]) == [(1, 2), (9, 10)]
 
 
-@pytest.mark.parametrize("spec", ["a-b", "0-3", "4-2", "1-2-3"])
-def test_parse_range_rejects_bad_specs(spec: str):
+@pytest.mark.parametrize("spec", [[[0, 3]], [[4, 2]], [[1, 2, 3]], [[1, 2], [2, 4]], []])
+def test_parse_ranges_rejects_bad_specs(spec: list):
     with pytest.raises(MemoryReadError):
-        parse_range(spec)
+        parse_ranges(spec)
 
 
 def test_line_numbers_start_at_one_and_do_not_change_content():
@@ -80,18 +78,23 @@ def test_line_numbers_start_at_one_and_do_not_change_content():
 
 def test_section_returns_numbered_slice():
     lines = ["a", "b", "c", "d"]
-    assert section(lines, "2-3") == "2: b\n3: c"
+    assert section(lines, [[2, 3]]) == "2: b\n3: c"
+
+
+def test_section_keeps_real_line_numbers_across_ranges():
+    lines = ["a", "b", "c", "d"]
+    assert section(lines, [[1, 2], [4, 4]]) == "1: a\n2: b\n4: d"
 
 
 def test_section_out_of_range_returns_reason():
     with pytest.raises(MemoryReadError, match="超出范围，共 3 行"):
-        section(["a", "b", "c"], "2-4")
+        section(["a", "b", "c"], [[2, 4]])
 
 
 def test_describe_and_index_come_from_index_file(parts):
     reader: MemoryReader = parts["reader"]
     assert set(reader.describe()) == {"structured", "daily"}
-    assert reader.index()["structured"]["lines"] == len(TEMPLATE_LINES)
+    assert reader.index()["structured"]["lines"] == 0
 
 
 def test_structured_index_lists_headings(parts):
@@ -112,16 +115,20 @@ def test_missing_index_is_reported(parts):
 
 
 def test_reads_structured_doc_with_line_numbers(parts):
-    assert parts["reader"].read("structured", "structured") == number_lines(TEMPLATE_LINES)
+    parts["structured"].save("## 主人信息\n名字：小李\n## 喜好\n喜欢美式\n")
+    assert parts["reader"].read("structured", "structured") == number_lines(
+        ["## 主人信息", "名字：小李", "## 喜好", "喜欢美式"]
+    )
     assert (
-        parts["reader"].read("structured", "structured.md", "1-2") == "1: ## 主人信息\n2: ## 喜好"
+        parts["reader"].read("structured", "structured.md", [[1], [3]])
+        == "1: ## 主人信息\n3: ## 喜好"
     )
 
 
 def test_reads_structured_doc_after_append(parts):
     start, end = parts["structured"].append("咖啡偏好\n喜欢美式咖啡")
-    assert (start, end) == (len(TEMPLATE_LINES) + 1, len(TEMPLATE_LINES) + 2)
-    assert parts["reader"].read("structured", "structured", f"{start}-{end}") == (
+    assert (start, end) == (1, 2)
+    assert parts["reader"].read("structured", "structured", [[start, end]]) == (
         f"{start}: 咖啡偏好\n{end}: 喜欢美式咖啡"
     )
 
@@ -136,7 +143,7 @@ def test_reads_daily_turns_one_line_per_turn(parts):
     store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("master", "早安")])
     text = parts["reader"].read("daily", "2026-10-18")
     assert text == "1: 用户：喜欢美式咖啡 / 宠物：记住啦\n2: 用户：早安"
-    assert parts["reader"].read("daily", "2026-10-18", "2-2") == "2: 用户：早安"
+    assert parts["reader"].read("daily", "2026-10-18", [[2]]) == "2: 用户：早安"
 
 
 def test_daily_range_out_of_bounds_is_reported(parts):
@@ -144,7 +151,7 @@ def test_daily_range_out_of_bounds_is_reported(parts):
         "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
     )
     with pytest.raises(MemoryReadError, match="超出范围"):
-        parts["reader"].read("daily", "2026-10-18", "1-3")
+        parts["reader"].read("daily", "2026-10-18", [[1, 3]])
 
 
 def test_missing_entries_are_reported(parts):
@@ -187,8 +194,7 @@ def test_tools_return_structured_results(parts, tools):
         "content": read["content"],
         "error": None,
     }
-    assert read["content"].startswith("1: ## 主人信息")
-    assert "喜欢美式咖啡" in read["content"]
+    assert read["content"] == "1: 喜欢美式咖啡"
 
 
 def test_tool_failures_return_readable_reasons(tools):
@@ -202,7 +208,7 @@ def test_tool_range_error_is_returned_not_raised(parts, tools):
     DbDailyLog(parts["db_file"]).append(
         "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
     )
-    result = tools["read"].invoke({"resource": "memory", "name": "2026-10-18", "lines": "1-9"})
+    result = tools["read"].invoke({"resource": "memory", "name": "2026-10-18", "lines": [[1, 9]]})
     assert result["ok"] is False
     assert "超出范围" in result["error"]
 

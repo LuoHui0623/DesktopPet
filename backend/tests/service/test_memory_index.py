@@ -10,10 +10,9 @@ from infra.store.db import connect
 from infra.store.migrate import migrate
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import DESCRIPTIONS, MemoryIndexService, build_index
-from service.memory.memory_service import DEFAULT_STRUCTURED_DOC, StructuredMemoryDoc
+from service.memory.memory_service import StructuredMemoryDoc
 
 TZ = ZoneInfo("Asia/Shanghai")
-TEMPLATE_LINES = DEFAULT_STRUCTURED_DOC.rstrip("\n").split("\n")
 
 
 @pytest.fixture
@@ -78,7 +77,7 @@ def test_structured_index_counts_lines_and_headings():
 
 def test_index_file_is_written_on_startup(stack):
     index = read_index(stack["index_file"])
-    assert index == build_index(TEMPLATE_LINES, [])
+    assert index == build_index([], [])
 
 
 def test_saving_structured_doc_refreshes_index(stack):
@@ -91,7 +90,7 @@ def test_saving_structured_doc_refreshes_index(stack):
 def test_append_refreshes_index(stack):
     stack["structured"].append("咖啡偏好")
     index = read_index(stack["index_file"])
-    assert index["index"]["structured"]["lines"] == len(TEMPLATE_LINES) + 1
+    assert index["index"]["structured"]["lines"] == 1
 
 
 def test_rebuild_is_skipped_when_nothing_changed(stack):
@@ -104,7 +103,7 @@ def test_external_file_removal_is_reflected_on_rebuild(stack):
     stack["structured"].append("咖啡偏好")
     stack["structured"].path.unlink()
     stack["index"].rebuild()
-    assert read_index(stack["index_file"])["index"]["structured"]["lines"] == len(TEMPLATE_LINES)
+    assert read_index(stack["index_file"])["index"]["structured"]["lines"] == 0
 
 
 def test_daily_memory_dates_come_from_daily_log(stack):

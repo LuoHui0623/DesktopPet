@@ -35,12 +35,12 @@ def make_explore_tools(reader: MemoryReader, skills: SkillRegistry) -> list[Base
         return call("index", lambda: _index(resource, reader, skills), errors)
 
     @tool("read")
-    def read(resource: str, name: str, lines: str | None = None) -> dict[str, Any]:
+    def read(resource: str, name: str, lines: list[list[int]] | None = None) -> dict[str, Any]:
         """读取资源内容。resource 取 "skill" 或 "memory"。
         resource 为 skill 时，name 是能力名，返回该能力的技能说明书。
         resource 为 memory 时，name 取 "structured"（结构化记忆文档）或每日对话的
         日期（YYYY-MM-DD）；返回的内容每行前附行号（从 1 开始）；lines 为行号位置，
-        可以是 "2-5" 这样的区间或 "3" 这样的单行，不填则读取全部。"""
+        可以同时取多段：[[2, 5], [9, 9]]，单行写 [3]，不填则读取全部。"""
         return call("read", lambda: _read(resource, name, lines, reader, skills), errors)
 
     return [index, read]
@@ -59,7 +59,7 @@ def _index(resource: str, reader: MemoryReader, skills: SkillRegistry) -> str:
 def _read(
     resource: str,
     name: str,
-    lines: str | None,
+    lines: list[list[int]] | None,
     reader: MemoryReader,
     skills: SkillRegistry,
 ) -> str:

@@ -176,7 +176,9 @@ export function MemorySettings() {
         )}
         {draft === null ? (
           lines.length === 0 ? (
-            <p style={{ color: "#777", fontSize: 13 }}>暂无结构化记忆</p>
+            <p style={{ color: "#777", fontSize: 13 }}>
+              还没有内容：结构化记忆是空文件，结构由 agent 自行设计后写入。
+            </p>
           ) : (
             <ol
               aria-label="结构化记忆正文"

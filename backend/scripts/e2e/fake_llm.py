@@ -3,7 +3,7 @@
 回复规则固定：
 - 子代理起草“记忆写入”能力时，直接提交一份声明 memory_append 的草案。
 - 子代理执行“记忆写入”能力时，先调用 memory_append；收到观察后直接结束，观察里带失败原因
-  时就把原因当作结论如实回报。
+  时就把原因当作结论如实回报。任务里带“改成”时改用 memory_replace：在行区间内正则替换。
 - 子代理起草“记忆检索”能力时，提交一份声明 index 与 read 的草案；执行时按说明书走
   ReAct：先 read（资源 skill）打开说明书，再 index（资源 memory）看清单，
   再 read（资源 memory）按清单里的名字读结构化记忆，最后返回片段。
@@ -27,6 +27,9 @@ RETRIEVE_CAPABILITY = "当前能力：记忆检索"
 DRAFT_MARK = "提交草案"
 DRAFT_CONTENT = "把「喜欢美式咖啡，不加糖」追加到结构化记忆。"
 WRITE_FINISH = "我记住啦：喜欢美式咖啡，不加糖"
+REPLACE_MARK = "改成"
+REPLACE_DRAFT = "把结构化记忆里的「只喝热美式」改成「只喝冰美式」。"
+REPLACE_FINISH = "改好啦：只喝冰美式"
 
 
 CHAT_RULES = "【行动规则】"
@@ -166,8 +169,12 @@ def _reply_text(body: dict) -> str:
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
     if DRAFT_MARK in system:
-        tools = ["index", "read"] if RETRIEVE_CAPABILITY in system else ["memory_append"]
-        content = RETRIEVE_DRAFT if RETRIEVE_CAPABILITY in system else DRAFT_CONTENT
+        if RETRIEVE_CAPABILITY in system:
+            tools, content = ["index", "read"], RETRIEVE_DRAFT
+        elif REPLACE_MARK in system:
+            tools, content = ["memory_replace"], REPLACE_DRAFT
+        else:
+            tools, content = ["memory_append"], DRAFT_CONTENT
         return json.dumps(
             {"action": "draft", "content": content, "tools": tools}, ensure_ascii=False
         )
@@ -175,9 +182,15 @@ def _reply_text(body: dict) -> str:
         return _retrieve_step(body)
     if WRITE_CAPABILITY in system:
         if _observations(body):
+            fallback = REPLACE_FINISH if REPLACE_MARK in system else WRITE_FINISH
             return json.dumps(
-                {"action": "finish", "output": _observation_error(body) or WRITE_FINISH},
+                {"action": "finish", "output": _observation_error(body) or fallback},
                 ensure_ascii=False,
+            )
+        if REPLACE_MARK in system:
+            return _tool_action(
+                "memory_replace",
+                {"lines": [[1, 2]], "pattern": "热美式", "content": "冰美式"},
             )
         return json.dumps(
             {

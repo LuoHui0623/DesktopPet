@@ -221,7 +221,7 @@ backend/
 │  ├─ persona/
 │  │  └─ persona_service.py  # 人设卡片：列出、启用、按修改时间重新解析、按卡记录版本（D-13）
 │  ├─ memory/
-│  │  ├─ memory_service.py   # 结构化记忆（单文件纯文本）读写、daily_memory 行号视图、行号 helper、MemoryReader / MemoryWriter
+│  │  ├─ memory_service.py   # 结构化记忆（单文件纯文本，空文件初始化，行区间正则替换）读写、daily_memory 行号视图、行号区间 helper、MemoryReader / MemoryWriter
 │  │  ├─ daily_log_service.py# 每日对话：写入、读取、临时模式
 │  │  ├─ index.py            # 记忆索引生成：由代码生成，不手工编辑
 │  │  ├─ daily_events.py     # 每日事件结构（从对话中提取）
@@ -236,7 +236,7 @@ backend/
 │     └─ tools/
 │        ├─ explore.py       # 探索工具：index 看清单、read 读内容，按 resource（skill / memory）路由
 │        ├─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
-│        ├─ memory.py        # 记忆写入工具：append 追加、replace 按行号替换
+│        ├─ memory.py        # 记忆写入工具：append 追加、replace 在多段行区间内正则替换
 │        └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程
 │
 ├─ infra/                    # 【基础设施层】技术适配，不含业务规则
@@ -471,7 +471,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
   ─► 执行：并行运行子代理（consolidate 模型，ReAct，最多 8 步）
        ├─ resources/skills/<file>.md：子代理先用 index 看技能清单，再 read 打开说明书
        ├─ tools/explore：index、read 按 resource 路由（skill / memory）
-       ├─ tools/memory：memory_append 追加到末尾、memory_replace 按行号替换（service/memory，经 infra/files 写 data/memory/structured.md）
+       ├─ tools/memory：memory_append 追加到末尾、memory_replace 在多段行区间内正则替换（service/memory，经 infra/files 写 data/memory/structured.md）
        │    临时模式开启或命中敏感信息时由 MemoryWriter 拒绝，拒绝原因作为工具错误返回
        └─ service/memory/index 重新生成记忆索引
   ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户

@@ -25,7 +25,9 @@ TZ = ZoneInfo("Asia/Shanghai")
 
 @pytest.fixture
 def structured(tmp_path: Path) -> StructuredMemoryDoc:
-    return StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
+    doc = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
+    doc.save("名字：小李\n工作地点：杭州\n喜欢的咖啡：美式\n")
+    return doc
 
 
 @pytest.fixture
@@ -108,10 +110,18 @@ def test_unrecognized_memory_name_is_reported(tools):
 def test_read_structured_memory_returns_numbered_lines(tools):
     result = tools["read"].invoke({"resource": "memory", "name": "structured"})
     assert result["ok"] is True
-    assert result["content"].startswith("1: ")
+    assert result["content"] == "1: 名字：小李\n2: 工作地点：杭州\n3: 喜欢的咖啡：美式"
 
 
 def test_read_structured_memory_respects_line_range(tools):
-    result = tools["read"].invoke({"resource": "memory", "name": "structured", "lines": "1"})
+    result = tools["read"].invoke({"resource": "memory", "name": "structured", "lines": [[2]]})
     assert result["ok"] is True
-    assert result["content"].strip().startswith("1: ")
+    assert result["content"] == "2: 工作地点：杭州"
+
+
+def test_read_structured_memory_accepts_multiple_ranges(tools):
+    result = tools["read"].invoke(
+        {"resource": "memory", "name": "structured", "lines": [[3, 3], [1]]}
+    )
+    assert result["ok"] is True
+    assert result["content"] == "1: 名字：小李\n3: 喜欢的咖啡：美式"

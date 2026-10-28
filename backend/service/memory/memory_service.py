@@ -1,3 +1,4 @@
+import itertools
 import re
 import threading
 from collections.abc import Callable, Sequence
@@ -14,16 +15,11 @@ from service.memory.sensitive import sensitive_reason
 STRUCTURED_DOC_NAME = "structured"
 STRUCTURED_FILE_NAME = "structured.md"
 STRUCTURED_ALIASES = (STRUCTURED_DOC_NAME, STRUCTURED_FILE_NAME)
-DEFAULT_STRUCTURED_DOC = """## 主人信息
-## 喜好
-## 作息与习惯
-## 约定
-"""
 KIND_STRUCTURED = "structured"
 KIND_DAILY = "daily"
 KIND_LABELS = {KIND_STRUCTURED: "结构化记忆", KIND_DAILY: "每日对话"}
 
-RANGE_PATTERN = re.compile(r"^\s*(\d+)\s*(?:-\s*(\d+)\s*)?$")
+LINE_RANGE_HINT = "行号位置应为 [[起始行, 结束行], ...]，单行写 [行号]"
 
 
 class MemoryServiceError(Exception):
@@ -40,33 +36,45 @@ class MemoryWriteError(MemoryServiceError):
         self.code = code
 
 
-def parse_range(spec: str) -> tuple[int, int]:
-    match = RANGE_PATTERN.match(spec)
-    if match is None:
-        raise MemoryReadError(
-            f"行号应为 from-to 形式（例如 1-5）或单个行号（例如 3），当前为 {spec!r}"
-        )
-    start = int(match.group(1))
-    end = int(match.group(2)) if match.group(2) is not None else start
-    if start < 1 or end < start:
-        raise MemoryReadError(f"行号区间 {spec} 不合法：起始行须从 1 开始，且不大于结束行")
-    return start, end
+def parse_ranges(specs: Sequence[Sequence[int]]) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for spec in specs:
+        if isinstance(spec, str):
+            raise MemoryReadError(f"行号位置 {spec!r} 不合法：{LINE_RANGE_HINT}")
+        values = [int(value) for value in spec]
+        if not 1 <= len(values) <= 2:
+            raise MemoryReadError(f"行号位置 {values} 不合法：{LINE_RANGE_HINT}")
+        start = values[0]
+        end = values[1] if len(values) == 2 else start
+        if start < 1 or end < start:
+            raise MemoryReadError(f"行号位置 {values} 不合法：起始行须从 1 开始，且不大于结束行")
+        ranges.append((start, end))
+    if not ranges:
+        raise MemoryReadError(f"行号位置不能为空：{LINE_RANGE_HINT}")
+    ranges.sort()
+    for previous, current in itertools.pairwise(ranges):
+        if current[0] <= previous[1]:
+            raise MemoryReadError(
+                f"行号位置 {previous[0]}-{previous[1]} 与 {current[0]}-{current[1]} 重叠"
+            )
+    return ranges
 
 
 def number_lines(lines: Sequence[str], start: int = 1) -> str:
     return "\n".join(f"{number}: {line}" for number, line in enumerate(lines, start=start))
 
 
-def checked_range(lines: Sequence[str], spec: str) -> tuple[int, int]:
-    start, end = parse_range(spec)
-    if end > len(lines):
-        raise MemoryReadError(f"行号区间 {spec} 超出范围，共 {len(lines)} 行")
-    return start, end
+def checked_ranges(lines: Sequence[str], specs: Sequence[Sequence[int]]) -> list[tuple[int, int]]:
+    ranges = parse_ranges(specs)
+    for start, end in ranges:
+        if end > len(lines):
+            raise MemoryReadError(f"行号位置 {start}-{end} 超出范围，共 {len(lines)} 行")
+    return ranges
 
 
-def section(lines: Sequence[str], spec: str) -> str:
-    start, end = checked_range(lines, spec)
-    return number_lines(lines[start - 1 : end], start)
+def section(lines: Sequence[str], specs: Sequence[Sequence[int]]) -> str:
+    ranges = checked_ranges(lines, specs)
+    return "\n".join(number_lines(lines[start - 1 : end], start) for start, end in ranges)
 
 
 def split_lines(text: str) -> list[str]:
@@ -86,12 +94,23 @@ def _flatten_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-class StructuredMemoryDoc:
-    """结构化记忆是单个纯文本大纲文档：不校验语法，按行号定位与修改。"""
+def _compile_pattern(pattern: str) -> re.Pattern[str]:
+    if not pattern.strip():
+        raise MemoryWriteError("正则不能为空")
+    try:
+        regex = re.compile(pattern, re.MULTILINE)
+    except re.error as exc:
+        raise MemoryWriteError(f"正则不合法：{exc}") from exc
+    if regex.search("") is not None:
+        raise MemoryWriteError(f"正则 {pattern!r} 能匹配空字符串，请写出要替换的具体内容")
+    return regex
 
-    def __init__(self, path: Path, template: str = DEFAULT_STRUCTURED_DOC) -> None:
+
+class StructuredMemoryDoc:
+    """结构化记忆是单个纯文本文件：不规定结构，由 agent 自行设计，按行号定位与修改。"""
+
+    def __init__(self, path: Path) -> None:
         self._path = path
-        self._template = template
         self._lock = threading.Lock()
         self._listeners: list[Callable[[], None]] = []
 
@@ -107,11 +126,17 @@ class StructuredMemoryDoc:
         return self._path
 
     def text(self) -> str:
-        try:
-            return self._path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            self.save(self._template)
-            return self.text()
+        self._create_if_missing()
+        return self._path.read_text(encoding="utf-8")
+
+    def _create_if_missing(self) -> None:
+        if self._path.exists():
+            return
+        with self._lock:
+            if self._path.exists():
+                return
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            self._path.write_text("", encoding="utf-8")
 
     def lines(self) -> list[str]:
         return split_lines(self.text())
@@ -137,15 +162,36 @@ class StructuredMemoryDoc:
         self.save("\n".join([*lines, *block]))
         return start, start + len(block) - 1
 
-    def replace_lines(self, spec: str, content: str) -> tuple[int, int]:
-        block = _content_lines(content)
+    def replace_pattern(
+        self, specs: Sequence[Sequence[int]], pattern: str, content: str
+    ) -> tuple[int, int]:
+        replacement = "\n".join(_content_lines(content))
+        regex = _compile_pattern(pattern)
+        lines = self.lines()
         try:
-            start, end = checked_range(self.lines(), spec)
+            ranges = checked_ranges(lines, specs)
         except MemoryReadError as exc:
             raise MemoryWriteError(str(exc)) from exc
-        lines = self.lines()
-        self.save("\n".join([*lines[: start - 1], *block, *lines[end:]]))
-        return start, start + len(block) - 1
+        updated = list(lines)
+        hits = 0
+        first = len(lines) + 1
+        last = 0
+        for start, end in reversed(ranges):
+            target = "\n".join(updated[start - 1 : end])
+            replaced, count = regex.subn(lambda _match: replacement, target)
+            if not count:
+                continue
+            hits += count
+            block = replaced.split("\n")
+            updated[start - 1 : end] = block
+            first = min(first, start)
+            last = max(last, start + len(block) - 1)
+        if not hits:
+            raise MemoryWriteError(
+                f"正则 {pattern!r} 在指定行内没有匹配到内容，请先用 read 确认原文再改"
+            )
+        self.save("\n".join(updated))
+        return first, last
 
 
 def render_daily_turns(records: Sequence[DailyLogRecord]) -> list[str]:
@@ -186,9 +232,9 @@ class MemoryReader:
     def index(self) -> dict[str, Any]:
         return self._index()["index"]
 
-    def read(self, kind: str, name: str, lines: str | None = None) -> str:
+    def read(self, kind: str, name: str, lines: Sequence[Sequence[int]] | None = None) -> str:
         source = self._lines_of(kind, name)
-        if lines is None:
+        if not lines:
             return number_lines(source)
         return section(source, lines)
 
@@ -228,10 +274,12 @@ class MemoryWriter:
         self._ensure_not_sensitive(content)
         return self._structured.append(content)
 
-    def replace_lines(self, lines: str, content: str) -> tuple[int, int]:
+    def replace_pattern(
+        self, lines: Sequence[Sequence[int]], pattern: str, content: str
+    ) -> tuple[int, int]:
         self._ensure_writable()
         self._ensure_not_sensitive(content)
-        return self._structured.replace_lines(lines, content)
+        return self._structured.replace_pattern(lines, pattern, content)
 
     def temporary_mode(self) -> bool:
         return self._daily.temporary_mode()

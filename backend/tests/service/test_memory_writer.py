@@ -11,7 +11,6 @@ from infra.store.migrate import migrate
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import (
-    DEFAULT_STRUCTURED_DOC,
     MemoryWriteError,
     MemoryWriter,
     StructuredMemoryDoc,
@@ -19,7 +18,6 @@ from service.memory.memory_service import (
 from service.memory.sensitive import sensitive_reason
 
 TZ = ZoneInfo("Asia/Shanghai")
-TEMPLATE_LINES = DEFAULT_STRUCTURED_DOC.rstrip("\n").split("\n")
 
 
 @pytest.fixture
@@ -47,7 +45,7 @@ def stack(tmp_path: Path):
 
 def test_append_adds_lines_at_the_end(stack):
     start, end = stack["writer"].append("咖啡偏好\n喜欢美式咖啡，不加糖")
-    assert (start, end) == (len(TEMPLATE_LINES) + 1, len(TEMPLATE_LINES) + 2)
+    assert (start, end) == (1, 2)
     assert stack["structured"].lines()[start - 1 : end] == ["咖啡偏好", "喜欢美式咖啡，不加糖"]
 
 
@@ -62,23 +60,23 @@ def test_append_rejects_blank_content(stack):
         stack["writer"].append("   ")
 
 
-def test_replace_lines_overwrites_given_range(stack):
-    start, end = stack["writer"].append("咖啡偏好\n喜欢美式")
-    replaced = stack["writer"].replace_lines(f"{start}-{end}", "咖啡：只喝美式")
+def test_replace_pattern_swaps_matched_text_in_range(stack):
+    start, _ = stack["writer"].append("咖啡：喜欢美式")
+    replaced = stack["writer"].replace_pattern([[start]], "美式", "只喝美式")
     assert replaced == (start, start)
-    lines = stack["structured"].lines()
-    assert lines[start - 1] == "咖啡：只喝美式"
-    assert len(lines) == start
+    assert stack["structured"].lines() == ["咖啡：喜欢只喝美式"]
 
 
-def test_replace_lines_out_of_range_is_rejected(stack):
+def test_replace_pattern_out_of_range_is_rejected(stack):
     with pytest.raises(MemoryWriteError, match="超出范围"):
-        stack["writer"].replace_lines("1-99", "x")
+        stack["writer"].replace_pattern([[1, 99]], "x", "y")
 
 
-def test_replace_lines_accepts_single_line_number(stack):
-    start, _ = stack["writer"].append("作息：晚睡")
-    assert stack["writer"].replace_lines(str(start), "作息：早睡") == (start, start)
+def test_replace_pattern_requires_a_match(stack):
+    stack["writer"].append("作息：晚睡")
+    with pytest.raises(MemoryWriteError, match="没有匹配到内容"):
+        stack["writer"].replace_pattern([[1]], "早睡", "晚睡")
+    assert stack["structured"].lines() == ["作息：晚睡"]
 
 
 @pytest.mark.parametrize(
@@ -95,8 +93,8 @@ def test_sensitive_information_is_rejected_with_reason(stack, content: str, labe
     with pytest.raises(MemoryWriteError, match=label):
         stack["writer"].append(content)
     with pytest.raises(MemoryWriteError, match=label):
-        stack["writer"].replace_lines("1", content)
-    assert stack["structured"].lines() == TEMPLATE_LINES
+        stack["writer"].replace_pattern([[1]], "密码", content)
+    assert stack["structured"].lines() == []
 
 
 def test_sensitive_reason_is_none_for_ordinary_text():
@@ -110,8 +108,8 @@ def test_temporary_mode_blocks_append_and_replace(stack):
     with pytest.raises(MemoryWriteError, match="临时模式"):
         stack["writer"].append("茶偏好")
     with pytest.raises(MemoryWriteError, match="临时模式"):
-        stack["writer"].replace_lines(str(start), "改了")
-    assert stack["structured"].lines()[-1] == "咖啡偏好"
+        stack["writer"].replace_pattern([[start]], "咖啡", "茶")
+    assert stack["structured"].lines() == ["咖啡偏好"]
 
 
 def test_temporary_mode_flag_is_read_from_daily_log(stack):
@@ -123,4 +121,4 @@ def test_temporary_mode_flag_is_read_from_daily_log(stack):
 def test_writes_refresh_index(stack):
     stack["writer"].append("咖啡偏好")
     index = json.loads(stack["index_file"].read_text(encoding="utf-8"))
-    assert index["index"]["structured"]["lines"] == len(TEMPLATE_LINES) + 1
+    assert index["index"]["structured"]["lines"] == 1

@@ -336,6 +336,26 @@ def check_manual_edit(api: Api, data_dir: Path) -> str:
     return listed
 
 
+def check_memory_replace(api: Api, tap: EventTap) -> str:
+    before = api.call("GET", "/api/memories")["structured"]
+    lines_before = len(before.splitlines())
+    mark = len(tap.events)
+    notice = api.call("POST", "/api/chat", {"text": "请记住，把只喝热美式改成只喝冰美式"})
+    check(notice["text"] == "改好啦：只喝冰美式", f"改写回复异常：{notice}")
+    fresh = tap.wait_until_idle_after(mark)
+    approvals = [event for event in fresh if event["type"] == "approval.request"]
+    check(len(approvals) == 1, f"改写应推送一次审批：{approvals}")
+    item = approvals[0]["items"][0]
+    check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
+    check(item["tools"] == ["memory_replace"], f"审批项应带改写工具：{item}")
+    after = api.call("GET", "/api/memories")["structured"]
+    check("只喝冰美式" in after, f"应写入替换后的内容：{after!r}")
+    check("只喝热美式" not in after, f"被替换的原文应消失：{after!r}")
+    check(len(after.splitlines()) == lines_before, f"行内替换不应改变行数：{after!r}")
+    step("记忆改写：子代理在行区间内正则替换，命中后写回，行数不变")
+    return after
+
+
 def check_memory_retrieve(api: Api, tap: EventTap) -> None:
     mark = len(tap.events)
     reply = api.call("POST", "/api/chat", {"text": "检索测试"})
@@ -488,6 +508,7 @@ def run() -> Path:
             check_memory_retrieve(api, tap)
             check_write_rejected(api, tap, structured)
             structured = check_manual_edit(api, data_dir)
+            structured = check_memory_replace(api, tap)
             check_structured_in_prompt(api, tap, llm)
             check_temporary_mode(api, tap, structured)
             check_persona_switch(api, tap, llm, data_dir)

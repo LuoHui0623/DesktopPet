@@ -11,7 +11,10 @@ from service.memory.memory_service import (
 )
 
 DESCRIPTIONS: dict[str, str] = {
-    KIND_STRUCTURED: "用户的关键信息、偏好与习惯，只有一份纯文本文档，按行号读取与修改",
+    KIND_STRUCTURED: (
+        "用户的关键信息、偏好与习惯，只有一份纯文本文档，结构由自己设计（可以是空文档），"
+        "按行号读取与修改"
+    ),
     KIND_DAILY: "每日完整对话记录，按月分组，键为日期，只读",
 }
 HEADING_PATTERN = re.compile(r"^\s*#")
@@ -21,6 +24,7 @@ def structured_index(lines: list[str]) -> dict[str, Any]:
     return {
         "name": STRUCTURED_DOC_NAME,
         "lines": len(lines),
+        # 标题只作导航参考，文档结构自由，不强制写标题
         "headings": [
             {"line": number, "text": line.strip()}
             for number, line in enumerate(lines, start=1)
