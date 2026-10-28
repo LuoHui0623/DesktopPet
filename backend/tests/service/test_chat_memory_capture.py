@@ -19,7 +19,8 @@ from service.agent.orchestrator import Orchestrator
 from service.agent.prompt import load_templates
 from service.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
 from service.agent.subagent import SubAgent
-from service.agent.tools.memory import make_memory_tools, make_memory_write_tools
+from service.agent.tools.explore import make_explore_tools
+from service.agent.tools.memory import make_memory_write_tools
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
@@ -183,7 +184,10 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     writer = MemoryWriter(memories, daily, TZ, clock=Clock())
     skills = SkillRegistry()
     skills.register(memory_write_skill())
-    tools = [*make_memory_tools(reader), *make_memory_write_tools(writer)]
+    tools = [
+        *make_explore_tools(reader, skills),
+        *make_memory_write_tools(writer),
+    ]
     orchestrator = Orchestrator(SubAgent(llm, tools), DbAgentRuns(db_file), skills, TZ)
     approvals = ApprovalRegistry()
     events.registry = approvals

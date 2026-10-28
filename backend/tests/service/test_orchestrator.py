@@ -15,7 +15,7 @@ from infra.store.db import connect
 from infra.store.migrate import migrate
 from service.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
 from service.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
-from service.agent.skills import Skill, SkillRegistry
+from service.agent.skills import SkillRegistry, SkillSpec
 from service.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
 from service.llm import LlmService
 
@@ -127,14 +127,13 @@ def setup(tmp_path: Path):
             usage_sink=db_usage_sink(db_file),
         )
         llm.start()
-        skills = SkillRegistry()
-        skills.register(
-            Skill(
-                name="写笔记",
-                description="把用户给的内容记到便签上。",
-                tools=("write_note",),
-            )
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        (skills_dir / "note.md").write_text(
+            "# 写笔记\n\n> 把用户给的内容记到便签上。\n", encoding="utf-8"
         )
+        skills = SkillRegistry(skills_dir)
+        skills.register(SkillSpec("写笔记", "note", ("write_note",)))
         return Orchestrator(
             SubAgent(llm, [write_note]),
             DbAgentRuns(db_file),

@@ -9,7 +9,8 @@ from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.agent.tools.memory import make_memory_tools
+from service.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
+from service.agent.tools.explore import make_explore_tools
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
 from service.memory.memory_service import (
@@ -183,8 +184,16 @@ def test_corrupt_structured_memory_is_reported(parts):
 
 
 @pytest.fixture
-def tools(parts):
-    return {tool.name: tool for tool in make_memory_tools(parts["reader"])}
+def skills() -> SkillRegistry:
+    registry = SkillRegistry()
+    registry.register(memory_write_skill())
+    registry.register(memory_retrieve_skill())
+    return registry
+
+
+@pytest.fixture
+def tools(parts, skills):
+    return {tool.name: tool for tool in make_explore_tools(parts["reader"], skills)}
 
 
 def test_tools_return_structured_results(parts, tools):
@@ -192,14 +201,12 @@ def test_tools_return_structured_results(parts, tools):
         category="preference", title="咖啡", content="美式", source=SOURCE
     )
     parts["index"].rebuild()
-    described = tools["memory_describe"].invoke({})
-    assert described["ok"] is True
-    assert described["action"] == "describe"
-    assert "daily_memory" in described["content"]
-    indexed = tools["memory_index"].invoke({})
+    indexed = tools["index"].invoke({"resource": "memory"})
     assert indexed["ok"] is True
+    assert indexed["action"] == "index"
+    assert "daily_memory" in indexed["content"]
     assert memory.id in indexed["content"]
-    read = tools["memory_read"].invoke({"kind": "结构化记忆", "entry_id": memory.id})
+    read = tools["read"].invoke({"resource": "memory", "name": memory.id})
     assert read == {
         "ok": True,
         "action": "read",
@@ -210,7 +217,7 @@ def test_tools_return_structured_results(parts, tools):
 
 
 def test_tool_failures_return_readable_reasons(tools):
-    result = tools["memory_read"].invoke({"kind": "结构化记忆", "entry_id": "m_20261018_099"})
+    result = tools["read"].invoke({"resource": "memory", "name": "m_20261018_099"})
     assert result["ok"] is False
     assert result["error"]
     assert result["content"] is None
@@ -220,14 +227,12 @@ def test_tool_range_error_is_returned_not_raised(parts, tools):
     DbDailyLog(parts["db_file"]).append(
         "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
     )
-    result = tools["memory_read"].invoke(
-        {"kind": "daily_memory", "entry_id": "2026-10-18", "lines": "1-9"}
-    )
+    result = tools["read"].invoke({"resource": "memory", "name": "2026-10-18", "lines": "1-9"})
     assert result["ok"] is False
     assert "超出范围" in result["error"]
 
 
 def test_tool_without_index_reports_missing_index(tools):
-    result = tools["memory_index"].invoke({})
+    result = tools["index"].invoke({"resource": "memory"})
     assert result["ok"] is False
     assert "记忆索引不存在" in result["error"]

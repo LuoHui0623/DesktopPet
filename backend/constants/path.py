@@ -17,6 +17,8 @@ RESOURCE_DIR = DATA_DIR / "resources"
 DRAFT_PATH = RESOURCE_DIR / "草稿本.md"
 EMOJI_DIR = RESOURCE_DIR / "表情包"
 MIGRATIONS_DIR = BACKEND_DIR / "infra" / "store" / "migrations"
+RESOURCES_DIR = BACKEND_DIR / "resources"
+SKILLS_DIR = RESOURCES_DIR / "skills"
 PROMPTS_DIR = BACKEND_DIR / "service" / "agent" / "prompts"
 
 

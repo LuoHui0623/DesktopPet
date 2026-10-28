@@ -40,9 +40,10 @@ from service.agent.prompt import (
     load_templates,
     merge_capabilities,
 )
-from service.agent.skills import SkillRegistry, memory_write_skill
+from service.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
 from service.agent.subagent import SubAgent
-from service.agent.tools.memory import make_memory_tools, make_memory_write_tools
+from service.agent.tools.explore import make_explore_tools
+from service.agent.tools.memory import make_memory_write_tools
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.core_memory import CoreMemoryService
@@ -145,9 +146,13 @@ def serve(
     )
     skills = SkillRegistry()
     skills.register(memory_write_skill())
+    skills.register(memory_retrieve_skill())
     subagent = SubAgent(
         llm_service,
-        [*make_memory_tools(memory_reader), *make_memory_write_tools(memory_writer)],
+        [
+            *make_explore_tools(memory_reader, skills),
+            *make_memory_write_tools(memory_writer),
+        ],
     )
     orchestrator = Orchestrator(
         subagent,

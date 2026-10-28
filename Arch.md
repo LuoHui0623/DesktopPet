@@ -188,6 +188,9 @@ backend/
 │  ├─ memory.py              # 记忆常量：核心典藏上限、上下文预算
 │  └─ speech.py              # 句长上限（40 字符）
 │
+├─ resources/                # 【资源】代码随附的静态资源，入 Git
+│  └─ skills/                # 技能说明书：每个能力一个 <file>.md，开头的 > 引用块即“何时使用”
+│
 ├─ config/                   # 【配置】.env、llm.yaml、角色卡；解析为不可变快照
 │  ├─ .env.example           # 环境变量模板，入 Git（本机 .env 不入 Git）
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
@@ -211,7 +214,7 @@ backend/
 │
 ├─ service/                  # 【服务层】业务规则与用例编排
 │  ├─ chat/
-│  │  ├─ chat_service.py     # 对话用例：关键词写入分支、组装上下文、调模型、句长校验、引用解析、写 daily_log、推送事件
+│  │  ├─ chat_service.py     # 对话用例：派发分支、组装上下文、调模型、句长校验、引用解析、写 daily_log、推送事件
 │  │  ├─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检索片段 → 引用规则 → 近期对话 → 当前输入
 │  │  └─ citations.py        # 引用标记 [引用 ID] 的解析与来源过滤（只保留本次注入的记忆）
 │  ├─ llm/
@@ -228,12 +231,13 @@ backend/
 │  └─ agent/
 │     ├─ orchestrator.py     # 派发：按能力运行子代理，记录 agent_run，生成检查点
 │     ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步
-│     ├─ skills.py           # 能力注册表与关键词匹配；记忆写入能力（记住、记一下、我喜欢）
-│     ├─ memory_capture.py   # 关键词写入：命中后派发记忆写入能力，返回告知用户的回复
-│     ├─ prompt.py           # 提示词构建与注入（角色卡、行动规则、能力列表、发言规则）
+│     ├─ skills.py           # 能力注册表：登记能力名、说明书文件与工具清单，从 SKILL.md 解析说明
+│     ├─ prompt.py           # 提示词构建与注入（角色卡、行动规则、能力名、发言规则）
 │     ├─ prompts/            # 提示词模板（.md，string.Template 占位）：chat（含行动规则）、persona、subagent
 │     └─ tools/
-│        ├─ memory.py        # 记忆工具：describe / index / read（行号区间）、create / update
+│        ├─ explore.py       # 探索工具：index 看清单、read 读内容，按 resource（skill / memory）路由
+│        ├─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
+│        ├─ memory.py        # 记忆写入工具：create / update
 │        └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程
 │
 ├─ infra/                    # 【基础设施层】技术适配，不含业务规则
@@ -401,7 +405,8 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | **结构化记忆读写、行号 helper、索引生成** | `service/memory/` | 记忆是 Pet 自身的数据，业务用例；JSON 的文件 IO 在 `infra/files/` |
 | **文件读写与权限** | `infra/files/io.py`、`infra/files/access.py` | IO 与路径白名单、穿越防护，供 agent 工具与 capabilities 共用 |
 | **sub agent 编排与 ReAct 循环** | `service/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
-| **关键词写入与记忆来源** | `service/agent/memory_capture.py`（触发）、`service/chat/citations.py`（引用过滤） | 业务规则：关键词命中才写入；只有本次注入上下文中的记忆可作为来源 |
+| **记忆写入与记忆来源** | `service/chat/citations.py`（引用过滤）、`service/agent/skills.py`（能力登记） | 业务规则：写不写由主 agent 决定；只有本次注入上下文中的记忆可作为来源 |
+| **技能说明书与探索工具** | `resources/skills/*.md`（说明书）、`service/agent/skills.py`（登记与解析）、`service/agent/tools/explore.py`（`index` / `read`） | 业务规则：主 agent 只见能力名，说明书由子代理按需查阅 |
 | **天气 HTTP 客户端**（未实现，M3） | `infra/weather/qweather.py` | 外部接口适配 |
 | **天气缓存策略、失败降级文案**（未实现，M3） | `service/weather/` | 业务规则 |
 | **Windows 定位、空闲、前台窗口**（未实现，M3） | `infra/system/` | 操作系统适配 |
@@ -435,7 +440,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 ```
 前端 chat 模块 ─► service/chat.service.ts ─► api（POST /api/chat）
 后端 api/routers/chat.py ─► service/chat/chat_service.py
-   ├─ 关键词命中（§6.3）：service/agent/memory_capture 派发记忆写入能力，状态“执行中”，回复写入结果，不调用对话模型
+   ├─ 结构化输出（§6.3）：type=dispatch 时运行子代理取得检查点，回灌后由模型生成一次回复，不再允许继续派发
    ├─ service/agent/prompt        构建系统提示词：角色卡 + 发言规则
    ├─ service/chat/context        组装：系统提示词 → 核心典藏 → 检索片段（由调用方提供）→ 引用规则 → 近期对话
    ├─ infra/llm                   调用对话模型（非流式），记录用量
@@ -447,33 +452,37 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 ```
 
 - 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
-- 检索：主 agent 决定是否检索记忆（Q-4）的规划调用尚未实现。当前进入上下文的记忆只有核心典藏；`ChatService.reply` 接受的检索片段目前没有调用方提供。
+- 检索：主 agent 可派发「记忆检索」能力读取历史记忆（T-052）；日常对话的主路径目前仍不做自动检索，进入上下文的记忆只有核心典藏，`ChatService.reply` 接受的检索片段仍由调用方提供。
 
 ### 6.2 主动消息
 
 未实现（PRD §4.4，对应 M3）。规划中的流程：调度器 tick → 规则判定（触发源、勿扰、频率上限）→ 生成文案 → 推送气泡 → 反馈写入规则。
 
-### 6.3 结构化记忆写入
+### 6.3 结构化记忆写入与检索
 
-日常对话每天完整保留在 `daily_log`，不做日终摘要。记录角色为 `master`（主人）、`me`（宠物）与 `event`（事件）。`event` 的内容为结构化 JSON（含 `type`），类型表与上下文规则见 `service/memory/daily_events.py`：会话边界不进入上下文，派发失败与审批拒绝进入上下文；所有 event 都保留在记忆中。关键词命中时写入结构化记忆（用户明确要求的写入尚未单独实现）：
+日常对话每天完整保留在 `daily_log`，不做日终摘要。记录角色为 `master`（主人）、`me`（宠物）与 `event`（事件）。`event` 的内容为结构化 JSON（含 `type`），类型表与上下文规则见 `service/memory/daily_events.py`：会话边界不进入上下文，派发失败与审批拒绝进入上下文；所有 event 都保留在记忆中。
+
+写不写入结构化记忆由主 agent 决定：对话模型输出结构化结果，`type=dispatch` 时按能力派发子代理。
 
 ```
-对话消息命中关键词（记住、记一下、我喜欢）
-  ─► service/agent/memory_capture 匹配记忆写入能力（skills.py）
-  ─► 临时模式开启：直接回复提示，不写入
-  ─► 敏感信息检查（service/memory/sensitive）：命中则回复原因，不写入
-  ─► service/agent/orchestrator 派发子代理（consolidate 模型，ReAct，最多 8 步）
-       ├─ tools/memory：memory_index、memory_read 查看已有记忆，避免重复
+主 agent 输出 {"type": "dispatch", "plan": [{"capability", "task"}]}
+  ─► service/agent/skills 按能力名取技能（能力名注入提示词，说明不注入）
+  ─► service/agent/orchestrator 起草：并行生成各项草案，只允许只读工具
+  ─► 审批：逐项等待用户确认（capability / task / tools）
+  ─► 执行：并行运行子代理（consolidate 模型，ReAct，最多 8 步）
+       ├─ resources/skills/<file>.md：子代理先用 index 看技能清单，再 read 打开说明书
+       ├─ tools/explore：index、read 按 resource 路由（skill / memory）
        ├─ tools/memory：memory_create、memory_update 写入（service/memory，经 infra/files 写 data/memory/structured/<id>.json）
+       │    临时模式开启或命中敏感信息时由 MemoryWriter 拒绝，拒绝原因作为工具错误返回
        └─ service/memory/index 重新生成记忆索引
-  ─► agent_run 记录行为路径与输出；输出作为回复告知用户（无输出时为“我记住啦。”）
+  ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户
 ```
 
-写入后，用户可在设置页查看、编辑、删除（T-043）。
+拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看、编辑、删除（T-043）。
 
-### 6.3.1 记忆查看
+### 6.3.1 记忆查看与检索
 
-设置页的记忆列表与每日对话通过 `GET /api/memories` 读取，不经过子代理。子代理的读取工具（`memory_describe`、`memory_index`、`memory_read`，支持行号区间）已实现，目前只随记忆写入能力提供。把读取能力接入对话，依赖主 agent 的检索规划（Q-4），尚未实现。
+设置页的记忆列表与每日对话通过 `GET /api/memories` 读取，不经过子代理。子代理通过统一的两个探索工具访问资源：`index(resource)` 看清单，`read(resource, name, lines)` 读内容（支持行号区间）。`resource=skill` 读技能说明书，`resource=memory` 读记忆索引与条目，记忆类型由标识自动推断，子代理不需要手填。检索能力（`tools/index:read`）已随「记忆检索」能力接入对话（T-052）。
 
 ### 6.4 能力执行
 

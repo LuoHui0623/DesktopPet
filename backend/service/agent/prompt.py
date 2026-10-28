@@ -153,7 +153,10 @@ def render_persona(persona: PersonaConfig) -> str:
 def _render_capabilities(capabilities: Sequence[CapabilityDescription]) -> str:
     if not capabilities:
         return NO_CAPABILITIES
-    return "\n".join(f"- {item.name}: {item.description}" for item in capabilities)
+    return "\n".join(
+        f"- {item.name}: {item.description}" if item.description else f"- {item.name}"
+        for item in capabilities
+    )
 
 
 def _render_resources(resources: Sequence[ResourceItem]) -> str:

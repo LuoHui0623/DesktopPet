@@ -4,10 +4,14 @@
 - 子代理起草“记忆写入”能力时，直接提交一份声明 memory_create 的草案。
 - 子代理执行“记忆写入”能力时，先调用 memory_create；收到观察后直接结束，观察里带失败原因
   时就把原因当作结论如实回报。
+- 子代理起草“记忆检索”能力时，提交一份声明 index 与 read 的草案；执行时按说明书走
+  ReAct：先 read（资源 skill）打开说明书，再 index（资源 memory）看清单，
+  再 read（资源 memory）读一条记忆，最后返回片段。
 - 主对话中，用户说“请记住…”时返回只含一项「记忆写入」的合法 dispatch，模拟主 agent 自主
   决定写入记忆（写不写由主 agent 判断，不再靠关键词触发）。
+- 主对话中，用户说“检索测试”时返回只含一项「记忆检索」的合法 dispatch。
 - 主对话中，用户提到“派发测试”时返回只含一项的合法 dispatch（能力名故意写成未注册的
-  “记忆检索”，用于验证失败检查点回灌），提到“坏格式测试”时返回非法 JSON。
+  “天气查询”，用于验证失败检查点回灌），提到“坏格式测试”时返回非法 JSON。
 - 主对话拿到的最后一条消息是检查点回灌时，直接把检查点结论当作回复，模拟汇总结果。
 - 主对话中，用户提到“咖啡”且上下文里有记忆 id 时，按 [引用 ID] 标注引用。
 - 其余情况返回固定问候，不编造内容。
@@ -19,7 +23,9 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MEMORY_ID = re.compile(r"（id：(m_[0-9_]+)）")
+INDEX_ID = re.compile(r'"id":\s*"(m_[0-9_]+)"')
 WRITE_CAPABILITY = "当前能力：记忆写入"
+RETRIEVE_CAPABILITY = "当前能力：记忆检索"
 DRAFT_MARK = "提交草案"
 DRAFT_CONTENT = "把「喜欢美式咖啡，不加糖」写进记忆，分类为偏好。"
 WRITE_FINISH = "我记住啦：喜欢美式咖啡，不加糖"
@@ -27,6 +33,11 @@ WRITE_FINISH = "我记住啦：喜欢美式咖啡，不加糖"
 
 CHAT_RULES = "【行动规则】"
 DISPATCH_TRIGGER = "派发测试"
+UNKNOWN_CAPABILITY = "天气查询"
+RETRIEVE_TRIGGER = "检索测试"
+RETRIEVE_SKILL = "记忆检索"
+RETRIEVE_DRAFT = "先打开技能说明书，再按流程检索记忆。"
+RETRIEVE_FINISH = "记忆里写着：喜欢美式咖啡，不加糖"
 INVALID_TRIGGER = "坏格式测试"
 WRITE_TRIGGER = "请记住"
 OBSERVATION_MARK = "观察："
@@ -46,7 +57,15 @@ def reply_for(body: dict) -> str:
     last_user = _last_user(body)
     if DISPATCH_TRIGGER in last_user:
         return json.dumps(
-            {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查找咖啡偏好"}]},
+            {"type": "dispatch", "plan": [{"capability": UNKNOWN_CAPABILITY, "task": "查找天气"}]},
+            ensure_ascii=False,
+        )
+    if RETRIEVE_TRIGGER in last_user:
+        return json.dumps(
+            {
+                "type": "dispatch",
+                "plan": [{"capability": RETRIEVE_SKILL, "task": "说说我的咖啡偏好"}],
+            },
             ensure_ascii=False,
         )
     if WRITE_TRIGGER in last_user:
@@ -72,25 +91,26 @@ def _last_user(body: dict) -> str:
     )
 
 
-def _observation(body: dict) -> str:
-    return next(
-        (
-            _content(m)[len(OBSERVATION_MARK) :]
-            for m in reversed(body.get("messages", []))
-            if _content(m).startswith(OBSERVATION_MARK)
-        ),
-        "",
-    )
+def _observations(body: dict) -> list[dict]:
+    items: list[dict] = []
+    for message in body.get("messages", []):
+        text = _content(message)
+        if not text.startswith(OBSERVATION_MARK):
+            continue
+        try:
+            data = json.loads(text[len(OBSERVATION_MARK) :])
+        except ValueError:
+            continue
+        if isinstance(data, dict):
+            items.append(data)
+    return items
 
 
 def _observation_error(body: dict) -> str:
-    try:
-        data = json.loads(_observation(body))
-    except ValueError:
+    seen = _observations(body)
+    if not seen or seen[-1].get("ok") is not False:
         return ""
-    if not isinstance(data, dict) or data.get("ok") is not False:
-        return ""
-    return str(data.get("error") or "")
+    return str(seen[-1].get("error") or "")
 
 
 def _checkpoint_output(text: str) -> str:
@@ -114,6 +134,33 @@ def _checkpoint_output(text: str) -> str:
     return ""
 
 
+def _tool_action(name: str, args: dict) -> str:
+    return json.dumps({"action": "tool", "tool": name, "args": args}, ensure_ascii=False)
+
+
+def _retrieve_step(body: dict) -> str:
+    """按说明书走：先读技能说明书，再看记忆清单，最后读一条记忆。"""
+    seen = _observations(body)
+    last = seen[-1] if seen else None
+    if last is None:
+        return _tool_action("read", {"resource": "skill", "name": RETRIEVE_SKILL})
+    if last.get("ok") is False:
+        return json.dumps(
+            {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
+        )
+    content = str(last.get("content") or "")
+    if last.get("action") == "read" and content.startswith("#"):
+        return _tool_action("index", {"resource": "memory"})
+    if last.get("action") == "index":
+        ids = INDEX_ID.findall(content)
+        if not ids:
+            return json.dumps(
+                {"action": "finish", "output": "记忆里还没有相关内容。"}, ensure_ascii=False
+            )
+        return _tool_action("read", {"resource": "memory", "name": ids[0]})
+    return json.dumps({"action": "finish", "output": RETRIEVE_FINISH}, ensure_ascii=False)
+
+
 def _reply_text(body: dict) -> str:
     messages = body.get("messages", [])
     system = next((str(m.get("content", "")) for m in messages if m.get("role") == "system"), "")
@@ -121,13 +168,15 @@ def _reply_text(body: dict) -> str:
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
     if DRAFT_MARK in system:
+        tools = ["index", "read"] if RETRIEVE_CAPABILITY in system else ["memory_create"]
+        content = RETRIEVE_DRAFT if RETRIEVE_CAPABILITY in system else DRAFT_CONTENT
         return json.dumps(
-            {"action": "draft", "content": DRAFT_CONTENT, "tools": ["memory_create"]},
-            ensure_ascii=False,
+            {"action": "draft", "content": content, "tools": tools}, ensure_ascii=False
         )
+    if RETRIEVE_CAPABILITY in system:
+        return _retrieve_step(body)
     if WRITE_CAPABILITY in system:
-        observed = _observation(body)
-        if observed:
+        if _observations(body):
             return json.dumps(
                 {"action": "finish", "output": _observation_error(body) or WRITE_FINISH},
                 ensure_ascii=False,

@@ -249,9 +249,9 @@ def check_dispatch(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     check(len(attempts) == 2, f"派发应只多问一次（共 2 次调用），实际 {len(attempts)} 次")
     block = "\n".join(str(item.get("content", "")) for item in attempts[-1]["messages"])
     check("[finished_plan]" in block, "回灌给模型的消息里应含检查点标记")
-    check('"capability": "记忆检索"' in block, "检查点应带上派发的目标能力")
+    check('"capability": "天气查询"' in block, "检查点应带上派发的目标能力")
     check('"status": "failed"' in block, "未知能力应记为失败检查点")
-    check("未知能力：记忆检索" in block, "检查点应带上失败原因")
+    check("未知能力：天气查询" in block, "检查点应带上失败原因")
     fresh = tap.wait_until_idle_after(mark)
     states = [event["state"] for event in fresh if event["type"] == "status"]
     check(
@@ -325,6 +325,23 @@ def check_dispatched_write(api: Api, tap: EventTap) -> dict:
     check(listed["structured"][0]["title"] == "咖啡偏好", "编辑后列表未更新")
     step("翻阅与编辑：修改标题后列表立即更新")
     return memory
+
+
+def check_memory_retrieve(api: Api, tap: EventTap) -> None:
+    mark = len(tap.events)
+    reply = api.call("POST", "/api/chat", {"text": "检索测试"})
+    check(reply["text"] == "记忆里写着：喜欢美式咖啡，不加糖", f"检索回复异常：{reply}")
+    fresh = tap.wait_until_idle_after(mark)
+    states = [event["state"] for event in fresh if event["type"] == "status"]
+    check(states[0] == "thinking", f"检索时应先进入思考：{states}")
+    check("executing" in states, f"检索时应进入执行中：{states}")
+    check(states[-2:] == ["speaking", "idle"], f"检索的状态收尾顺序异常：{states}")
+    approvals = [event for event in fresh if event["type"] == "approval.request"]
+    check(len(approvals) == 1, f"应推送一次审批：{approvals}")
+    item = approvals[0]["items"][0]
+    check(item["capability"] == "记忆检索", f"审批项能力异常：{item}")
+    check(item["tools"] == ["index", "read"], f"审批项应带探索工具：{item}")
+    step("记忆检索：子代理读说明书后按 index/read 探索记忆，审批后返回片段")
 
 
 def check_write_rejected(api: Api, tap: EventTap) -> None:
@@ -454,6 +471,7 @@ def run() -> Path:
             check_dispatch(api, tap, llm)
             check_invalid_output_regenerates(api, tap, llm)
             memory = check_dispatched_write(api, tap)
+            check_memory_retrieve(api, tap)
             check_write_rejected(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)
