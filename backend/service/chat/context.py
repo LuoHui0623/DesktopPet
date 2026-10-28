@@ -1,3 +1,4 @@
+import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
@@ -30,6 +31,11 @@ CITATION_RULE = (
     "ID 取自对应条目的“id”；每日对话条目没有 id，取其日期。"
     "只引用上面列出的内容，不要编造 ID。"
 )
+
+
+def _output_example(text: str) -> str:
+    # 历史助手消息也按结构化输出格式呈现，避免模型模仿纯文本回复
+    return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -190,7 +196,7 @@ class ContextBuilder:
             if record.role == "master":
                 turns.append([HumanMessage(content=record.content)])
             elif record.role == "me" and turns:
-                turns[-1].append(AIMessage(content=record.content))
+                turns[-1].append(AIMessage(content=_output_example(record.content)))
             elif record.role == "event" and event_in_context(record.content):
                 note = SystemMessage(content=f"[事件] {event_text(record.content)}")
                 if turns:

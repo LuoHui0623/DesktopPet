@@ -3,6 +3,7 @@
 回复规则固定：
 - 子代理执行“记忆写入”能力时，先调用 memory_create；收到观察后直接结束。
 - 主对话中，用户提到“咖啡”且上下文里有记忆 id 时，按 [引用 ID] 标注引用。
+- 主对话中，用户提到“派发测试”时返回合法 dispatch，提到“坏格式测试”时返回非法 JSON。
 - 其余情况返回固定问候，不编造内容。
 """
 
@@ -16,6 +17,8 @@ WRITE_CAPABILITY = "当前能力：记忆写入"
 
 
 CHAT_RULES = "【行动规则】"
+DISPATCH_TRIGGER = "派发测试"
+INVALID_TRIGGER = "坏格式测试"
 
 
 def reply_for(body: dict) -> str:
@@ -25,6 +28,21 @@ def reply_for(body: dict) -> str:
         "",
     )
     if CHAT_RULES in system:
+        last_user = next(
+            (
+                str(m.get("content", ""))
+                for m in reversed(body.get("messages", []))
+                if m.get("role") == "user"
+            ),
+            "",
+        )
+        if DISPATCH_TRIGGER in last_user:
+            return json.dumps(
+                {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查找咖啡偏好"}]},
+                ensure_ascii=False,
+            )
+        if INVALID_TRIGGER in last_user:
+            return '{"type": "chat", "text": '
         return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
     return text
 

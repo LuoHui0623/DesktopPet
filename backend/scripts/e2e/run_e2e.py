@@ -154,17 +154,17 @@ def stop_backend(process: subprocess.Popen) -> None:
 
 def last_chat_request(requests: list[dict]) -> dict:
     for body in reversed(requests):
-        system = next(
-            (
-                str(m.get("content", ""))
-                for m in body.get("messages", [])
-                if m.get("role") == "system"
-            ),
-            "",
-        )
-        if "当前能力" not in system:
+        if _is_main_chat(body):
             return body
     raise AssertionError("假模型未收到主对话请求")
+
+
+def _is_main_chat(body: dict) -> bool:
+    system = next(
+        (str(m.get("content", "")) for m in body.get("messages", []) if m.get("role") == "system"),
+        "",
+    )
+    return "当前能力" not in system
 
 
 def check_models_and_switch(api: Api) -> None:
@@ -200,7 +200,38 @@ def check_streaming_chat(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     check(
         states[:2] == ["thinking", "speaking"] and states[-1] == "idle", f"状态顺序异常：{states}"
     )
-    step("对话：切换后的下一次对话使用新模型，流式片段拼接与回复一致，状态顺序正确")
+    kinds = [event["type"] for event in fresh]
+    check(
+        kinds.index("chat.chunk") < kinds.index("chat.done"),
+        f"chat.chunk 应先于 chat.done：{kinds}",
+    )
+    step("对话：切换后的下一次对话使用新模型，流式片段拼接与回复一致，状态与推送顺序正确")
+
+
+def check_structured_output_errors(api: Api, tap: EventTap, llm: FakeLlm) -> None:
+    cases = [("派发测试", "合法 dispatch"), ("坏格式测试", "非法 JSON")]
+    for sample, label in cases:
+        mark = len(tap.events)
+        before = len(llm.requests)
+        body = api.call("POST", "/api/chat", {"text": sample}, expect=502)
+        check(
+            body["error"]["code"] == "invalid_output",
+            f"{label} 应返回 invalid_output：{body}",
+        )
+        attempts = sum(1 for request in llm.requests[before:] if _is_main_chat(request))
+        check(attempts == 2, f"{label} 应重新生成一次（共 2 次调用），实际 {attempts} 次")
+        fresh = tap.wait_until_idle_after(mark)
+        check(
+            not any(event["type"] == "chat.chunk" for event in fresh),
+            f"{label} 不应推送 chat.chunk：{fresh}",
+        )
+        check(
+            not any(event["type"] == "chat.done" for event in fresh),
+            f"{label} 不应推送 chat.done：{fresh}",
+        )
+        states = [event["state"] for event in fresh if event["type"] == "status"]
+        check(states == ["thinking", "idle"], f"{label} 的状态顺序异常：{states}")
+    step("结构化输出：合法 dispatch 与非法 JSON 均重新生成一次后返回 invalid_output，不推送")
 
 
 def check_keyword_write(api: Api, tap: EventTap) -> dict:
@@ -330,6 +361,7 @@ def run() -> Path:
         check_models_and_switch(api)
         with EventTap(port) as tap:
             check_streaming_chat(api, tap, llm)
+            check_structured_output_errors(api, tap, llm)
             memory = check_keyword_write(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)

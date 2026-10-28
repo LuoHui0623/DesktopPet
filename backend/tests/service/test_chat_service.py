@@ -344,7 +344,7 @@ def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
     second_call = harness.fake.calls[1]
     contents = [message.content for message in second_call[1:]]
     assert contents[0] == "第一句"
-    assert contents[1] == SHORT
+    assert contents[1] == json.dumps({"type": "chat", "text": SHORT}, ensure_ascii=False)
     assert contents[-1] == "第二句"
 
 

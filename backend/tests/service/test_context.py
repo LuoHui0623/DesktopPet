@@ -146,7 +146,12 @@ def test_recent_turns_follow_the_day_in_order(parts):
         HumanMessage,
         AIMessage,
     ]
-    assert [message.content for message in messages[1:-1]] == ["一", "二", "三", "四"]
+    assert [message.content for message in messages[1:-1]] == [
+        "一",
+        '{"type": "chat", "text": "二"}',
+        "三",
+        '{"type": "chat", "text": "四"}',
+    ]
 
 
 def test_events_follow_their_type_in_recent_turns(parts):
