@@ -4,6 +4,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from config.settings import ModelSettingsSource
+from constants.agent import PHASE_EXECUTE
 from infra.llm.usage import db_usage_sink
 from infra.store.db import connect
 from infra.store.migrate import migrate
@@ -103,9 +104,19 @@ def test_tool_call_then_finish_succeeds(tmp_path: Path):
     assert result.output == "回声：你好"
     assert result.error_code is None
     assert [step["action"] for step in result.steps] == ["tool", "finish"]
+    assert {step["phase"] for step in result.steps} == {PHASE_EXECUTE}
     observation = chat.calls[1][-1].content
     assert observation.startswith("观察：")
     assert "你好" in observation
+
+
+def test_prompt_carries_the_main_agent_task(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "好"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).run(SKILL, "把今天的会议要点写进笔记", "run-1")
+    system = chat.calls[0][0].content
+    assert "当前任务：把今天的会议要点写进笔记" in system
+    assert "$task" not in system
 
 
 def test_invalid_reply_is_returned_as_observation_and_run_continues(tmp_path: Path):

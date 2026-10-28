@@ -1,7 +1,7 @@
 """对真实模型做 chat 类型验证（Task.md T-048）。
 
 使用 backend/config 中的模型配置与环境变量中的密钥，数据写入临时目录，不影响真实数据库。
-用法：cd backend && python -m scripts.verify_chat
+用法：cd backend && uv run python -m scripts.verify_chat
 """
 
 import json

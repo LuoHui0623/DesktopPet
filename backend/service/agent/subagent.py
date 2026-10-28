@@ -10,7 +10,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
 
-from constants.agent import SUBAGENT_MAX_STEPS, SUBAGENT_PURPOSE
+from constants.agent import PHASE_EXECUTE, SUBAGENT_MAX_STEPS, SUBAGENT_PURPOSE
 from constants.path import PROMPTS_DIR
 from infra.llm.usage import usage_scope
 from service.agent.prompt import read_template
@@ -19,7 +19,7 @@ from service.llm import LlmService, LlmUnavailableError
 
 SUBAGENT_TEMPLATE = "subagent.md"
 SUBAGENT_PLACEHOLDERS = frozenset(
-    {"capability_name", "capability_description", "tools", "max_steps"}
+    {"capability_name", "capability_description", "task", "tools", "max_steps"}
 )
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
@@ -97,7 +97,7 @@ class SubAgent:
             return SubAgentResult(False, None, "model_unavailable", str(exc))
 
         messages: list[BaseMessage] = [
-            SystemMessage(content=self._system_prompt(skill, tools)),
+            SystemMessage(content=self._system_prompt(skill, task, tools)),
             HumanMessage(content=task),
         ]
         steps: list[dict[str, Any]] = []
@@ -112,7 +112,7 @@ class SubAgent:
 
             action = parse_action(text)
             if action is None:
-                steps.append({"step": number, "action": "invalid"})
+                steps.append({"step": number, "phase": PHASE_EXECUTE, "action": "invalid"})
                 messages.append(
                     HumanMessage(
                         content=_observation(
@@ -127,9 +127,9 @@ class SubAgent:
             if action["action"] == "finish":
                 output = str(action.get("output") or "").strip()
                 if output:
-                    steps.append({"step": number, "action": "finish"})
+                    steps.append({"step": number, "phase": PHASE_EXECUTE, "action": "finish"})
                     return SubAgentResult(True, output, None, None, steps)
-                steps.append({"step": number, "action": "invalid"})
+                steps.append({"step": number, "phase": PHASE_EXECUTE, "action": "invalid"})
                 messages.append(
                     HumanMessage(content=_observation({"ok": False, "error": "输出不能为空"}))
                 )
@@ -140,6 +140,7 @@ class SubAgent:
             steps.append(
                 {
                     "step": number,
+                    "phase": PHASE_EXECUTE,
                     "action": "tool",
                     "tool": action.get("tool"),
                     "args": action.get("args"),
@@ -172,11 +173,12 @@ class SubAgent:
             return {"ok": True, "content": str(result)}
         return result
 
-    def _system_prompt(self, skill: Skill, tools: Sequence[BaseTool]) -> str:
+    def _system_prompt(self, skill: Skill, task: str, tools: Sequence[BaseTool]) -> str:
         tool_lines = "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
         return self._template.substitute(
             capability_name=skill.name,
             capability_description=skill.description,
+            task=task,
             tools=tool_lines,
             max_steps=str(self._max_steps),
         )

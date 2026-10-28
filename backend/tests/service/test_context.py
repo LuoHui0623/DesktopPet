@@ -213,7 +213,9 @@ def test_over_budget_trims_oldest_turns_and_keeps_persona_and_core(parts, monkey
             f"2026-10-18T09:0{index}:00+08:00",
             [("master", f"第{index}轮" + "问" * 80), ("me", "答" * 80)],
         )
-    monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", 1000)
+    monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", 100_000)
+    fixed = len(parts["builder"]().build("现在").messages[0].content) + len("现在")
+    monkeypatch.setattr(context_module, "CONTEXT_TOKEN_BUDGET", fixed + 400)
     result = parts["builder"]().build("现在")
     system = result.messages[0].content
     assert "【人设】" in system

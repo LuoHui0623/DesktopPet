@@ -1,3 +1,5 @@
 SUBAGENT_MAX_STEPS = 8
 SUBAGENT_PURPOSE = "subagent"
 DEFAULT_PERSONA_ID = "芙芙"
+PHASE_DRAFT = "draft"
+PHASE_EXECUTE = "execute"

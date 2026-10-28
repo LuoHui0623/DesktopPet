@@ -181,6 +181,7 @@ def serve(
         timezone=ZoneInfo(settings.timezone),
         capture=MemoryCapture(skills, orchestrator, memory_writer),
         capabilities=capabilities,
+        orchestrator=orchestrator,
     )
     app = create_app(
         settings.token.get_secret_value(),

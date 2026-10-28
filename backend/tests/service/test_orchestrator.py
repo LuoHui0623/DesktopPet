@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -14,7 +15,7 @@ from infra.store.db import connect
 from infra.store.migrate import migrate
 from service.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
 from service.agent.skills import Skill, SkillRegistry
-from service.agent.subagent import SubAgent
+from service.agent.subagent import SubAgent, SubAgentResult
 from service.llm import LlmService
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -58,12 +59,29 @@ class Clock:
 class ScriptedChat:
     def __init__(self, outcomes: list) -> None:
         self.outcomes = list(outcomes)
+        self._lock = threading.Lock()
 
     def invoke(self, messages, config=None, **kwargs):
-        outcome = self.outcomes.pop(0)
+        with self._lock:
+            outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
         return AIMessage(content=outcome)
+
+
+class BarrierChat:
+    """只有两项派发真的并行时，两次调用才会同时到达栅栏。"""
+
+    def __init__(self, parties: int) -> None:
+        self._barrier = threading.Barrier(parties)
+        self.reached = 0
+        self._lock = threading.Lock()
+
+    def invoke(self, messages, config=None, **kwargs):
+        with self._lock:
+            self.reached += 1
+        self._barrier.wait(timeout=10)
+        return AIMessage(content='{"action": "finish", "output": "完成"}')
 
 
 @pytest.fixture
@@ -75,8 +93,8 @@ def setup(tmp_path: Path):
     (tmp_path / ".env").write_text(ENV, encoding="utf-8")
     (tmp_path / "llm.yaml").write_text(LLM_YAML, encoding="utf-8")
 
-    def build(outcomes: list) -> Orchestrator:
-        chat = ScriptedChat(outcomes)
+    def build(outcomes: list, chat=None) -> Orchestrator:
+        chat = chat if chat is not None else ScriptedChat(outcomes)
         environ = {"DEEPSEEK_API_KEY": "sk-test"}
         llm = LlmService(
             ModelSettingsSource(tmp_path, environ=environ),
@@ -176,19 +194,79 @@ def test_unknown_capability_still_writes_one_row(setup):
     assert (stored[0][3], stored[0][4]) == ("failed", "unknown_capability")
 
 
-def test_run_plan_dispatches_in_order(setup):
+class TaskEchoChat:
+    """按提示词里的「当前任务」作答，使并行结果可判定归属。"""
+
+    def invoke(self, messages, config=None, **kwargs):
+        prompt = messages[0].content
+        task = ""
+        if "当前任务：" in prompt:
+            task = prompt.split("当前任务：", 1)[1].splitlines()[0].strip()
+        output = json.dumps({"action": "finish", "output": f"完成 {task}"}, ensure_ascii=False)
+        return AIMessage(content=output)
+
+
+def test_run_plan_keeps_plan_order(setup):
+    orchestrator = setup["build"]([], chat=TaskEchoChat())
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")]
+    )
+    assert [checkpoint.text for checkpoint in checkpoints] == [
+        "执行：写笔记\n完成 一",
+        "执行：写笔记\n完成 二",
+        "执行：写笔记\n完成 三",
+    ]
+    stored = rows(setup["db_file"])
+    assert len(stored) == 3
+    assert {row[2] for row in stored} == {"一", "二", "三"}
+
+
+def test_run_plan_dispatches_in_parallel(setup):
+    chat = BarrierChat(3)
+    orchestrator = setup["build"]([], chat=chat)
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")]
+    )
+    assert chat.reached == 3
+    assert [checkpoint.ok for checkpoint in checkpoints] == [True, True, True]
+
+
+def test_run_plan_accepts_empty_plan(setup):
+    orchestrator = setup["build"]([])
+    assert orchestrator.run_plan([]) == []
+    assert rows(setup["db_file"]) == []
+
+
+def test_invalid_subagent_result_becomes_failed_checkpoint(setup, monkeypatch):
+    orchestrator = setup["build"]([])
+    monkeypatch.setattr(
+        orchestrator._subagent,
+        "run",
+        lambda *args, **kwargs: SubAgentResult(
+            ok=True,
+            output="",
+            error_code=None,
+            error=None,
+            steps=[{"step": 1, "phase": "execute", "action": "finish"}],
+        ),
+    )
+    checkpoint = orchestrator.dispatch("写笔记", "任务")
+    assert checkpoint.ok is False
+    assert checkpoint.text == "执行：写笔记\n失败：子 agent 输出不合法：成功的结果缺少 output"
+    stored = rows(setup["db_file"])
+    assert (stored[0][3], stored[0][4]) == ("failed", "invalid_output")
+
+
+def test_steps_carry_execute_phase(setup):
     orchestrator = setup["build"](
         [
-            '{"action": "finish", "output": "第一条"}',
-            '{"action": "finish", "output": "第二条"}',
+            '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
+            '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    checkpoints = orchestrator.run_plan([PlanStep("写笔记", "一"), PlanStep("写笔记", "二")])
-    assert [checkpoint.text for checkpoint in checkpoints] == [
-        "执行：写笔记\n第一条",
-        "执行：写笔记\n第二条",
-    ]
-    assert [row[2] for row in rows(setup["db_file"])] == ["一", "二"]
+    orchestrator.dispatch("写笔记", "记一下牛奶")
+    stored = rows(setup["db_file"])
+    assert [step["phase"] for step in json.loads(stored[0][6])] == ["execute", "execute"]
 
 
 def test_model_usage_links_to_the_dispatched_run(setup):
@@ -215,10 +293,13 @@ def test_parse_plan_accepts_json_array_in_fence():
     "text",
     [
         "不是 JSON",
+        "[]",
         '{"capability": "写笔记"}',
         '[{"capability": "写笔记"}]',
         '[{"task": "记一下"}]',
         '[{"capability": "", "task": "记一下"}]',
+        '[{"capability": "写笔记", "task": "一"}, {"capability": "写笔记", "task": "二"}, '
+        '{"capability": "写笔记", "task": "三"}, {"capability": "写笔记", "task": "四"}]',
     ],
 )
 def test_parse_plan_rejects_invalid_plans(text: str):

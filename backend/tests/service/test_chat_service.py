@@ -12,10 +12,12 @@ from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from infra.store.persona_versions import DbPersonaVersions
+from service.agent.orchestrator import Checkpoint, PlanStep
 from service.agent.prompt import load_templates
 from service.chat.chat_service import (
     ChatError,
     ChatService,
+    DispatchRejectedError,
     ModelOutputError,
     overlong_sentences,
     parse_chat_output,
@@ -95,6 +97,7 @@ class Harness:
         env: str = ENV,
         keys: dict | None = None,
         events=None,
+        orchestrator=None,
     ):
         self.db_file = tmp_path / "pet.db"
         conn = connect(self.db_file)
@@ -121,6 +124,7 @@ class Harness:
             load_templates(),
             db_usage_sink(self.db_file),
             events,
+            orchestrator=orchestrator,
         )
 
     def query(self, sql: str) -> list[tuple]:
@@ -234,9 +238,51 @@ def test_chat_output_accepts_only_type_and_text():
         )
 
 
-def test_dispatch_is_not_enabled_yet():
-    with pytest.raises(ModelOutputError, match="尚未启用"):
+def test_dispatch_plan_is_parsed():
+    output = parse_chat_output(
+        json.dumps(
+            {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下主人喜欢猫"}]},
+            ensure_ascii=False,
+        )
+    )
+    assert output.kind == "dispatch"
+    assert output.plan == (PlanStep("记忆写入", "记下主人喜欢猫"),)
+
+
+def test_dispatch_plan_must_be_one_to_three_items():
+    with pytest.raises(DispatchRejectedError, match="1–3"):
         parse_chat_output(json.dumps({"type": "dispatch", "plan": []}, ensure_ascii=False))
+    with pytest.raises(DispatchRejectedError, match="1–3"):
+        parse_chat_output(
+            json.dumps(
+                {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下"}] * 4},
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_dispatch_accepts_only_type_and_plan():
+    with pytest.raises(DispatchRejectedError, match="两个字段"):
+        parse_chat_output(
+            json.dumps(
+                {
+                    "type": "dispatch",
+                    "plan": [{"capability": "记忆写入", "task": "记下"}],
+                    "extra": "x",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+
+def test_dispatch_step_fields_are_validated():
+    with pytest.raises(DispatchRejectedError, match="缺少任务描述"):
+        parse_chat_output(
+            json.dumps(
+                {"type": "dispatch", "plan": [{"capability": "记忆写入"}]},
+                ensure_ascii=False,
+            )
+        )
 
 
 def test_unknown_type_and_empty_text_are_rejected():
@@ -247,7 +293,7 @@ def test_unknown_type_and_empty_text_are_rejected():
 
 
 def test_chat_output_text_is_returned_stripped():
-    assert parse_chat_output(chat_output(f"  {SHORT}  ")) == SHORT
+    assert parse_chat_output(chat_output(f"  {SHORT}  ")).text == SHORT
 
 
 def test_temporary_mode_replies_without_writing_log(tmp_path: Path):
@@ -391,3 +437,127 @@ def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
         harness.chat.reply("你好", CITED_FRAGMENTS)
     assert exc.value.code == "invalid_output"
     assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0
+
+
+DISPATCH = json.dumps(
+    {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下主人喜欢猫"}]},
+    ensure_ascii=False,
+)
+
+
+class FakeOrchestrator:
+    def __init__(self, ok: bool = True) -> None:
+        self.plans: list[list[PlanStep]] = []
+        self.ok = ok
+
+    def run_plan(self, plan) -> list[Checkpoint]:
+        steps = list(plan)
+        self.plans.append(steps)
+        return [
+            Checkpoint(
+                run_id=f"run-{index}",
+                capability=step.capability,
+                ok=self.ok,
+                text=f"执行：{step.capability}",
+                output="已写入" if self.ok else None,
+                error=None if self.ok else "写入失败",
+            )
+            for index, step in enumerate(steps, start=1)
+        ]
+
+
+def checkpoint_payloads(messages) -> list[dict]:
+    payloads: list[dict] = []
+    for message in messages:
+        content = message.content
+        if not isinstance(content, str):
+            continue
+        for line in content.splitlines():
+            if line.startswith("[finished_plan]"):
+                payloads.append(json.loads(line[len("[finished_plan]") :]))
+    return payloads
+
+
+def test_dispatch_runs_the_plan_then_answers_with_chat(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DISPATCH), "记好啦。"], orchestrator=orchestrator)
+    result = harness.chat.reply("记一下我喜欢猫")
+    assert orchestrator.plans == [[PlanStep("记忆写入", "记下主人喜欢猫")]]
+    assert len(harness.fake.calls) == 2
+    assert result.text == "记好啦。"
+    logged = harness.query("SELECT role, content FROM daily_log ORDER BY id")
+    assert logged == [("master", "记一下我喜欢猫"), ("me", "记好啦。")]
+
+
+def test_checkpoints_are_injected_into_the_second_call(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DISPATCH), "记好啦。"], orchestrator=orchestrator)
+    harness.chat.reply("记一下我喜欢猫")
+    payloads = checkpoint_payloads(harness.fake.calls[1])
+    assert len(payloads) == 1
+    assert payloads[0]["capability"] == "记忆写入"
+    assert payloads[0]["status"] == "succeeded"
+    assert payloads[0]["output"] == "已写入"
+    assert payloads[0]["plan_id"]
+
+
+def test_checkpoints_share_one_plan_id_and_keep_plan_order(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    plan = json.dumps(
+        {
+            "type": "dispatch",
+            "plan": [
+                {"capability": "记忆检索", "task": "找咖啡偏好"},
+                {"capability": "记忆写入", "task": "记下今天喝了咖啡"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    harness = Harness(tmp_path, [Raw(plan), "都做完了。"], orchestrator=orchestrator)
+    harness.chat.reply("帮我处理一下")
+    payloads = checkpoint_payloads(harness.fake.calls[1])
+    assert [payload["capability"] for payload in payloads] == ["记忆检索", "记忆写入"]
+    assert len({payload["plan_id"] for payload in payloads}) == 1
+
+
+def test_failed_checkpoint_reports_the_error_as_output(tmp_path: Path):
+    orchestrator = FakeOrchestrator(ok=False)
+    harness = Harness(tmp_path, [Raw(DISPATCH), "没成功。"], orchestrator=orchestrator)
+    harness.chat.reply("记一下我喜欢猫")
+    payload = checkpoint_payloads(harness.fake.calls[1])[0]
+    assert payload["status"] == "failed"
+    assert payload["output"] == "写入失败"
+
+
+def test_second_dispatch_in_the_same_turn_is_rejected(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(
+        tmp_path, [Raw(DISPATCH), Raw(DISPATCH), Raw(DISPATCH)], orchestrator=orchestrator
+    )
+    with pytest.raises(ChatError) as exc:
+        harness.chat.reply("记一下我喜欢猫")
+    assert exc.value.code == "invalid_output"
+    assert "不能再次派发" in str(exc.value)
+    assert len(orchestrator.plans) == 1
+    assert harness.query("SELECT COUNT(*) FROM daily_log WHERE role = 'me'")[0][0] == 0
+
+
+def test_invalid_dispatch_writes_an_event_then_regenerates(tmp_path: Path):
+    bad = json.dumps({"type": "dispatch", "plan": []}, ensure_ascii=False)
+    harness = Harness(tmp_path, [Raw(bad), "我还是直接说吧。"])
+    result = harness.chat.reply("你好")
+    assert result.text == "我还是直接说吧。"
+    rows = harness.query("SELECT role, content FROM daily_log ORDER BY id")
+    assert rows[0][0] == "event"
+    event = json.loads(rows[0][1])
+    assert event["type"] == "dispatch_failed"
+    assert "1–3" in event["reason"]
+    assert rows[1:] == [("master", "你好"), ("me", "我还是直接说吧。")]
+
+
+def test_dispatch_without_an_orchestrator_is_a_failure(tmp_path: Path):
+    harness = Harness(tmp_path, [Raw(DISPATCH)])
+    with pytest.raises(ChatError) as exc:
+        harness.chat.reply("记一下我喜欢猫")
+    assert exc.value.code == "invalid_output"
+    assert "执行器未配置" in str(exc.value)

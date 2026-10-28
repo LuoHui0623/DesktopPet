@@ -1,10 +1,10 @@
 """端到端验证：真实后端进程 + 本地假模型服务，走完整的 HTTP 与 WebSocket 流程。
 
-用法（在 backend 目录下）：uv run python scripts/e2e/run_e2e.py
+用法（在 backend 目录下）：uv run python -m scripts.e2e.run_e2e
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
-覆盖：启动、模型列表与切换、流式对话、关键词写入记忆、翻阅与编辑、核心典藏与引用来源、
-临时模式、正常关闭（stdin 指令）。
+覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
+关键词写入记忆、翻阅与编辑、核心典藏与引用来源、临时模式、正常关闭（stdin 指令）。
 """
 
 import json
@@ -208,30 +208,49 @@ def check_streaming_chat(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     step("对话：切换后的下一次对话使用新模型，流式片段拼接与回复一致，状态与推送顺序正确")
 
 
-def check_structured_output_errors(api: Api, tap: EventTap, llm: FakeLlm) -> None:
-    cases = [("派发测试", "合法 dispatch"), ("坏格式测试", "非法 JSON")]
-    for sample, label in cases:
-        mark = len(tap.events)
-        before = len(llm.requests)
-        body = api.call("POST", "/api/chat", {"text": sample}, expect=502)
-        check(
-            body["error"]["code"] == "invalid_output",
-            f"{label} 应返回 invalid_output：{body}",
-        )
-        attempts = sum(1 for request in llm.requests[before:] if _is_main_chat(request))
-        check(attempts == 2, f"{label} 应重新生成一次（共 2 次调用），实际 {attempts} 次")
-        fresh = tap.wait_until_idle_after(mark)
-        check(
-            not any(event["type"] == "chat.chunk" for event in fresh),
-            f"{label} 不应推送 chat.chunk：{fresh}",
-        )
-        check(
-            not any(event["type"] == "chat.done" for event in fresh),
-            f"{label} 不应推送 chat.done：{fresh}",
-        )
-        states = [event["state"] for event in fresh if event["type"] == "status"]
-        check(states == ["thinking", "idle"], f"{label} 的状态顺序异常：{states}")
-    step("结构化输出：合法 dispatch 与非法 JSON 均重新生成一次后返回 invalid_output，不推送")
+def check_dispatch(api: Api, tap: EventTap, llm: FakeLlm) -> None:
+    mark = len(tap.events)
+    before = len(llm.requests)
+    reply = api.call("POST", "/api/chat", {"text": "派发测试"})
+    check(reply["text"] == "嗯，我在听。", f"派发后的回复异常：{reply}")
+    attempts = [request for request in llm.requests[before:] if _is_main_chat(request)]
+    check(len(attempts) == 2, f"派发应只多问一次（共 2 次调用），实际 {len(attempts)} 次")
+    block = "\n".join(str(item.get("content", "")) for item in attempts[-1]["messages"])
+    check("[finished_plan]" in block, "回灌给模型的消息里应含检查点标记")
+    check('"capability": "记忆检索"' in block, "检查点应带上派发的目标能力")
+    check('"status": "failed"' in block, "未知能力应记为失败检查点")
+    check("未知能力：记忆检索" in block, "检查点应带上失败原因")
+    fresh = tap.wait_until_idle_after(mark)
+    states = [event["state"] for event in fresh if event["type"] == "status"]
+    check(
+        states == ["thinking", "executing", "thinking", "speaking", "idle"],
+        f"派发的状态顺序异常：{states}",
+    )
+    check(
+        "".join(event["text"] for event in fresh if event["type"] == "chat.chunk") == reply["text"],
+        "派发后的流式片段与回复不一致",
+    )
+    step("派发：子 agent 执行未知能力记失败检查点，检查点回灌后只回一条 chat，状态顺序正确")
+
+
+def check_invalid_output_regenerates(api: Api, tap: EventTap, llm: FakeLlm) -> None:
+    mark = len(tap.events)
+    before = len(llm.requests)
+    body = api.call("POST", "/api/chat", {"text": "坏格式测试"}, expect=502)
+    check(
+        body["error"]["code"] == "invalid_output",
+        f"非法 JSON 应返回 invalid_output：{body}",
+    )
+    attempts = sum(1 for request in llm.requests[before:] if _is_main_chat(request))
+    check(attempts == 2, f"非法 JSON 应重新生成一次（共 2 次调用），实际 {attempts} 次")
+    fresh = tap.wait_until_idle_after(mark)
+    check(
+        not any(event["type"] in ("chat.chunk", "chat.done") for event in fresh),
+        f"非法 JSON 不应推送回复：{fresh}",
+    )
+    states = [event["state"] for event in fresh if event["type"] == "status"]
+    check(states == ["thinking", "idle"], f"非法 JSON 的状态顺序异常：{states}")
+    step("结构化输出：非法 JSON 重新生成一次后返回 invalid_output，不推送")
 
 
 def check_keyword_write(api: Api, tap: EventTap) -> dict:
@@ -361,7 +380,8 @@ def run() -> Path:
         check_models_and_switch(api)
         with EventTap(port) as tap:
             check_streaming_chat(api, tap, llm)
-            check_structured_output_errors(api, tap, llm)
+            check_dispatch(api, tap, llm)
+            check_invalid_output_regenerates(api, tap, llm)
             memory = check_keyword_write(api, tap)
             check_citation(api, tap, memory)
             check_temporary_mode(api, tap)
