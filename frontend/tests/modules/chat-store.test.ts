@@ -173,9 +173,8 @@ describe("chat store: approvals", () => {
 
 describe("chat store: sources", () => {
   const source = {
-    id: "m_20261018_001",
+    id: "structured",
     kind: "结构化记忆",
-    category: "preference",
     date: "2026-10-18",
     text: "喜欢美式咖啡，不加糖",
   };

@@ -8,28 +8,19 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from config.persona import PersonaConfig
 from constants.memory import (
     CONTEXT_TOKEN_BUDGET,
-    CORE_MEMORY_TOKEN_BUDGET,
     FRAGMENT_TOKEN_BUDGET,
+    STRUCTURED_MEMORY_TOKEN_BUDGET,
 )
 from service.agent.prompt import CapabilityDescription, PromptTemplates, build_system_prompt
-from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_events import event_in_context, event_text
 from service.memory.daily_log_service import DailyLogService
-from service.memory.memory_service import MemoryServiceError, StructuredMemoryService
+from service.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 
 KIND_STRUCTURED = "结构化记忆"
 KIND_DAILY = "每日对话"
-CATEGORY_LABELS = {
-    "profile": "基础信息",
-    "preference": "偏好",
-    "habit": "习惯",
-    "event": "事项",
-    "interaction": "互动约定",
-}
 CITATION_RULE = (
-    "回复引用上面【核心典藏】或【检索到的记忆】中的内容时，在该句末尾附加 [引用 ID]。"
-    "ID 取自对应条目的“id”；每日对话条目没有 id，取其日期。"
-    "只引用上面列出的内容，不要编造 ID。"
+    "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
+    "日期取自对应条目的日期。只引用上面列出的内容，不要编造日期。"
 )
 
 
@@ -43,8 +34,6 @@ class MemoryFragment:
     kind: str
     date: str
     text: str
-    category: str | None = None
-    memory_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -62,15 +51,23 @@ def _flatten(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\n", " ")
 
 
+def _truncate_lines(lines: Sequence[str], budget: int) -> str:
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        size = len(line) + 1
+        if used + size > budget:
+            break
+        kept.append(line)
+        used += size
+    if not kept:
+        return ""
+    return "\n".join([*kept, "……（已截断）"])
+
+
 def render_fragment(fragment: MemoryFragment) -> str:
-    tags = [fragment.kind]
-    if fragment.category is not None:
-        tags.append(CATEGORY_LABELS.get(fragment.category, fragment.category))
-    tags.append(fragment.date)
-    line = f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
-    if fragment.kind == KIND_STRUCTURED and fragment.memory_id:
-        line += f"（id：{fragment.memory_id}）"
-    return line
+    tags = (fragment.kind, fragment.date)
+    return f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
 
 
 class ContextBuilder:
@@ -81,8 +78,7 @@ class ContextBuilder:
         daily: DailyLogService,
         timezone: tzinfo,
         *,
-        core: CoreMemoryService | None = None,
-        structured: StructuredMemoryService | None = None,
+        structured: StructuredMemoryDoc | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
     ) -> None:
@@ -90,7 +86,6 @@ class ContextBuilder:
         self._templates = templates
         self._daily = daily
         self._timezone = timezone
-        self._core = core
         self._structured = structured
         self._clock = clock or (lambda zone: datetime.now(zone))
         self._capabilities = tuple(capabilities)
@@ -105,13 +100,10 @@ class ContextBuilder:
         )
         warnings: list[str] = []
 
-        core_fragments = self._core_fragments(warnings)
-        core_block = "\n".join(render_fragment(fragment) for fragment in core_fragments)
-        if len(core_block) > CORE_MEMORY_TOKEN_BUDGET:
-            warnings.append(f"核心典藏超出预算：{len(core_block)} 字符")
+        structured_block = self._structured_block(warnings)
         system_text = prompt.text
-        if core_fragments:
-            system_text += f"\n\n【核心典藏】\n{core_block}"
+        if structured_block:
+            system_text += f"\n\n【结构化记忆】\n{structured_block}"
 
         kept, dropped = self._fit_fragments(fragments)
         if dropped:
@@ -120,7 +112,7 @@ class ContextBuilder:
             fragment_block = "\n".join(render_fragment(fragment) for fragment in kept)
             system_text += f"\n\n【检索到的记忆】\n{fragment_block}"
 
-        injected = (*core_fragments, *kept)
+        injected = tuple(kept)
         if injected:
             system_text += f"\n\n{CITATION_RULE}"
 
@@ -155,26 +147,21 @@ class ContextBuilder:
             injected=injected,
         )
 
-    def _core_fragments(self, warnings: list[str]) -> list[MemoryFragment]:
-        if self._core is None or self._structured is None:
-            return []
-        fragments: list[MemoryFragment] = []
-        for memory_id in self._core.ids():
-            try:
-                memory = self._structured.get(memory_id)
-            except MemoryServiceError:
-                warnings.append(f"核心典藏 {memory_id} 无法读取，已跳过")
-                continue
-            fragments.append(
-                MemoryFragment(
-                    kind=KIND_STRUCTURED,
-                    date=memory.source.date,
-                    text=memory.content,
-                    category=memory.category,
-                    memory_id=memory.id,
-                )
-            )
-        return fragments
+    def _structured_block(self, warnings: list[str]) -> str:
+        if self._structured is None:
+            return ""
+        try:
+            lines = self._structured.lines()
+        except (MemoryReadError, OSError):
+            warnings.append("结构化记忆无法读取，已跳过")
+            return ""
+        text = "\n".join(lines).strip()
+        if not text:
+            return ""
+        if len(text) > STRUCTURED_MEMORY_TOKEN_BUDGET:
+            warnings.append(f"结构化记忆超出预算：{len(text)} 字符，已截断")
+            return _truncate_lines(lines, STRUCTURED_MEMORY_TOKEN_BUDGET)
+        return text
 
     def _fit_fragments(
         self, fragments: Sequence[MemoryFragment]

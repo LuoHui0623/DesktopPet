@@ -1,29 +1,31 @@
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from infra.files.json_store import read_json, write_json_atomic
-from service.memory.memory_service import StructuredMemory, StructuredMemoryService
+from service.memory.memory_service import (
+    KIND_DAILY,
+    KIND_STRUCTURED,
+    STRUCTURED_DOC_NAME,
+)
 
-DESCRIPTION: dict[str, str] = {
-    "结构化记忆": "用户的关键信息、偏好与习惯，可读写",
-    "daily_memory": "每日完整对话记录，按月分组，键为日期，只读",
+DESCRIPTIONS: dict[str, str] = {
+    KIND_STRUCTURED: "用户的关键信息、偏好与习惯，只有一份纯文本文档，按行号读取与修改",
+    KIND_DAILY: "每日完整对话记录，按月分组，键为日期，只读",
 }
+HEADING_PATTERN = re.compile(r"^\s*#")
 
 
-def build_index(memories: list[StructuredMemory], daily_dates: list[str]) -> dict[str, Any]:
-    structured = [
-        {
-            "id": memory.id,
-            "title": memory.title,
-            "category": memory.category,
-            "updated_at": memory.updated_at,
-        }
-        for memory in sorted(memories, key=lambda item: (item.created_at, item.id))
-    ]
+def structured_index(lines: list[str]) -> dict[str, Any]:
     return {
-        "描述": dict(DESCRIPTION),
-        "记忆索引": {"结构化记忆": structured, "daily_memory": daily_memory_index(daily_dates)},
+        "name": STRUCTURED_DOC_NAME,
+        "lines": len(lines),
+        "headings": [
+            {"line": number, "text": line.strip()}
+            for number, line in enumerate(lines, start=1)
+            if HEADING_PATTERN.match(line)
+        ],
     }
 
 
@@ -34,19 +36,29 @@ def daily_memory_index(daily_dates: list[str]) -> dict[str, list[str]]:
     return months
 
 
+def build_index(structured_lines: list[str], daily_dates: list[str]) -> dict[str, Any]:
+    return {
+        "descriptions": dict(DESCRIPTIONS),
+        "index": {
+            KIND_STRUCTURED: structured_index(structured_lines),
+            KIND_DAILY: daily_memory_index(daily_dates),
+        },
+    }
+
+
 class MemoryIndexService:
     def __init__(
         self,
-        memories: StructuredMemoryService,
+        structured_lines: Callable[[], list[str]],
         daily_dates: Callable[[], list[str]],
         path: Path,
     ) -> None:
-        self._memories = memories
+        self._structured_lines = structured_lines
         self._daily_dates = daily_dates
         self._path = path
 
     def rebuild(self) -> None:
-        data = build_index(self._memories.list().items, self._daily_dates())
+        data = build_index(self._structured_lines(), self._daily_dates())
         if self._current() != data:
             write_json_atomic(self._path, data)
 

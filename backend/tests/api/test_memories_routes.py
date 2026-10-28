@@ -7,33 +7,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from infra.files.json_store import JsonDirectory
 from infra.store.app_settings import DbAppSettings
-from infra.store.core_memory import DbCoreMemory
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemorySource, MemoryWriter, StructuredMemoryService
+from service.memory.memory_service import MemoryWriter, StructuredMemoryDoc
 from service.memory.services import MemoryServices
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
 TZ = ZoneInfo("Asia/Shanghai")
-SOURCE = MemorySource(type="keyword", date="2026-10-18")
-
-
-class DictSettings:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    def put(self, key: str, value: str) -> None:
-        self.values[key] = value
 
 
 class Clock:
@@ -50,164 +35,102 @@ def client(tmp_path: Path):
     conn = connect(db_file)
     migrate(conn)
     conn.close()
-    clock = Clock()
     settings = DbAppSettings(db_file)
-    structured = StructuredMemoryService(
-        JsonDirectory(tmp_path / "memory" / "structured"),
-        DictSettings(),
-        TZ,
-        clock=clock,
-    )
+    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     index_file = tmp_path / "memory" / "index.json"
-    index = MemoryIndexService(structured, daily.dates, index_file)
+    index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
-    core = CoreMemoryService(DbCoreMemory(db_file), structured)
-    writer = MemoryWriter(structured, daily, TZ, clock=clock)
-    services = MemoryServices(structured=structured, writer=writer, daily=daily, core=core)
+    index.rebuild()
+    writer = MemoryWriter(structured, daily)
+    services = MemoryServices(structured=structured, writer=writer, daily=daily)
     app = create_app(TOKEN, memories=services)
     test_client = TestClient(app)
     test_client.index_file = index_file
     test_client.structured = structured
-    test_client.core = core
     test_client.daily = daily
     test_client.db_file = db_file
     return test_client
 
 
-def create(client, title="咖啡", content="喜欢美式咖啡，不加糖", category="preference"):
-    return client.structured.create(category=category, title=title, content=content, source=SOURCE)
-
-
-def index_entries(client) -> list[dict]:
-    data = json.loads(client.index_file.read_text(encoding="utf-8"))
-    return data["记忆索引"]["结构化记忆"]
+def index_data(client) -> dict:
+    return json.loads(client.index_file.read_text(encoding="utf-8"))
 
 
 def test_routes_require_token(client):
     assert client.get("/api/memories").status_code == 401
-    assert client.patch("/api/memories/m_20261018_001", json={}).status_code == 401
+    assert client.put("/api/memories/structured", json={"text": "x"}).status_code == 401
     assert client.post("/api/memories/temporary-mode", json={"enabled": True}).status_code == 401
 
 
-def test_list_returns_structured_core_and_daily_index(client):
-    memory = create(client)
-    client.core.add(memory.id)
+def test_list_returns_structured_text_and_daily_index(client):
+    client.structured.save("## 喜好\n- 咖啡：美式，不加糖")
     DbDailyLog(client.db_file).append(
         "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好")]
     )
     body = client.get("/api/memories", headers=AUTH).json()
-    assert [item["id"] for item in body["structured"]] == [memory.id]
-    assert body["core_ids"] == [memory.id]
+    assert body["structured"] == "## 喜好\n- 咖啡：美式，不加糖\n"
     assert body["daily_memory"] == {"2026-10": ["2026-10-18"]}
     assert body["temporary_mode"] is False
     assert body["daily_records"] is None
 
 
-def test_list_filters_by_category_and_returns_day_records(client):
-    create(client, title="咖啡")
-    create(client, title="作息", category="habit", content="十一点前睡")
+def test_list_returns_day_records(client):
     DbDailyLog(client.db_file).append(
         "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好"), ("me", "你好呀")]
     )
-    body = client.get("/api/memories?category=habit&date=2026-10-18", headers=AUTH).json()
-    assert [item["title"] for item in body["structured"]] == ["作息"]
+    body = client.get("/api/memories?date=2026-10-18", headers=AUTH).json()
     assert [record["content"] for record in body["daily_records"]] == ["你好", "你好呀"]
 
 
-def test_invalid_date_and_category_are_rejected(client):
+def test_invalid_date_is_rejected(client):
     bad_date = client.get("/api/memories?date=2026-13-01", headers=AUTH)
     assert bad_date.status_code == 422
     assert bad_date.json()["error"]["code"] == "invalid_date"
-    assert client.get("/api/memories?category=secret", headers=AUTH).status_code == 422
 
 
-def test_get_one_memory(client):
-    memory = create(client)
-    body = client.get(f"/api/memories/{memory.id}", headers=AUTH).json()
-    assert body["id"] == memory.id
-    assert body["source"] == {"type": "keyword", "date": "2026-10-18"}
-    assert client.get("/api/memories/m_20261018_099", headers=AUTH).status_code == 404
-
-
-def test_patch_updates_memory_and_refreshes_index(client):
-    memory = create(client)
-    response = client.patch(
-        f"/api/memories/{memory.id}",
+def test_put_structured_memory_saves_text_and_refreshes_index(client):
+    response = client.put(
+        "/api/memories/structured",
         headers=AUTH,
-        json={"content": "最近喝拿铁"},
+        json={"text": "## 喜好\n\n- 咖啡：美式"},
     )
     assert response.status_code == 200
-    assert response.json()["content"] == "最近喝拿铁"
-    assert response.json()["title"] == "咖啡"
-    entries = index_entries(client)
-    assert entries[0]["id"] == memory.id
-    assert entries[0]["updated_at"] == response.json()["updated_at"]
+    assert response.json() == {"text": "## 喜好\n\n- 咖啡：美式\n"}
+    assert client.structured.text() == "## 喜好\n\n- 咖啡：美式\n"
+    data = index_data(client)
+    assert data["index"]["structured"]["headings"] == [{"line": 1, "text": "## 喜好"}]
+    assert data["index"]["structured"]["lines"] == 3
 
 
-def test_patch_rejects_invalid_fields_and_empty_bodies(client):
-    memory = create(client)
-    unknown = client.patch(f"/api/memories/{memory.id}", headers=AUTH, json={"id": "x"})
-    assert unknown.status_code == 422
-    bad_importance = client.patch(
-        f"/api/memories/{memory.id}", headers=AUTH, json={"importance": 9}
+def test_put_structured_memory_normalizes_newlines_and_allows_empty(client):
+    windows = client.put(
+        "/api/memories/structured", headers=AUTH, json={"text": "## 喜好\r\n\r\n- 猫"}
     )
-    assert bad_importance.status_code == 422
-    empty = client.patch(f"/api/memories/{memory.id}", headers=AUTH, json={})
-    assert empty.status_code == 422
-    assert empty.json()["error"]["code"] == "no_changes"
+    assert windows.json() == {"text": "## 喜好\n\n- 猫\n"}
+    cleared = client.put("/api/memories/structured", headers=AUTH, json={"text": "  \n"})
+    assert cleared.json() == {"text": ""}
+    assert client.structured.text() == ""
 
 
-def test_patch_rejects_sensitive_content(client):
-    memory = create(client)
-    response = client.patch(
-        f"/api/memories/{memory.id}",
-        headers=AUTH,
-        json={"content": "我的密码是 hunter2"},
-    )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "sensitive"
-    assert client.get(f"/api/memories/{memory.id}", headers=AUTH).json()["content"] != (
-        "我的密码是 hunter2"
-    )
+def test_put_structured_memory_requires_text_field(client):
+    assert client.put("/api/memories/structured", headers=AUTH, json={}).status_code == 422
+    assert client.put("/api/memories/structured", headers=AUTH, json={"text": 1}).status_code == 422
 
 
-def test_patch_missing_memory_is_not_found(client):
-    response = client.patch("/api/memories/m_20261018_099", headers=AUTH, json={"content": "x"})
-    assert response.status_code == 404
-
-
-def test_delete_removes_memory_from_core_and_index(client):
-    memory = create(client)
-    other = create(client, title="作息", category="habit", content="十一点前睡")
-    client.core.add(memory.id)
-    client.core.add(other.id)
-    response = client.delete(f"/api/memories/{memory.id}", headers=AUTH)
+def test_put_structured_memory_works_in_temporary_mode(client):
+    client.daily.set_temporary_mode(True)
+    response = client.put("/api/memories/structured", headers=AUTH, json={"text": "## 喜好"})
     assert response.status_code == 200
-    assert response.json() == {"id": memory.id, "deleted": True}
-    assert client.get(f"/api/memories/{memory.id}", headers=AUTH).status_code == 404
-    assert client.core.ids() == [other.id]
-    assert [entry["id"] for entry in index_entries(client)] == [other.id]
-
-
-def test_delete_missing_memory_is_not_found(client):
-    assert client.delete("/api/memories/m_20261018_099", headers=AUTH).status_code == 404
+    assert response.json() == {"text": "## 喜好\n"}
 
 
 def test_temporary_mode_switch_takes_effect_immediately(client):
-    memory = create(client)
     on = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": True})
     assert on.json() == {"temporary_mode": True}
     assert client.get("/api/memories", headers=AUTH).json()["temporary_mode"] is True
-
-    blocked = client.patch(f"/api/memories/{memory.id}", headers=AUTH, json={"content": "拿铁"})
-    assert blocked.status_code == 409
-    assert blocked.json()["error"]["code"] == "temporary_mode"
-
     off = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": False})
     assert off.json() == {"temporary_mode": False}
-    allowed = client.patch(f"/api/memories/{memory.id}", headers=AUTH, json={"content": "拿铁"})
-    assert allowed.status_code == 200
 
 
 def test_temporary_mode_request_is_validated(client):
@@ -215,102 +138,17 @@ def test_temporary_mode_request_is_validated(client):
     assert response.status_code == 422
 
 
-def test_daily_memory_cannot_be_modified_or_deleted(client):
-    patch = client.patch("/api/memories/2026-10-18", headers=AUTH, json={"content": "改"})
-    assert patch.status_code == 403
-    assert patch.json()["error"]["code"] == "daily_memory_readonly"
-    delete = client.delete("/api/memories/2026-10-18", headers=AUTH)
-    assert delete.status_code == 403
-    assert delete.json()["error"]["code"] == "daily_memory_readonly"
-
-
-def test_invalid_ids_are_rejected(client):
-    response = client.get("/api/memories/not-an-id", headers=AUTH)
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "invalid_memory_id"
-
-
 def test_routes_report_unavailable_without_memory_services():
     client = TestClient(create_app(TOKEN))
     assert client.get("/api/memories", headers=AUTH).status_code == 503
 
 
-def test_core_add_lists_and_rejects_duplicates_and_missing(client):
-    memory = create(client)
-    response = client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
-    assert response.status_code == 200
-    assert response.json() == {"core_ids": [memory.id]}
-    assert client.get("/api/memories", headers=AUTH).json()["core_ids"] == [memory.id]
-
-    duplicate = client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
-    assert duplicate.status_code == 422
-    assert duplicate.json()["error"]["code"] == "core_memory_invalid"
-
-    missing = client.post("/api/memories/core", headers=AUTH, json={"memory_id": "m_20261018_099"})
-    assert missing.status_code == 422
-    assert missing.json()["error"]["code"] == "core_memory_invalid"
-
-
-def test_core_add_rejects_invalid_id_and_extra_fields(client):
-    bad_id = client.post("/api/memories/core", headers=AUTH, json={"memory_id": "../etc"})
-    assert bad_id.status_code == 422
-    assert bad_id.json()["error"]["code"] == "invalid_memory_id"
-    extra = client.post(
-        "/api/memories/core", headers=AUTH, json={"memory_id": "m_20261018_001", "x": 1}
-    )
-    assert extra.status_code == 422
-
-
-def test_core_limit_is_enforced_over_http(client):
-    for index in range(20):
-        memory = create(client, title=f"记忆{index}")
-        assert (
-            client.post(
-                "/api/memories/core", headers=AUTH, json={"memory_id": memory.id}
-            ).status_code
-            == 200
-        )
-    extra = create(client, title="多出来的")
-    response = client.post("/api/memories/core", headers=AUTH, json={"memory_id": extra.id})
-    assert response.status_code == 422
-    assert "最多 20 条" in response.json()["error"]["message"]
-
-
-def test_core_remove_and_reorder(client):
-    first = create(client, title="甲")
-    second = create(client, title="乙")
-    for memory in (first, second):
-        client.post("/api/memories/core", headers=AUTH, json={"memory_id": memory.id})
-
-    reordered = client.put(
-        "/api/memories/core/order", headers=AUTH, json={"memory_ids": [second.id, first.id]}
-    )
-    assert reordered.json() == {"core_ids": [second.id, first.id]}
-
-    incomplete = client.put(
-        "/api/memories/core/order", headers=AUTH, json={"memory_ids": [first.id]}
-    )
-    assert incomplete.status_code == 422
-
-    removed = client.delete(f"/api/memories/core/{first.id}", headers=AUTH)
-    assert removed.json() == {"core_ids": [second.id]}
-    again = client.delete(f"/api/memories/core/{first.id}", headers=AUTH)
-    assert again.status_code == 422
-
-
-def test_core_routes_require_token(client):
-    assert (
-        client.post("/api/memories/core", json={"memory_id": "m_20261018_001"}).status_code == 401
-    )
-    assert client.put("/api/memories/core/order", json={"memory_ids": []}).status_code == 401
-    assert client.delete("/api/memories/core/m_20261018_001").status_code == 401
-
-
 def test_openapi_lists_memory_operations(client):
     spec = client.get("/openapi.json", headers=AUTH).json()
     assert spec["paths"]["/api/memories"]["get"]["operationId"] == "list_memories"
-    assert spec["paths"]["/api/memories/{memory_id}"]["patch"]["operationId"] == "update_memory"
-    assert spec["paths"]["/api/memories/{memory_id}"]["delete"]["operationId"] == "delete_memory"
+    assert (
+        spec["paths"]["/api/memories/structured"]["put"]["operationId"] == "save_structured_memory"
+    )
     assert (
         spec["paths"]["/api/memories/temporary-mode"]["post"]["operationId"]
         == "set_memory_temporary_mode"

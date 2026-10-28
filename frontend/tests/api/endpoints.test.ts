@@ -4,19 +4,17 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createApiClient, type ApiClient } from "../../src/api/client";
 import {
-  deleteMemory,
   getActiveLlm,
   getHealth,
-  getMemory,
   listChatHistory,
   listLlmProviders,
   listMemories,
   reloadLlmConfig,
+  saveStructuredMemory,
   sendChat,
   setActiveLlm,
   setMemoryTemporaryMode,
   submitApproval,
-  updateMemory,
 } from "../../src/api/endpoints";
 
 const FRONTEND_DIR = fileURLToPath(new URL("../..", import.meta.url));
@@ -109,22 +107,10 @@ describe("endpoint functions match the API contract", () => {
       expectedPath: "/api/memories",
     },
     {
-      operationId: "get_memory",
-      run: (c) => getMemory(c, "m_20261018_001"),
-      template: "/api/memories/{memory_id}",
-      expectedPath: "/api/memories/m_20261018_001",
-    },
-    {
-      operationId: "update_memory",
-      run: (c) => updateMemory(c, "m_20261018_001", { content: "拿铁" }),
-      template: "/api/memories/{memory_id}",
-      expectedPath: "/api/memories/m_20261018_001",
-    },
-    {
-      operationId: "delete_memory",
-      run: (c) => deleteMemory(c, "m_20261018_001"),
-      template: "/api/memories/{memory_id}",
-      expectedPath: "/api/memories/m_20261018_001",
+      operationId: "save_structured_memory",
+      run: (c) => saveStructuredMemory(c, "## 主人信息\n- 喜欢拿铁"),
+      template: "/api/memories/structured",
+      expectedPath: "/api/memories/structured",
     },
     {
       operationId: "set_memory_temporary_mode",
@@ -176,26 +162,24 @@ describe("request bodies and queries", () => {
 
   it("sends memory filters as query parameters", async () => {
     const { client, calls } = recordingClient();
-    await listMemories(client, { category: "preference", date: "2026-10-18" });
+    await listMemories(client, { date: "2026-10-18" });
     const url = new URL(calls[0]?.url ?? "");
-    expect(url.searchParams.get("category")).toBe("preference");
     expect(url.searchParams.get("date")).toBe("2026-10-18");
   });
 
-  it("encodes memory ids in the path", async () => {
+  it("sends the structured memory text as the PUT body", async () => {
     const { client, calls } = recordingClient();
-    await getMemory(client, "a/b c");
-    expect(calls[0]?.url).toBe(`${BASE}/api/memories/a%2Fb%20c`);
+    await saveStructuredMemory(client, "## 主人信息\n- 喜欢拿铁");
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/structured`);
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(bodyOf(calls[0]?.init)).toEqual({ text: "## 主人信息\n- 喜欢拿铁" });
   });
 
-  it("sends PATCH bodies and the temporary mode flag as JSON", async () => {
+  it("sends the temporary mode flag as JSON", async () => {
     const { client, calls } = recordingClient();
-    await updateMemory(client, "m_20261018_001", { title: "咖啡", importance: 4 });
-    expect(calls[0]?.init?.method).toBe("PATCH");
-    expect(bodyOf(calls[0]?.init)).toEqual({ title: "咖啡", importance: 4 });
-
     await setMemoryTemporaryMode(client, false);
-    expect(bodyOf(calls[1]?.init)).toEqual({ enabled: false });
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual({ enabled: false });
   });
 
   it("sends the approval decision as JSON", async () => {
@@ -215,10 +199,10 @@ describe("request bodies and queries", () => {
     });
   });
 
-  it("does not send a body for GET or DELETE requests", async () => {
+  it("does not send a body for GET requests", async () => {
     const { client, calls } = recordingClient();
     await getActiveLlm(client);
-    await deleteMemory(client, "m_20261018_001");
+    await listMemories(client);
     expect(calls[0]?.init?.body).toBeUndefined();
     expect(calls[1]?.init?.body).toBeUndefined();
     expect(new Headers(calls[0]?.init?.headers).has("Content-Type")).toBe(false);

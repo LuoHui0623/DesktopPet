@@ -10,7 +10,6 @@ class ChatRequest(BaseModel):
 class SourceOut(BaseModel):
     id: str
     kind: str
-    category: str | None = None
     date: str
     text: str
 

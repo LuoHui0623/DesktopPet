@@ -24,6 +24,7 @@ from service.agent.prompt import load_capabilities, load_templates
 from service.chat.chat_service import ChatError, ChatService, split_sentences
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
+from service.memory.memory_service import StructuredMemoryDoc
 from service.persona.persona_service import PersonaService
 
 SAMPLES = [
@@ -101,6 +102,7 @@ def main() -> int:
         personas,
         load_templates(),
         db_usage_sink(db_file),
+        structured=StructuredMemoryDoc(settings.data_dir / "memory" / "structured.md"),
         timezone=timezone,
         capabilities=load_capabilities(),
     )

@@ -11,7 +11,6 @@ CITATION = re.compile(r"[ \t]*\[引用\s*([A-Za-z0-9_\-]+)\]")
 class CitedSource:
     id: str
     kind: str
-    category: str | None
     date: str
     text: str
 
@@ -25,7 +24,7 @@ def split_citations(raw: str) -> tuple[str, list[str]]:
 
 
 def fragment_key(fragment: MemoryFragment) -> str:
-    return fragment.memory_id or fragment.date
+    return fragment.date
 
 
 def resolve_sources(
@@ -44,7 +43,6 @@ def resolve_sources(
             CitedSource(
                 id=key,
                 kind=fragment.kind,
-                category=fragment.category,
                 date=fragment.date,
                 text=fragment.text,
             )

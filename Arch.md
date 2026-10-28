@@ -148,10 +148,9 @@ frontend/
    │  └─ env.d.ts
    │
    ├─ modules/                # 【功能模块层】按功能划分的页面与组件
-   │  ├─ memory-labels.ts     # 记忆类别的中文标签（聊天与设置共用）
    │  ├─ pet/                 # 悬浮窗：占位形象、状态标签、拖动、点击打开对话
    │  ├─ chat/                # 对话窗口：标签页、多轮对话、流式展示、历史搜索、记忆来源
-   │  └─ settings/            # 设置窗口：模型（列表、可用性、切换、重载）、记忆（查看、编辑、删除、核心典藏、临时模式）
+   │  └─ settings/            # 设置窗口：模型（列表、可用性、切换、重载）、记忆（结构化记忆查看与编辑、每日对话查看、临时模式）
    │
    ├─ service/                # 【服务层】应用状态与业务编排
    │  ├─ stores/              # Zustand（vanilla）store，每窗口一份展示缓存
@@ -162,7 +161,7 @@ frontend/
    │  ├─ events.ts            # WebSocket 事件 → store 的分发（宠物、对话）
    │  ├─ chat.service.ts      # 发送消息、搜索历史
    │  ├─ model.service.ts     # 模型列表、切换、重载
-   │  ├─ memory.service.ts    # 记忆列表、编辑、删除、核心典藏、临时模式
+   │  ├─ memory.service.ts    # 记忆读取、结构化记忆保存、临时模式
    │  └─ window.service.ts    # 打开对话与设置窗口
    │
    └─ api/                    # 【接口层】与后端通信
@@ -185,7 +184,7 @@ backend/
 ├─ constants/                # 【常数】不随运行变化的常量；不依赖任何其他层
 │  ├─ path.py                # 目录常量：项目根、后端根、配置、数据（默认 backend/data）、日志、导出、资源库
 │  ├─ agent.py               # 子代理常量（最大步数等）
-│  ├─ memory.py              # 记忆常量：核心典藏上限、上下文预算
+│  ├─ memory.py              # 记忆常量：上下文预算
 │  └─ speech.py              # 句长上限（40 字符）
 │
 ├─ resources/                # 【资源】代码随附的静态资源，入 Git
@@ -209,23 +208,23 @@ backend/
 │     ├─ system.py           # 健康检查、安全退出
 │     ├─ chat.py             # 发送消息、历史查询
 │     ├─ llm.py              # 模型列表、当前对话与整理模型、手动重载
-│     ├─ memories.py         # 记忆列表、查看、编辑、删除、核心典藏、临时模式
+│     ├─ memories.py         # 记忆读取、结构化记忆全文保存、临时模式
 │     └─ ws.py               # WebSocket 事件推送
 │
 ├─ service/                  # 【服务层】业务规则与用例编排
 │  ├─ chat/
 │  │  ├─ chat_service.py     # 对话用例：派发分支、组装上下文、调模型、句长校验、引用解析、写 daily_log、推送事件
-│  │  ├─ context.py          # 上下文组装：系统提示词 → 核心典藏 → 检索片段 → 引用规则 → 近期对话 → 当前输入
-│  │  └─ citations.py        # 引用标记 [引用 ID] 的解析与来源过滤（只保留本次注入的记忆）
+│  │  ├─ context.py          # 上下文组装：系统提示词（含结构化记忆全文）→ 检索片段 → 引用规则 → 近期对话 → 当前输入
+│  │  └─ citations.py        # 引用标记 [引用 日期] 的解析与来源过滤（只保留本次注入的记忆片段）
 │  ├─ llm/
 │  │  └─ llm_service.py      # 模型用例：查询可用模型、切换当前模型、重载、装配 client（按快照缓存）
 │  ├─ persona/
 │  │  └─ persona_service.py  # 人设卡片：列出、启用、按修改时间重新解析、按卡记录版本（D-13）
 │  ├─ memory/
-│  │  ├─ memory_service.py   # 结构化记忆增删改、写入规则、daily_memory 行号视图、行号 helper、MemoryReader
-│  │  ├─ core_memory.py      # 核心典藏：加入、移出、排序（上限 20 条）
+│  │  ├─ memory_service.py   # 结构化记忆（单文件纯文本）读写、daily_memory 行号视图、行号 helper、MemoryReader / MemoryWriter
 │  │  ├─ daily_log_service.py# 每日对话：写入、读取、临时模式
 │  │  ├─ index.py            # 记忆索引生成：由代码生成，不手工编辑
+│  │  ├─ daily_events.py     # 每日事件结构（从对话中提取）
 │  │  ├─ sensitive.py        # 敏感信息识别（证件号、银行卡、密码、健康细节）
 │  │  └─ services.py         # 记忆服务装配（MemoryServices）
 │  └─ agent/
@@ -237,7 +236,7 @@ backend/
 │     └─ tools/
 │        ├─ explore.py       # 探索工具：index 看清单、read 读内容，按 resource（skill / memory）路由
 │        ├─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
-│        ├─ memory.py        # 记忆写入工具：create / update
+│        ├─ memory.py        # 记忆写入工具：append 追加、replace 按行号替换
 │        └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程
 │
 ├─ infra/                    # 【基础设施层】技术适配，不含业务规则
@@ -246,7 +245,7 @@ backend/
 │  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version（含 SHA-256 校验）
 │  │  ├─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure
 │  │  ├─ repositories/       # 各表的读写，只返回数据，不做规则判断
-│  │  └─ *.py                # 存储适配：daily_log、core_memory、app_settings、agent_runs
+│  │  └─ *.py                # 存储适配：daily_log、app_settings、agent_runs、persona_versions
 │  ├─ llm/
 │  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
 │  │  ├─ paradigms.py        # build_chat_model(spec)：三种范式的 LangChain 构造
@@ -254,7 +253,7 @@ backend/
 │  ├─ files/
 │  │  ├─ io.py               # 文件读写（只做 IO）
 │  │  ├─ access.py           # 文件权限：允许根目录、路径规范化、拒绝穿越与符号链接逃逸
-│  │  └─ json_store.py       # 结构化记忆的 JSON 文件存储（<id>.json）
+│  │  └─ json_store.py       # JSON 文件存储（记忆索引）
 │  ├─ events/
 │  │  └─ bus.py              # 进程内发布 / 订阅，供 WebSocket 推送
 │  ├─ logging.py             # 日志：文件日志与数据库日志（批次写入）
@@ -266,8 +265,8 @@ backend/
 │  └─ e2e/                   # 端到端验证：fake_llm.py（本地假模型）与 run_e2e.py（真实后端进程）
 │
 ├─ data/                     # 运行数据（PET_DATA_DIR 指定，默认 backend/data），不入 Git
-│  ├─ pet.db                 # SQLite：daily_log、llm_usage、agent_run、core_memory、app_setting 等
-│  ├─ memory/                # structured/<id>.json（结构化记忆）与 index.json（由代码生成）
+│  ├─ pet.db                 # SQLite：daily_log、llm_usage、agent_run、app_setting 等
+│  ├─ memory/                # structured.md（结构化记忆，纯文本大纲）与 index.json（由代码生成）
 │  ├─ logs/                  # 后端日志
 │  └─ backend.lock           # 单实例锁
 │
@@ -402,7 +401,7 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | **结构化输出的数据模型** | `service/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
 | **SQLite 连接与迁移** | `infra/store/db.py`、`migrate.py` | 技术细节 |
 | **仓储（CRUD）** | `infra/store/repositories/` | 只返回数据，不做业务判断 |
-| **结构化记忆读写、行号 helper、索引生成** | `service/memory/` | 记忆是 Pet 自身的数据，业务用例；JSON 的文件 IO 在 `infra/files/` |
+| **结构化记忆读写、行号 helper、索引生成** | `service/memory/` | 记忆是 Pet 自身的数据，业务用例；文件 IO 在 `infra/files/` |
 | **文件读写与权限** | `infra/files/io.py`、`infra/files/access.py` | IO 与路径白名单、穿越防护，供 agent 工具与 capabilities 共用 |
 | **sub agent 编排与 ReAct 循环** | `service/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
 | **记忆写入与记忆来源** | `service/chat/citations.py`（引用过滤）、`service/agent/skills.py`（能力登记） | 业务规则：写不写由主 agent 决定；只有本次注入上下文中的记忆可作为来源 |
@@ -441,18 +440,18 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 前端 chat 模块 ─► service/chat.service.ts ─► api（POST /api/chat）
 后端 api/routers/chat.py ─► service/chat/chat_service.py
    ├─ 结构化输出（§6.3）：type=dispatch 时运行子代理取得检查点，回灌后由模型生成一次回复，不再允许继续派发
-   ├─ service/agent/prompt        构建系统提示词：角色卡 + 发言规则
-   ├─ service/chat/context        组装：系统提示词 → 核心典藏 → 检索片段（由调用方提供）→ 引用规则 → 近期对话
+   ├─ service/agent/prompt        构建系统提示词：角色卡 + 发言规则 + 结构化记忆全文
+   ├─ service/chat/context        组装：系统提示词 → 检索片段（由调用方提供）→ 引用规则 → 近期对话
    ├─ infra/llm                   调用对话模型（非流式），记录用量
    ├─ 句长校验                     单句 ≤ 40 字符，超限重新生成一次
-   ├─ service/chat/citations      去除 [引用 ID] 标记；来源只保留本次注入上下文中的记忆
+   ├─ service/chat/citations      去除 [引用 日期] 标记；来源只保留本次注入上下文中的记忆片段
    ├─ infra/store/repositories    写入 daily_log（临时模式下不写）
    └─ infra/events/bus            按句段推送 chat.chunk，完成后推送 chat.done（含 sources）
 前端 api/ws.ts ─► service/events.ts ─► stores/chat.store.ts ─► modules/chat 渲染
 ```
 
 - 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
-- 检索：主 agent 可派发「记忆检索」能力读取历史记忆（T-052）；日常对话的主路径目前仍不做自动检索，进入上下文的记忆只有核心典藏，`ChatService.reply` 接受的检索片段仍由调用方提供。
+- 检索：主 agent 可派发「记忆检索」能力读取历史记忆（T-052）；日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.reply` 接受的检索片段仍由调用方提供。
 
 ### 6.2 主动消息
 
@@ -472,17 +471,17 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
   ─► 执行：并行运行子代理（consolidate 模型，ReAct，最多 8 步）
        ├─ resources/skills/<file>.md：子代理先用 index 看技能清单，再 read 打开说明书
        ├─ tools/explore：index、read 按 resource 路由（skill / memory）
-       ├─ tools/memory：memory_create、memory_update 写入（service/memory，经 infra/files 写 data/memory/structured/<id>.json）
+       ├─ tools/memory：memory_append 追加到末尾、memory_replace 按行号替换（service/memory，经 infra/files 写 data/memory/structured.md）
        │    临时模式开启或命中敏感信息时由 MemoryWriter 拒绝，拒绝原因作为工具错误返回
        └─ service/memory/index 重新生成记忆索引
   ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户
 ```
 
-拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看、编辑、删除（T-043）。
+拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看与编辑（T-043、T-053）。
 
 ### 6.3.1 记忆查看与检索
 
-设置页的记忆列表与每日对话通过 `GET /api/memories` 读取，不经过子代理。子代理通过统一的两个探索工具访问资源：`index(resource)` 看清单，`read(resource, name, lines)` 读内容（支持行号区间）。`resource=skill` 读技能说明书，`resource=memory` 读记忆索引与条目，记忆类型由标识自动推断，子代理不需要手填。检索能力（`tools/index:read`）已随「记忆检索」能力接入对话（T-052）。
+设置页通过 `GET /api/memories?date=` 读取结构化记忆全文与每日对话，用 `PUT /api/memories/structured` 保存结构化记忆全文，均不经过子代理。子代理通过统一的两个探索工具访问资源：`index(resource)` 看清单，`read(resource, name, lines)` 读内容（支持行号区间）。`resource=skill` 读技能说明书，`resource=memory` 读记忆索引与条目（资源名为 `structured` 或日期），子代理不需要手填类型。检索能力（`tools/index:read`）已随「记忆检索」能力接入对话（T-052）。
 
 ### 6.4 能力执行
 
@@ -500,14 +499,9 @@ config 只在 main.py 与 deps.py 的组装阶段被读取，然后以参数注�
 | POST | `/api/shutdown` | `shutdown` | 安全退出后端，返回 202（见 §1.3） |
 | POST | `/api/chat` | `send_chat` | 发送消息，返回完整回复与记忆来源（`sources`） |
 | GET | `/api/chat/history` | `list_chat_history` | 每日对话记录，支持关键词、日期范围与分页 |
-| GET | `/api/memories` | `list_memories` | 结构化记忆、核心典藏、每日索引；可按类别与日期筛选 |
-| GET | `/api/memories/{id}` | `get_memory` | 查看一条结构化记忆（每日对话日期返回 403） |
-| PATCH | `/api/memories/{id}` | `update_memory` | 编辑记忆（标题、类别、内容、重要性） |
-| DELETE | `/api/memories/{id}` | `delete_memory` | 删除记忆，同步移出核心典藏 |
+| GET | `/api/memories` | `list_memories` | 结构化记忆全文与每日索引；可传 `date` 取某天对话 |
+| PUT | `/api/memories/structured` | `save_structured_memory` | 保存结构化记忆全文 |
 | POST | `/api/memories/temporary-mode` | `set_memory_temporary_mode` | 开启或关闭临时模式 |
-| POST | `/api/memories/core` | `add_core_memory` | 加入核心典藏（上限 20 条） |
-| DELETE | `/api/memories/core/{id}` | `remove_core_memory` | 移出核心典藏 |
-| PUT | `/api/memories/core/order` | `reorder_core_memory` | 调整核心典藏顺序 |
 | GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
 | GET / PUT | `/api/llm/active` | `get_active_llm` / `set_active_llm` | 当前对话模型与整理模型 |
 | POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |

@@ -18,14 +18,12 @@ from config.settings import (
     load_service_settings,
 )
 from infra.events.bus import EventBus
-from infra.files.json_store import JsonDirectory
 from infra.lifecycle import ShutdownController, watch_stdin
 from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
 from infra.store.agent_runs import DbAgentRuns
 from infra.store.app_settings import DbAppSettings
-from infra.store.core_memory import DbCoreMemory
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
@@ -46,10 +44,13 @@ from service.agent.tools.explore import make_explore_tools
 from service.agent.tools.memory import make_memory_write_tools
 from service.chat.chat_service import ChatService
 from service.llm import LlmService
-from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
+from service.memory.memory_service import (
+    MemoryReader,
+    MemoryWriter,
+    StructuredMemoryDoc,
+)
 from service.memory.services import MemoryServices
 from service.persona.persona_service import PersonaService, PersonaUnavailableError
 
@@ -94,19 +95,15 @@ def serve(
         logger.info("数据库已是最新版本，无需迁移")
     db_file = settings.data_dir / "pet.db"
     memory_dir = settings.data_dir / "memory"
-    structured_dir = memory_dir / "structured"
+    structured_file = memory_dir / "structured.md"
     index_file = memory_dir / "index.json"
     daily_log = DailyLogService(
         DbDailyLog(db_file),
         DbAppSettings(db_file),
         ZoneInfo(settings.timezone),
     )
-    structured_memory = StructuredMemoryService(
-        JsonDirectory(structured_dir),
-        DbAppSettings(db_file),
-        ZoneInfo(settings.timezone),
-    )
-    memory_index = MemoryIndexService(structured_memory, daily_log.dates, index_file)
+    structured_memory = StructuredMemoryDoc(structured_file)
+    memory_index = MemoryIndexService(structured_memory.lines, daily_log.dates, index_file)
     structured_memory.add_listener(memory_index.rebuild)
     try:
         memory_index.rebuild()
@@ -135,14 +132,12 @@ def serve(
 
     shutdown = ShutdownController()
     event_bus = EventBus()
-    core_memory = CoreMemoryService(DbCoreMemory(db_file), structured_memory)
-    memory_writer = MemoryWriter(structured_memory, daily_log, ZoneInfo(settings.timezone))
+    memory_writer = MemoryWriter(structured_memory, daily_log)
     memory_reader = MemoryReader(index_file, structured_memory, daily_log)
     memory_services = MemoryServices(
         structured=structured_memory,
         writer=memory_writer,
         daily=daily_log,
-        core=core_memory,
     )
     skills = SkillRegistry()
     skills.register(memory_write_skill())
@@ -183,7 +178,6 @@ def serve(
         templates,
         db_usage_sink(db_file),
         BusEventPublisher(event_bus),
-        core=core_memory,
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
         capabilities=merge_capabilities(capabilities, skills.summaries()),

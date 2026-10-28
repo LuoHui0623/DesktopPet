@@ -36,9 +36,8 @@ from service.agent.prompt import CapabilityDescription, PromptTemplates
 from service.chat.citations import CitedSource, resolve_sources, split_citations
 from service.chat.context import ContextBuilder, MemoryFragment
 from service.llm import LlmService, LlmUnavailableError
-from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
-from service.memory.memory_service import StructuredMemoryService
+from service.memory.memory_service import StructuredMemoryDoc
 from service.persona.persona_service import PersonaService, PersonaSnapshot, PersonaUnavailableError
 
 logger = logging.getLogger("pet")
@@ -204,8 +203,7 @@ class ChatService:
         usage_sink: UsageSink,
         events: ChatEvents | None = None,
         *,
-        core: CoreMemoryService | None = None,
-        structured: StructuredMemoryService | None = None,
+        structured: StructuredMemoryDoc | None = None,
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
@@ -218,7 +216,6 @@ class ChatService:
         self._events = events or NoChatEvents()
         self._personas = personas
         self._templates = templates
-        self._core = core
         self._structured = structured
         self._timezone = timezone or DEFAULT_TIMEZONE
         self._clock = clock
@@ -245,7 +242,6 @@ class ChatService:
             self._templates,
             self._daily_log,
             self._timezone,
-            core=self._core,
             structured=self._structured,
             clock=self._clock,
             capabilities=self._capabilities,

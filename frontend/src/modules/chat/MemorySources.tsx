@@ -48,7 +48,7 @@ export function MemorySources({ sources }: { sources: MemorySourceRef[] }) {
         >
           <div style={{ color: "#555" }}>{sourceHeading(open)}</div>
           <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{open.text}</div>
-          <div style={{ color: "#999", fontSize: 11 }}>id：{open.id}</div>
+          <div style={{ color: "#999", fontSize: 11 }}>标识：{open.id}</div>
         </div>
       )}
     </div>

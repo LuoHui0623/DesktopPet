@@ -105,7 +105,7 @@ def test_memory_write_skill_declares_write_tools():
     spec = memory_write_skill()
     assert spec.name == MEMORY_WRITE_CAPABILITY
     assert spec.file == "memory_write"
-    assert spec.tools == ("index", "read", "memory_create", "memory_update")
+    assert spec.tools == ("index", "read", "memory_append", "memory_replace")
 
 
 def test_memory_retrieve_skill_is_read_only():

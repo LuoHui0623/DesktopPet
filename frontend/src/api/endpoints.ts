@@ -7,15 +7,12 @@ import type {
   ChatHistoryQuery,
   ChatHistoryResponse,
   ChatReplyResponse,
-  CoreMemoriesResponse,
-  DeleteMemoryResponse,
   LlmProvidersResponse,
   MemoriesQuery,
   MemoriesResponse,
-  MemoryItem,
-  MemoryPatch,
   PersonasResponse,
   ReloadResponse,
+  StructuredMemoryUpdate,
   TemporaryModeResponse,
 } from "./types";
 
@@ -71,51 +68,12 @@ export function listMemories(
   return request<MemoriesResponse>(client, "GET", "/api/memories", { query });
 }
 
-export function getMemory(client: ApiClient, memoryId: string): Promise<MemoryItem> {
-  return request<MemoryItem>(client, "GET", `/api/memories/${encodeURIComponent(memoryId)}`);
-}
-
-export function updateMemory(
+export function saveStructuredMemory(
   client: ApiClient,
-  memoryId: string,
-  patch: MemoryPatch,
-): Promise<MemoryItem> {
-  return request<MemoryItem>(client, "PATCH", `/api/memories/${encodeURIComponent(memoryId)}`, {
-    body: patch,
-  });
-}
-
-export function deleteMemory(client: ApiClient, memoryId: string): Promise<DeleteMemoryResponse> {
-  return request<DeleteMemoryResponse>(
-    client,
-    "DELETE",
-    `/api/memories/${encodeURIComponent(memoryId)}`,
-  );
-}
-
-export function addCoreMemory(client: ApiClient, memoryId: string): Promise<CoreMemoriesResponse> {
-  return request<CoreMemoriesResponse>(client, "POST", "/api/memories/core", {
-    body: { memory_id: memoryId },
-  });
-}
-
-export function removeCoreMemory(
-  client: ApiClient,
-  memoryId: string,
-): Promise<CoreMemoriesResponse> {
-  return request<CoreMemoriesResponse>(
-    client,
-    "DELETE",
-    `/api/memories/core/${encodeURIComponent(memoryId)}`,
-  );
-}
-
-export function reorderCoreMemory(
-  client: ApiClient,
-  memoryIds: string[],
-): Promise<CoreMemoriesResponse> {
-  return request<CoreMemoriesResponse>(client, "PUT", "/api/memories/core/order", {
-    body: { memory_ids: memoryIds },
+  text: string,
+): Promise<StructuredMemoryUpdate> {
+  return request<StructuredMemoryUpdate>(client, "PUT", "/api/memories/structured", {
+    body: { text },
   });
 }
 

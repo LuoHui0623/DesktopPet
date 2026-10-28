@@ -18,42 +18,6 @@
       }
     },
     {
-      "operationId": "add_core_memory",
-      "method": "POST",
-      "path": "/api/memories/core",
-      "tags": [
-        "memories"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/CoreAddRequest"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/CoreMemoriesResponse"
-        },
-        "422": null
-      }
-    },
-    {
-      "operationId": "delete_memory",
-      "method": "DELETE",
-      "path": "/api/memories/{memory_id}",
-      "tags": [
-        "memories"
-      ],
-      "request": null,
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/DeleteResponse"
-        },
-        "403": null,
-        "404": null,
-        "422": {
-          "$ref": "#/components/schemas/HTTPValidationError"
-        }
-      }
-    },
-    {
       "operationId": "get_active_llm",
       "method": "GET",
       "path": "/api/llm/active",
@@ -64,25 +28,6 @@
       "responses": {
         "200": {
           "$ref": "#/components/schemas/ActiveLlmResponse"
-        }
-      }
-    },
-    {
-      "operationId": "get_memory",
-      "method": "GET",
-      "path": "/api/memories/{memory_id}",
-      "tags": [
-        "memories"
-      ],
-      "request": null,
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/MemoryOut"
-        },
-        "404": null,
-        "409": null,
-        "422": {
-          "$ref": "#/components/schemas/HTTPValidationError"
         }
       }
     },
@@ -178,35 +123,22 @@
       }
     },
     {
-      "operationId": "remove_core_memory",
-      "method": "DELETE",
-      "path": "/api/memories/core/{memory_id}",
-      "tags": [
-        "memories"
-      ],
-      "request": null,
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/CoreMemoriesResponse"
-        },
-        "422": null
-      }
-    },
-    {
-      "operationId": "reorder_core_memory",
+      "operationId": "save_structured_memory",
       "method": "PUT",
-      "path": "/api/memories/core/order",
+      "path": "/api/memories/structured",
       "tags": [
         "memories"
       ],
       "request": {
-        "$ref": "#/components/schemas/CoreOrderRequest"
+        "$ref": "#/components/schemas/StructuredMemoryUpdate"
       },
       "responses": {
         "200": {
-          "$ref": "#/components/schemas/CoreMemoriesResponse"
+          "$ref": "#/components/schemas/StructuredMemoryUpdate"
         },
-        "422": null
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
       }
     },
     {
@@ -302,26 +234,6 @@
           "$ref": "#/components/schemas/HTTPValidationError"
         },
         "503": null
-      }
-    },
-    {
-      "operationId": "update_memory",
-      "method": "PATCH",
-      "path": "/api/memories/{memory_id}",
-      "tags": [
-        "memories"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/MemoryPatch"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/MemoryOut"
-        },
-        "403": null,
-        "404": null,
-        "409": null,
-        "422": null
       }
     }
   ],
@@ -690,53 +602,6 @@
         "title": "ChatRequest",
         "type": "object"
       },
-      "CoreAddRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "memory_id": {
-            "title": "Memory Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "memory_id"
-        ],
-        "title": "CoreAddRequest",
-        "type": "object"
-      },
-      "CoreMemoriesResponse": {
-        "properties": {
-          "core_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Core Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "core_ids"
-        ],
-        "title": "CoreMemoriesResponse",
-        "type": "object"
-      },
-      "CoreOrderRequest": {
-        "additionalProperties": false,
-        "properties": {
-          "memory_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Memory Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "memory_ids"
-        ],
-        "title": "CoreOrderRequest",
-        "type": "object"
-      },
       "DailyRecordOut": {
         "properties": {
           "content": {
@@ -786,24 +651,6 @@
           "model"
         ],
         "title": "DefaultInfo",
-        "type": "object"
-      },
-      "DeleteResponse": {
-        "properties": {
-          "deleted": {
-            "title": "Deleted",
-            "type": "boolean"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "deleted"
-        ],
-        "title": "DeleteResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -866,13 +713,6 @@
       },
       "MemoriesResponse": {
         "properties": {
-          "core_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Core Ids",
-            "type": "array"
-          },
           "daily_memory": {
             "additionalProperties": {
               "items": {
@@ -897,19 +737,9 @@
             ],
             "title": "Daily Records"
           },
-          "skipped": {
-            "items": {
-              "$ref": "#/components/schemas/SkippedMemoryOut"
-            },
-            "title": "Skipped",
-            "type": "array"
-          },
           "structured": {
-            "items": {
-              "$ref": "#/components/schemas/MemoryOut"
-            },
             "title": "Structured",
-            "type": "array"
+            "type": "string"
           },
           "temporary_mode": {
             "title": "Temporary Mode",
@@ -918,139 +748,10 @@
         },
         "required": [
           "temporary_mode",
-          "core_ids",
           "structured",
-          "skipped",
           "daily_memory"
         ],
         "title": "MemoriesResponse",
-        "type": "object"
-      },
-      "MemoryOut": {
-        "properties": {
-          "category": {
-            "title": "Category",
-            "type": "string"
-          },
-          "content": {
-            "title": "Content",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "importance": {
-            "title": "Importance",
-            "type": "integer"
-          },
-          "source": {
-            "$ref": "#/components/schemas/MemorySourceOut"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "updated_at": {
-            "title": "Updated At",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "category",
-          "title",
-          "content",
-          "importance",
-          "source",
-          "created_at",
-          "updated_at"
-        ],
-        "title": "MemoryOut",
-        "type": "object"
-      },
-      "MemoryPatch": {
-        "additionalProperties": false,
-        "properties": {
-          "category": {
-            "anyOf": [
-              {
-                "enum": [
-                  "profile",
-                  "preference",
-                  "habit",
-                  "event",
-                  "interaction"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Category"
-          },
-          "content": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Content"
-          },
-          "importance": {
-            "anyOf": [
-              {
-                "maximum": 5,
-                "minimum": 1,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Importance"
-          },
-          "title": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Title"
-          }
-        },
-        "title": "MemoryPatch",
-        "type": "object"
-      },
-      "MemorySourceOut": {
-        "properties": {
-          "date": {
-            "title": "Date",
-            "type": "string"
-          },
-          "type": {
-            "title": "Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "type",
-          "date"
-        ],
-        "title": "MemorySourceOut",
         "type": "object"
       },
       "ModelInfo": {
@@ -1260,38 +961,8 @@
           }
         ]
       },
-      "SkippedMemoryOut": {
-        "properties": {
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          }
-        },
-        "required": [
-          "name",
-          "reason"
-        ],
-        "title": "SkippedMemoryOut",
-        "type": "object"
-      },
       "SourceOut": {
         "properties": {
-          "category": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Category"
-          },
           "date": {
             "title": "Date",
             "type": "string"
@@ -1342,6 +1013,20 @@
           "state"
         ],
         "title": "StatusEvent",
+        "type": "object"
+      },
+      "StructuredMemoryUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "StructuredMemoryUpdate",
         "type": "object"
       },
       "TemporaryModeRequest": {

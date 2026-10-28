@@ -1,24 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import type { DailyRecord, MemoriesResponse, MemoryCategory, MemoryPatch } from "../../api/types";
+import type { DailyRecord, MemoriesResponse } from "../../api/types";
 import { describeRequestError } from "../../service/api-client";
-import {
-  addToCore,
-  editMemory,
-  loadMemories,
-  removeFromCore,
-  removeMemory,
-  reorderCore,
-  setTemporaryMode,
-} from "../../service/memory.service";
-import { MemoryCard } from "./MemoryCard";
-import {
-  allDates,
-  CATEGORY_OPTIONS,
-  categoryLabel,
-  coreEntries,
-  filterByCategory,
-  moveId,
-} from "./memory-view";
+import { loadMemories, saveStructured, setTemporaryMode } from "../../service/memory.service";
+import { allDates, numberedLines } from "./memory-view";
 
 const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
 const headingStyle = { fontSize: 15, margin: 0 } as const;
@@ -29,11 +13,13 @@ export function MemorySettings() {
   const [data, setData] = useState<MemoriesResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [category, setCategory] = useState<MemoryCategory | null>(null);
   const [busy, setBusy] = useState(false);
   const [day, setDay] = useState("");
   const [dayRecords, setDayRecords] = useState<DailyRecord[] | null>(null);
   const [dayError, setDayError] = useState<string | null>(null);
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [structuredError, setStructuredError] = useState<string | null>(null);
 
   const refresh = useCallback(
     () =>
@@ -53,61 +39,6 @@ export function MemorySettings() {
     void refresh();
   }, [refresh]);
 
-  const applyEdit = (memoryId: string, patch: MemoryPatch): Promise<void> =>
-    editMemory(memoryId, patch).then((item) => {
-      setData((previous) =>
-        previous
-          ? {
-              ...previous,
-              structured: previous.structured.map((existing) =>
-                existing.id === memoryId ? item : existing,
-              ),
-            }
-          : previous,
-      );
-    });
-
-  const applyDelete = (memoryId: string): Promise<void> =>
-    removeMemory(memoryId).then(() => {
-      setData((previous) =>
-        previous
-          ? {
-              ...previous,
-              structured: previous.structured.filter((item) => item.id !== memoryId),
-              core_ids: previous.core_ids.filter((id) => id !== memoryId),
-            }
-          : previous,
-      );
-    });
-
-  const toggleCore = (memoryId: string, inCore: boolean) => {
-    setActionError(null);
-    const request = inCore ? removeFromCore(memoryId) : addToCore(memoryId);
-    request.then(
-      (result) => {
-        setData((previous) => (previous ? { ...previous, core_ids: result.core_ids } : previous));
-      },
-      (error: unknown) => {
-        setActionError(describeRequestError(error));
-      },
-    );
-  };
-
-  const moveCore = (memoryId: string, delta: -1 | 1) => {
-    if (!data) return;
-    const next = moveId(data.core_ids, memoryId, delta);
-    if (next === data.core_ids) return;
-    setActionError(null);
-    reorderCore(next).then(
-      (result) => {
-        setData((previous) => (previous ? { ...previous, core_ids: result.core_ids } : previous));
-      },
-      (error: unknown) => {
-        setActionError(describeRequestError(error));
-      },
-    );
-  };
-
   const toggleTemporary = () => {
     if (!data) return;
     setBusy(true);
@@ -124,6 +55,23 @@ export function MemorySettings() {
         },
       )
       .finally(() => setBusy(false));
+  };
+
+  const saveStructuredText = () => {
+    if (draft === null) return;
+    setSaving(true);
+    setStructuredError(null);
+    saveStructured(draft)
+      .then(
+        (result) => {
+          setData((previous) => (previous ? { ...previous, structured: result.text } : previous));
+          setDraft(null);
+        },
+        (error: unknown) => {
+          setStructuredError(describeRequestError(error));
+        },
+      )
+      .finally(() => setSaving(false));
   };
 
   const selectDay = (next: string) => {
@@ -147,9 +95,8 @@ export function MemorySettings() {
     );
   }
 
-  const visible = filterByCategory(data.structured, category);
-  const core = coreEntries(data.structured, data.core_ids);
   const dates = allDates(data.daily_memory);
+  const lines = numberedLines(data.structured);
 
   return (
     <div>
@@ -177,83 +124,88 @@ export function MemorySettings() {
             {data.temporary_mode ? "关闭临时模式" : "开启临时模式"}
           </button>
         </div>
-      </section>
-
-      <section style={sectionStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <h2 style={headingStyle}>结构化记忆</h2>
-          <select
-            aria-label="按类别筛选"
-            value={category ?? ""}
-            onChange={(event) =>
-              setCategory(event.target.value ? (event.target.value as MemoryCategory) : null)
-            }
-          >
-            <option value="">全部类别</option>
-            {CATEGORY_OPTIONS.map((option) => (
-              <option key={option} value={option}>
-                {categoryLabel(option)}
-              </option>
-            ))}
-          </select>
-        </div>
         {actionError && (
           <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
             {actionError}
           </p>
         )}
-        {visible.length === 0 && <p style={{ color: "#777", fontSize: 13 }}>暂无记忆</p>}
-        <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
-          {visible.map((item) => (
-            <MemoryCard
-              key={item.id}
-              item={item}
-              inCore={data.core_ids.includes(item.id)}
-              onEdit={applyEdit}
-              onDelete={applyDelete}
-              onToggleCore={toggleCore}
-            />
-          ))}
-        </ul>
       </section>
 
       <section style={sectionStyle}>
-        <h2 style={headingStyle}>核心典藏（{data.core_ids.length} 条）</h2>
-        {core.length === 0 && <p style={{ color: "#777", fontSize: 13 }}>暂无核心典藏</p>}
-        <ol style={{ margin: 0, paddingLeft: 20, display: "grid", gap: 6, fontSize: 13 }}>
-          {core.map((entry, index) => (
-            <li key={entry.id}>
-              {entry.memory ? entry.memory.title : `（已不存在：${entry.id}）`}
-              <span style={{ marginLeft: 8, display: "inline-flex", gap: 4 }}>
-                <button
-                  type="button"
-                  aria-label="上移"
-                  disabled={index === 0}
-                  onClick={() => moveCore(entry.id, -1)}
-                  style={buttonStyle}
-                >
-                  上移
-                </button>
-                <button
-                  type="button"
-                  aria-label="下移"
-                  disabled={index === core.length - 1}
-                  onClick={() => moveCore(entry.id, 1)}
-                  style={buttonStyle}
-                >
-                  下移
-                </button>
-                <button
-                  type="button"
-                  onClick={() => toggleCore(entry.id, true)}
-                  style={buttonStyle}
-                >
-                  移出
-                </button>
-              </span>
-            </li>
-          ))}
-        </ol>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={headingStyle}>结构化记忆</h2>
+          {draft === null ? (
+            <button
+              type="button"
+              onClick={() => {
+                setDraft(data.structured);
+                setStructuredError(null);
+              }}
+              style={buttonStyle}
+            >
+              编辑
+            </button>
+          ) : (
+            <span style={{ display: "inline-flex", gap: 6 }}>
+              <button
+                type="button"
+                onClick={saveStructuredText}
+                disabled={saving}
+                style={buttonStyle}
+              >
+                保存
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setDraft(null);
+                  setStructuredError(null);
+                }}
+                disabled={saving}
+                style={buttonStyle}
+              >
+                取消
+              </button>
+            </span>
+          )}
+        </div>
+        {structuredError && (
+          <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
+            {structuredError}
+          </p>
+        )}
+        {draft === null ? (
+          lines.length === 0 ? (
+            <p style={{ color: "#777", fontSize: 13 }}>暂无结构化记忆</p>
+          ) : (
+            <ol
+              aria-label="结构化记忆正文"
+              style={{ margin: 0, paddingLeft: 0, listStyle: "none", fontSize: 13 }}
+            >
+              {lines.map((entry) => (
+                <li key={entry.line} style={{ display: "flex", gap: 8 }}>
+                  <span
+                    aria-hidden="true"
+                    style={{ color: "#9ca3af", minWidth: 28, textAlign: "right" }}
+                  >
+                    {entry.line}
+                  </span>
+                  <span style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                    {entry.text}
+                  </span>
+                </li>
+              ))}
+            </ol>
+          )
+        ) : (
+          <textarea
+            aria-label="结构化记忆编辑"
+            value={draft}
+            rows={16}
+            onChange={(event) => setDraft(event.target.value)}
+            style={{ fontSize: 13, padding: 6, resize: "vertical", fontFamily: "inherit" }}
+          />
+        )}
       </section>
 
       <section style={sectionStyle}>
@@ -295,19 +247,6 @@ export function MemorySettings() {
           ))}
         </ul>
       </section>
-
-      {data.skipped.length > 0 && (
-        <section style={sectionStyle}>
-          <h2 style={headingStyle}>已跳过的记忆文件</h2>
-          <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: "#8a5a00" }}>
-            {data.skipped.map((item) => (
-              <li key={item.name}>
-                {item.name}：{item.reason}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
     </div>
   );
 }

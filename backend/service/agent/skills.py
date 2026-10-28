@@ -94,7 +94,7 @@ def parse_head_note(path: Path) -> str:
 
 MEMORY_WRITE_CAPABILITY = "记忆写入"
 MEMORY_RETRIEVE_CAPABILITY = "记忆检索"
-MEMORY_WRITE_TOOLS = ("index", "read", "memory_create", "memory_update")
+MEMORY_WRITE_TOOLS = ("index", "read", "memory_append", "memory_replace")
 MEMORY_RETRIEVE_TOOLS = ("index", "read")
 
 

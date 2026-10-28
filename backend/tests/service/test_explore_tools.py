@@ -4,7 +4,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from constants.path import SKILLS_DIR
-from infra.files.json_store import JsonDirectory
 from infra.store.app_settings import DbAppSettings
 from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
@@ -18,20 +17,27 @@ from service.agent.skills import (
 )
 from service.agent.tools.explore import make_explore_tools
 from service.memory.daily_log_service import DailyLogService
-from service.memory.memory_service import MemoryReader, StructuredMemoryService
+from service.memory.index import MemoryIndexService
+from service.memory.memory_service import MemoryReader, StructuredMemoryDoc
 
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-class DictSettings:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
+@pytest.fixture
+def structured(tmp_path: Path) -> StructuredMemoryDoc:
+    return StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
 
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
 
-    def put(self, key: str, value: str) -> None:
-        self.values[key] = value
+@pytest.fixture
+def reader(tmp_path: Path, structured: StructuredMemoryDoc) -> MemoryReader:
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    index = MemoryIndexService(structured.lines, daily.dates, tmp_path / "memory" / "index.json")
+    index.rebuild()
+    return MemoryReader(tmp_path / "memory" / "index.json", structured, daily)
 
 
 @pytest.fixture
@@ -46,19 +52,6 @@ def skills(tmp_path: Path) -> SkillRegistry:
     registry.register(memory_retrieve_skill())
     registry.register(SkillSpec("写笔记", "note"))
     return registry
-
-
-@pytest.fixture
-def reader(tmp_path: Path) -> MemoryReader:
-    db_file = tmp_path / "pet.db"
-    conn = connect(db_file)
-    migrate(conn)
-    conn.close()
-    memories = StructuredMemoryService(
-        JsonDirectory(tmp_path / "memory" / "structured"), DictSettings(), TZ
-    )
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
-    return MemoryReader(tmp_path / "memory" / "index.json", memories, daily)
 
 
 @pytest.fixture
@@ -107,4 +100,18 @@ def test_unknown_resource_is_reported(tools):
 def test_unrecognized_memory_name_is_reported(tools):
     result = tools["read"].invoke({"resource": "memory", "name": "咖啡"})
     assert result["ok"] is False
-    assert "无法识别的记忆标识" in result["error"]
+    assert result["content"] is None
+    assert "无法识别的记忆名称" in result["error"]
+    assert "structured" in result["error"]
+
+
+def test_read_structured_memory_returns_numbered_lines(tools):
+    result = tools["read"].invoke({"resource": "memory", "name": "structured"})
+    assert result["ok"] is True
+    assert result["content"].startswith("1: ")
+
+
+def test_read_structured_memory_respects_line_range(tools):
+    result = tools["read"].invoke({"resource": "memory", "name": "structured", "lines": "1"})
+    assert result["ok"] is True
+    assert result["content"].strip().startswith("1: ")

@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import AIMessage
 
 from config.settings import ModelSettingsSource
-from infra.files.json_store import JsonDirectory
 from infra.llm.usage import db_usage_sink
 from infra.store.agent_runs import DbAgentRuns
 from infra.store.app_settings import DbAppSettings
@@ -25,7 +24,12 @@ from service.chat.chat_service import ChatService
 from service.llm import LlmService
 from service.memory.daily_log_service import DailyLogService
 from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemoryReader, MemoryWriter, StructuredMemoryService
+from service.memory.memory_service import (
+    DEFAULT_STRUCTURED_DOC,
+    MemoryReader,
+    MemoryWriter,
+    StructuredMemoryDoc,
+)
 from service.persona.persona_service import PersonaService
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -74,42 +78,22 @@ def chat_reply(text: str) -> str:
 DRAFT = json.dumps(
     {
         "action": "draft",
-        "content": "用 memory_create 记下咖啡偏好",
-        "tools": ["memory_create"],
+        "content": "用 memory_append 记下咖啡偏好",
+        "tools": ["memory_append"],
     },
     ensure_ascii=False,
 )
 
 
-def create(title: str, content: str) -> str:
+def append(content: str) -> str:
     return json.dumps(
-        {
-            "action": "tool",
-            "tool": "memory_create",
-            "args": {
-                "category": "preference",
-                "title": title,
-                "content": content,
-                "trigger": "explicit",
-            },
-        },
+        {"action": "tool", "tool": "memory_append", "args": {"content": content}},
         ensure_ascii=False,
     )
 
 
 def finish(output: str) -> str:
     return json.dumps({"action": "finish", "output": output}, ensure_ascii=False)
-
-
-class DictSettings:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    def put(self, key: str, value: str) -> None:
-        self.values[key] = value
 
 
 class Clock:
@@ -171,17 +155,14 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         usage_sink=db_usage_sink(db_file),
     )
     llm.start()
-    settings = DbAppSettings(db_file)
-    daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
-    memories = StructuredMemoryService(
-        JsonDirectory(tmp_path / "memory" / "structured"), DictSettings(), TZ, clock=Clock()
-    )
+    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
     index_file = tmp_path / "memory" / "index.json"
-    index = MemoryIndexService(memories, daily.dates, index_file)
-    memories.add_listener(index.rebuild)
+    index = MemoryIndexService(structured.lines, daily.dates, index_file)
+    structured.add_listener(index.rebuild)
     index.rebuild()
-    reader = MemoryReader(index_file, memories, daily)
-    writer = MemoryWriter(memories, daily, TZ, clock=Clock())
+    reader = MemoryReader(index_file, structured, daily)
+    writer = MemoryWriter(structured, daily)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     tools = [
@@ -206,7 +187,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     return {
         "chat": chat,
         "chat_model": chat_model,
-        "memories": memories,
+        "structured": structured,
         "daily": daily,
         "db_file": db_file,
     }
@@ -234,7 +215,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
         [
             dispatch(text),
             DRAFT,
-            create("咖啡偏好", "喜欢美式咖啡，不加糖"),
+            append("## 喜好\n咖啡：美式，不加糖"),
             finish("已记下咖啡偏好"),
             chat_reply("记住啦，美式不加糖～"),
         ],
@@ -243,7 +224,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
     result = env["chat"].reply(text)
     assert result.text == "记住啦，美式不加糖～"
     assert result.recorded is True
-    assert [item.title for item in env["memories"].list().items] == ["咖啡偏好"]
+    assert "咖啡：美式，不加糖" in env["structured"].text()
     assert env["chat_model"].calls == 5
     assert len(events.plan_ids) == 1
     kinds = states(events)
@@ -263,7 +244,7 @@ def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     env = build_chat(tmp_path, [chat_reply("好呀，我记着。")], events)
     result = env["chat"].reply("记住，我喜欢美式咖啡")
     assert result.text == "好呀，我记着。"
-    assert env["memories"].list().items == []
+    assert env["structured"].text() == DEFAULT_STRUCTURED_DOC
     assert env["chat_model"].calls == 1
     assert events.plan_ids == []
     assert "executing" not in states(events)
@@ -281,7 +262,7 @@ def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
         [
             dispatch(text),
             DRAFT,
-            create("咖啡偏好", "喜欢美式咖啡"),
+            append("## 喜好\n咖啡：美式"),
             finish("临时模式，没写入"),
             chat_reply("临时模式下，这次先不记。"),
         ],
@@ -291,7 +272,7 @@ def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
     result = env["chat"].reply(text)
     assert result.text == "临时模式下，这次先不记。"
     assert result.recorded is False
-    assert env["memories"].list().items == []
+    assert "咖啡：美式" not in env["structured"].text()
     assert env["chat_model"].observed("临时模式开启，本次不写入结构化记忆")
     assert logged_turns(env["db_file"]) == []
 
@@ -304,7 +285,7 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
         [
             dispatch(text),
             DRAFT,
-            create("证件号", "11010119900307123X"),
+            append("证件号：11010119900307123X"),
             finish("这条没有记下"),
             chat_reply("这个我就不记了。"),
         ],
@@ -312,5 +293,5 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
     )
     result = env["chat"].reply(text)
     assert result.text == "这个我就不记了。"
-    assert env["memories"].list().items == []
+    assert "11010119900307123X" not in env["structured"].text()
     assert env["chat_model"].observed("敏感信息不写入记忆")

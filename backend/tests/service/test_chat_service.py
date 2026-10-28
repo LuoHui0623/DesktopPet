@@ -396,13 +396,7 @@ def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
 
 
 CITED_FRAGMENTS = [
-    MemoryFragment(
-        kind=KIND_STRUCTURED,
-        date="2026-10-18",
-        text="喜欢美式咖啡，不加糖",
-        category="preference",
-        memory_id="m_20261018_001",
-    ),
+    MemoryFragment(kind=KIND_STRUCTURED, date="2026-10-18", text="喜欢美式咖啡，不加糖"),
     MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶"),
 ]
 
@@ -410,29 +404,30 @@ CITED_FRAGMENTS = [
 def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_path: Path):
     events = RecordingEvents()
     reply = (
-        "你上次说过喜欢美式 [引用 m_20261018_001]。"
-        "另外昨天聊过茶 [引用 2026-10-17]，还有编造的 [引用 m_20261018_999]。"
+        "你上次说过喜欢美式 [引用 2026-10-18]。"
+        "另外昨天聊过茶 [引用 2026-10-17]，还有编造的 [引用 2026-10-01]。"
     )
     harness = Harness(tmp_path, [reply], events=events)
     result = harness.chat.reply("你好", CITED_FRAGMENTS)
     assert result.text == "你上次说过喜欢美式。另外昨天聊过茶，还有编造的。"
-    assert [source.id for source in result.sources] == ["m_20261018_001", "2026-10-17"]
+    assert [source.id for source in result.sources] == ["2026-10-18", "2026-10-17"]
     assert result.sources[0].text == "喜欢美式咖啡，不加糖"
     done = next(entry for entry in events.log if entry[0] == "done")
-    assert [source.id for source in done[3]] == ["m_20261018_001", "2026-10-17"]
+    assert [source.id for source in done[3]] == ["2026-10-18", "2026-10-17"]
     assert harness.query("SELECT content FROM daily_log WHERE role = 'me'") == [(result.text,)]
 
 
-def test_injected_fragments_carry_their_ids_and_the_citation_rule(tmp_path: Path):
+def test_injected_fragments_carry_their_dates_and_the_citation_rule(tmp_path: Path):
     harness = Harness(tmp_path, [SHORT])
     harness.chat.reply("你好", CITED_FRAGMENTS)
     system = harness.fake.calls[0][0].content
-    assert "（id：m_20261018_001）" in system
-    assert "[引用 ID]" in system
+    assert "[结构化记忆 · 2026-10-18] 喜欢美式咖啡，不加糖" in system
+    assert "[每日对话 · 2026-10-17] 昨天聊了茶" in system
+    assert "[引用 日期]" in system
 
 
 def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
-    marker = "[引用 m_20261018_001]"
+    marker = "[引用 2026-10-18]"
     harness = Harness(tmp_path, [marker, marker])
     with pytest.raises(ChatError) as exc:
         harness.chat.reply("你好", CITED_FRAGMENTS)
@@ -461,7 +456,7 @@ class FakeOrchestrator:
                 capability=step.capability,
                 task=step.task,
                 content=f"草案：{step.capability}",
-                tools=("memory_create",),
+                tools=("memory_append",),
             )
             for index, step in enumerate(steps, start=1)
         ]
@@ -496,7 +491,7 @@ class RejectingOrchestrator(FakeOrchestrator):
                 capability=step.capability,
                 task=step.task,
                 content=f"草案：{step.capability}",
-                tools=("memory_create",),
+                tools=("memory_append",),
             )
             for index, step in enumerate(steps, start=1)
         ]

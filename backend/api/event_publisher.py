@@ -18,7 +18,6 @@ def source_out(source: CitedSource) -> SourceOut:
     return SourceOut(
         id=source.id,
         kind=source.kind,
-        category=source.category,
         date=source.date,
         text=source.text,
     )

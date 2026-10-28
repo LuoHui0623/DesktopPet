@@ -1,11 +1,8 @@
-﻿export type PetState = "idle" | "thinking" | "speaking" | "executing" | "sleeping";
-
-export type MemoryCategory = "profile" | "preference" | "habit" | "event" | "interaction";
+export type PetState = "idle" | "thinking" | "speaking" | "executing" | "sleeping";
 
 export interface MemorySourceRef {
   id: string;
   kind: string;
-  category: string | null;
   date: string;
   text: string;
 }
@@ -118,27 +115,6 @@ export interface ReloadResponse {
   warnings: string[];
 }
 
-export interface MemorySource {
-  type: string;
-  date: string;
-}
-
-export interface MemoryItem {
-  id: string;
-  category: string;
-  title: string;
-  content: string;
-  importance: number;
-  source: MemorySource;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface SkippedMemory {
-  name: string;
-  reason: string;
-}
-
 export interface DailyRecord {
   id: number;
   date: string;
@@ -149,36 +125,21 @@ export interface DailyRecord {
 
 export interface MemoriesResponse {
   temporary_mode: boolean;
-  core_ids: string[];
-  structured: MemoryItem[];
-  skipped: SkippedMemory[];
+  structured: string;
   daily_memory: Record<string, string[]>;
   daily_records: DailyRecord[] | null;
 }
 
 export type MemoriesQuery = {
-  category?: MemoryCategory;
   date?: string;
 };
 
-export interface MemoryPatch {
-  title?: string;
-  content?: string;
-  category?: MemoryCategory;
-  importance?: number;
-}
-
-export interface DeleteMemoryResponse {
-  id: string;
-  deleted: boolean;
+export interface StructuredMemoryUpdate {
+  text: string;
 }
 
 export interface TemporaryModeResponse {
   temporary_mode: boolean;
-}
-
-export interface CoreMemoriesResponse {
-  core_ids: string[];
 }
 
 export interface PersonaItem {

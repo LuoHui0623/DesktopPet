@@ -4,7 +4,7 @@
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
 覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
-记忆写入派发与审批、翻阅与编辑、核心典藏与引用来源、临时模式、正常关闭（stdin 指令）。
+记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、临时模式、正常关闭（stdin 指令）。
 """
 
 import json
@@ -285,7 +285,7 @@ def check_invalid_output_regenerates(api: Api, tap: EventTap, llm: FakeLlm) -> N
     step("结构化输出：非法 JSON 重新生成一次后返回 invalid_output，不推送")
 
 
-def check_dispatched_write(api: Api, tap: EventTap) -> dict:
+def check_dispatched_write(api: Api, tap: EventTap) -> str:
     mark = len(tap.events)
     notice = api.call("POST", "/api/chat", {"text": "请记住，我喜欢美式咖啡，不加糖"})
     check(notice["text"] == "我记住啦：喜欢美式咖啡，不加糖", f"写入回复异常：{notice}")
@@ -300,7 +300,7 @@ def check_dispatched_write(api: Api, tap: EventTap) -> dict:
     item = approvals[0]["items"][0]
     check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
     check(item["task"] == "请记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
-    check(item["tools"] == ["memory_create"], f"审批项应带草案声明的工具：{item}")
+    check(item["tools"] == ["memory_append"], f"审批项应带草案声明的工具：{item}")
     check(item["content"], "审批项应带草案内容")
     decided = tap.wait_for_approvals(1)
     check(len(decided) == 1 and decided[0]["approved"] is True, f"审批应被接受：{decided}")
@@ -313,18 +313,27 @@ def check_dispatched_write(api: Api, tap: EventTap) -> dict:
         and kinds.index("approval.request") < kinds.index("status:speaking"),
         f"审批应早于回复：{kinds}",
     )
-    memories = api.call("GET", "/api/memories")
-    check(len(memories["structured"]) == 1, f"应只写入一条记忆：{memories['structured']}")
-    memory = memories["structured"][0]
-    check(memory["source"]["type"] == "explicit", f"来源类型应为 explicit：{memory}")
-    step("记忆写入：主对话自行决定派发，子代理起草并请求审批，同意后写入一条结构化记忆")
+    structured = api.call("GET", "/api/memories")["structured"]
+    check(isinstance(structured, str), f"结构化记忆应为纯文本：{structured!r}")
+    check("喜欢美式咖啡，不加糖" in structured, f"应写入结构化记忆：{structured!r}")
+    step("记忆写入：主对话自行决定派发，子代理起草并请求审批，同意后追加进结构化记忆")
+    return structured
 
-    edited = api.call("PATCH", f"/api/memories/{memory['id']}", {"title": "咖啡偏好"})
-    check(edited["title"] == "咖啡偏好", f"编辑未生效：{edited}")
-    listed = api.call("GET", "/api/memories")
-    check(listed["structured"][0]["title"] == "咖啡偏好", "编辑后列表未更新")
-    step("翻阅与编辑：修改标题后列表立即更新")
-    return memory
+
+def check_manual_edit(api: Api, data_dir: Path) -> str:
+    before = api.call("GET", "/api/memories")["structured"]
+    lines_before = len(before.splitlines())
+    edited = api.call("PUT", "/api/memories/structured", {"text": before + "- 只喝热美式\n"})
+    check("- 只喝热美式" in edited["text"], f"保存未生效：{edited}")
+    listed = api.call("GET", "/api/memories")["structured"]
+    check("- 只喝热美式" in listed, "保存后列表未更新")
+    index = json.loads((data_dir / "memory" / "index.json").read_text(encoding="utf-8"))
+    check(
+        index["index"]["structured"]["lines"] == lines_before + 1,
+        f"保存后行数索引未重建：{index['index']['structured']}",
+    )
+    step("结构化记忆：手动编辑保存后立即生效，行数与索引同步重建")
+    return listed
 
 
 def check_memory_retrieve(api: Api, tap: EventTap) -> None:
@@ -344,7 +353,7 @@ def check_memory_retrieve(api: Api, tap: EventTap) -> None:
     step("记忆检索：子代理读说明书后按 index/read 探索记忆，审批后返回片段")
 
 
-def check_write_rejected(api: Api, tap: EventTap) -> None:
+def check_write_rejected(api: Api, tap: EventTap, structured: str) -> None:
     mark = len(tap.events)
     approvals_before = len(tap.approvals)
     tap.reject_next = True
@@ -358,31 +367,25 @@ def check_write_rejected(api: Api, tap: EventTap) -> None:
     check(decided[-1]["approved"] is False, f"审批结论应为拒绝：{decided[-1]}")
     check(not tap.reject_next, "拒绝标记应被一次性消费")
     memories = api.call("GET", "/api/memories")
-    check(len(memories["structured"]) == 1, f"拒绝后不应新增记忆：{memories['structured']}")
+    check(memories["structured"] == structured, f"拒绝后不应修改记忆：{memories['structured']!r}")
+    check("拿铁" not in memories["structured"], "拒绝后不应写入新内容")
     step("审批拒绝：拒绝草案后不写入记忆，回复说明未记住")
 
 
-def check_citation(api: Api, tap: EventTap, memory: dict) -> None:
-    core = api.call("POST", "/api/memories/core", {"memory_id": memory["id"]})
-    check(core["core_ids"] == [memory["id"]], f"加入典藏失败：{core}")
+def check_structured_in_prompt(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     mark = len(tap.events)
-    cited = api.call("POST", "/api/chat", {"text": "咖啡怎么样？"})
-    check(cited["text"] == "你上次说过喜欢美式咖啡。", f"引用标记未去除：{cited['text']!r}")
-    check(
-        [source["id"] for source in cited["sources"]] == [memory["id"]],
-        f"来源应为核心典藏中的记忆：{cited['sources']}",
-    )
-    check(cited["sources"][0]["text"] == "喜欢美式咖啡，不加糖", "来源原文应为记忆内容")
-    fresh = tap.wait_until_idle_after(mark)
-    done = [event for event in fresh if event["type"] == "chat.done"]
-    check(
-        [source["id"] for source in done[0]["sources"]] == [memory["id"]],
-        "chat.done 中的来源与回复不一致",
-    )
-    step("记忆来源：回复引用核心典藏，标记已去除，来源随 chat.done 下发")
+    reply = api.call("POST", "/api/chat", {"text": "咖啡怎么样？"})
+    check(reply["text"] == "嗯，我在听。", f"回复异常：{reply}")
+    system = str(last_chat_request(llm.requests)["messages"][0]["content"])
+    check("结构化记忆" in system, "系统提示中应含结构化记忆小节")
+    check("喜欢美式咖啡，不加糖" in system, "结构化记忆内容应进入系统提示")
+    check(reply["sources"] == [], f"未检索时不应有来源：{reply['sources']}")
+    check("[引用" not in reply["text"], "回复不应残留引用标记")
+    tap.wait_until_idle_after(mark)
+    step("系统提示：结构化记忆全文注入主对话，未检索时不下发来源")
 
 
-def check_temporary_mode(api: Api, tap: EventTap) -> None:
+def check_temporary_mode(api: Api, tap: EventTap, structured: str) -> None:
     mark = len(tap.events)
     api.call("POST", "/api/memories/temporary-mode", {"enabled": True})
     history_before = api.call("GET", "/api/chat/history")["items"]
@@ -390,7 +393,9 @@ def check_temporary_mode(api: Api, tap: EventTap) -> None:
     check(temp["text"] == "临时模式开启，本次不写入结构化记忆", f"临时模式回复异常：{temp}")
     check(temp["recorded"] is False, "临时模式下不应写入每日对话")
     tap.wait_until_idle_after(mark)
-    check(len(api.call("GET", "/api/memories")["structured"]) == 1, "临时模式下不应新增记忆")
+    memories = api.call("GET", "/api/memories")
+    check(memories["temporary_mode"] is True, f"临时模式状态未生效：{memories['temporary_mode']}")
+    check(memories["structured"] == structured, "临时模式下不应修改记忆")
     check(
         api.call("GET", "/api/chat/history")["items"] == history_before,
         "临时模式下不应新增每日对话记录",
@@ -402,12 +407,21 @@ def check_temporary_mode(api: Api, tap: EventTap) -> None:
 def check_daily_records(api: Api) -> None:
     history = api.call("GET", "/api/chat/history")
     check(len(history["items"]) >= 6, f"每日对话记录不完整：{len(history['items'])} 条")
+    memories = api.call("GET", "/api/memories")
+    days = [day for month in memories["daily_memory"].values() for day in month]
+    check(len(days) == 1, f"每日对话索引应只有一天：{days}")
+    records = api.call("GET", f"/api/memories?date={days[0]}")["daily_records"]
+    check(len(records) >= 6, f"每日对话记录不完整：{len(records)} 条")
     check(
-        api.call("GET", "/api/memories/2026-10-18", expect=403)["error"]["code"]
-        == "daily_memory_readonly",
-        "每日对话应只读",
+        all(record["date"] == days[0] for record in records),
+        f"记录日期应与查询一致：{records}",
     )
-    step("每日对话：记录完整保留，只读约束生效")
+    check(
+        api.call("GET", "/api/memories?date=2026-13-01", expect=422)["error"]["code"]
+        == "invalid_date",
+        "非法日期应被拒绝",
+    )
+    step("每日对话：按日期可读且记录完整，非法日期被拒绝")
 
 
 def check_persona_switch(api: Api, tap: EventTap, llm: FakeLlm, data_dir: Path) -> None:
@@ -444,7 +458,7 @@ def check_shutdown_outputs(data_dir: Path) -> None:
     log_text = log_files[-1].read_text(encoding="utf-8")
     check("后端已退出，退出原因：stdin 指令" in log_text, "日志中缺少正常退出记录")
     check(TOKEN not in log_text, "令牌不得出现在日志中")
-    check(list((data_dir / "memory" / "structured").glob("*.json")), "记忆文件应写入临时数据目录")
+    check((data_dir / "memory" / "structured.md").is_file(), "记忆文件应写入临时数据目录")
     step("关闭：stdin 指令正常退出，日志完整，令牌未落盘")
 
 
@@ -470,11 +484,12 @@ def run() -> Path:
             check_streaming_chat(api, tap, llm)
             check_dispatch(api, tap, llm)
             check_invalid_output_regenerates(api, tap, llm)
-            memory = check_dispatched_write(api, tap)
+            structured = check_dispatched_write(api, tap)
             check_memory_retrieve(api, tap)
-            check_write_rejected(api, tap)
-            check_citation(api, tap, memory)
-            check_temporary_mode(api, tap)
+            check_write_rejected(api, tap, structured)
+            structured = check_manual_edit(api, data_dir)
+            check_structured_in_prompt(api, tap, llm)
+            check_temporary_mode(api, tap, structured)
             check_persona_switch(api, tap, llm, data_dir)
         check_daily_records(api)
     finally:

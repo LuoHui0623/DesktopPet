@@ -1,13 +1,11 @@
 from dataclasses import dataclass
 
-from service.memory.core_memory import CoreMemoryService
 from service.memory.daily_log_service import DailyLogService
-from service.memory.memory_service import MemoryWriter, StructuredMemoryService
+from service.memory.memory_service import MemoryWriter, StructuredMemoryDoc
 
 
 @dataclass(frozen=True)
 class MemoryServices:
-    structured: StructuredMemoryService
+    structured: StructuredMemoryDoc
     writer: MemoryWriter
     daily: DailyLogService
-    core: CoreMemoryService
