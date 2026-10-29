@@ -1,0 +1,351 @@
+import json
+import re
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, field
+from hashlib import sha256
+from pathlib import Path
+from string import Template
+from typing import Any
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.tools import BaseTool
+
+from constants.agent import (
+    DRAFT_INVALID_LIMIT,
+    PHASE_DRAFT,
+    PHASE_EXECUTE,
+    SUBAGENT_MAX_STEPS,
+    SUBAGENT_PURPOSE,
+)
+from constants.path import PROMPTS_DIR
+from infra.llm.usage import usage_scope
+from module.agent.prompt import read_template
+from module.agent.skills import Skill
+from module.llm import LlmService, LlmUnavailableError
+
+SUBAGENT_TEMPLATE = "subagent.md"
+SUBAGENT_PLACEHOLDERS = frozenset(
+    {"capability_name", "capability_description", "task", "tools", "max_steps", "draft"}
+)
+SUBAGENT_DRAFT_TEMPLATE = "subagent_draft.md"
+SUBAGENT_DRAFT_PLACEHOLDERS = frozenset(
+    {"capability_name", "capability_description", "task", "tools", "declarable", "max_steps"}
+)
+FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
+ACTIONS = ("tool", "finish", "draft")
+INVALID_HINT = "回复不是合法的动作 JSON，请只输出一个 JSON 对象"
+NO_DRAFT = "（本次没有草案，按任务本身执行）"
+NO_TOOLS = "（本次没有可用工具）"
+NO_DECLARABLE = "（没有其他工具可声明）"
+Accept = Callable[[dict[str, Any]], "str | None"]
+
+
+@dataclass(frozen=True)
+class SubAgentResult:
+    ok: bool
+    output: str | None
+    error_code: str | None
+    error: str | None
+    steps: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubAgentDraft:
+    ok: bool
+    content: str | None = None
+    tools: tuple[str, ...] = ()
+    error_code: str | None = None
+    error: str | None = None
+    steps: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class _Loop:
+    steps: list[dict[str, Any]]
+    action: dict[str, Any] | None = None
+    error_code: str | None = None
+    error: str | None = None
+
+
+def parse_action(text: str) -> dict[str, Any] | None:
+    stripped = FENCE.sub("", text.strip()).strip()
+    candidates = [stripped]
+    start, end = stripped.find("{"), stripped.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(stripped[start : end + 1])
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except ValueError:
+            continue
+        if isinstance(data, dict) and data.get("action") in ACTIONS:
+            return data
+    return None
+
+
+def _text_of(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+        )
+    return ""
+
+
+def _observation(result: dict[str, Any]) -> str:
+    return "观察：" + json.dumps(result, ensure_ascii=False)
+
+
+def _phase_hint(action: dict[str, Any] | None, terminal: str) -> str | None:
+    if action is None:
+        return INVALID_HINT
+    if action["action"] in ("tool", terminal):
+        return None
+    return f"当前阶段只能使用 tool 或 {terminal}，请重新输出一个 JSON 对象"
+
+
+def _accept_finish(action: dict[str, Any]) -> str | None:
+    if not str(action.get("output") or "").strip():
+        return "输出不能为空"
+    return None
+
+
+def _accept_draft(action: dict[str, Any], skill: Skill) -> str | None:
+    if not str(action.get("content") or "").strip():
+        return "草案内容不能为空"
+    names = action.get("tools")
+    if names is None:
+        return None
+    if not isinstance(names, list) or not all(
+        isinstance(name, str) and name.strip() for name in names
+    ):
+        return "tools 必须是工具名字符串数组"
+    unknown = [name.strip() for name in names if name.strip() not in skill.tools]
+    if unknown:
+        return f"tools 里有本能力没有的工具：{', '.join(unknown)}"
+    return None
+
+
+def _declared_tools(action: dict[str, Any]) -> tuple[str, ...]:
+    names = action.get("tools")
+    if not isinstance(names, list):
+        return ()
+    return tuple(name.strip() for name in names if isinstance(name, str) and name.strip())
+
+
+def _tool_lines(tools: Sequence[BaseTool]) -> str:
+    if not tools:
+        return NO_TOOLS
+    return "\n".join(f"- {tool.name}: {tool.description}" for tool in tools)
+
+
+def _missing_text(skill: Skill, missing: Sequence[str]) -> str:
+    return f"能力 {skill.name} 缺少工具：{', '.join(missing)}"
+
+
+class SubAgent:
+    def __init__(
+        self,
+        llm: LlmService,
+        tools: Sequence[BaseTool],
+        *,
+        max_steps: int = SUBAGENT_MAX_STEPS,
+        prompts_dir: Path = PROMPTS_DIR,
+    ) -> None:
+        self._llm = llm
+        self._tools = {tool.name: tool for tool in tools}
+        self._max_steps = max_steps
+        text = read_template(prompts_dir, SUBAGENT_TEMPLATE, SUBAGENT_PLACEHOLDERS)
+        draft_text = read_template(
+            prompts_dir, SUBAGENT_DRAFT_TEMPLATE, SUBAGENT_DRAFT_PLACEHOLDERS
+        )
+        self._template = Template(text)
+        self._draft_template = Template(draft_text)
+        self._digest = sha256((text + draft_text).encode("utf-8")).hexdigest()
+
+    def draft(
+        self, skill: Skill, task: str, run_id: str, *, tools: Sequence[str] | None = None
+    ) -> SubAgentDraft:
+        names = skill.tools if tools is None else tuple(tools)
+        picked, missing = self._pick(skill, names)
+        if missing:
+            return SubAgentDraft(
+                False, error_code="tool_missing", error=_missing_text(skill, missing)
+            )
+        try:
+            client = self._llm.client_for("consolidate")
+        except LlmUnavailableError as exc:
+            return SubAgentDraft(False, error_code="model_unavailable", error=str(exc))
+        declarable = tuple(name for name in skill.tools if name not in names)
+        messages: list[BaseMessage] = [
+            SystemMessage(content=self._draft_prompt(skill, task, picked, declarable)),
+            HumanMessage(content=task),
+        ]
+        loop = self._react(
+            client=client,
+            messages=messages,
+            run_id=run_id,
+            tools=picked,
+            terminal="draft",
+            phase=PHASE_DRAFT,
+            accept=lambda action: _accept_draft(action, skill),
+            invalid_limit=DRAFT_INVALID_LIMIT,
+        )
+        if loop.error_code is not None:
+            return SubAgentDraft(
+                False, error_code=loop.error_code, error=loop.error, steps=loop.steps
+            )
+        action = loop.action or {}
+        return SubAgentDraft(
+            True,
+            content=str(action.get("content") or "").strip(),
+            tools=_declared_tools(action),
+            steps=loop.steps,
+        )
+
+    def run(
+        self,
+        skill: Skill,
+        task: str,
+        run_id: str,
+        *,
+        tools: Sequence[str] | None = None,
+        draft: str = "",
+    ) -> SubAgentResult:
+        names = skill.tools if tools is None else tuple(tools)
+        picked, missing = self._pick(skill, names)
+        if missing:
+            return SubAgentResult(False, None, "tool_missing", _missing_text(skill, missing))
+        try:
+            client = self._llm.client_for("consolidate")
+        except LlmUnavailableError as exc:
+            return SubAgentResult(False, None, "model_unavailable", str(exc))
+        messages: list[BaseMessage] = [
+            SystemMessage(content=self._execute_prompt(skill, task, picked, draft)),
+            HumanMessage(content=task),
+        ]
+        loop = self._react(
+            client=client,
+            messages=messages,
+            run_id=run_id,
+            tools=picked,
+            terminal="finish",
+            phase=PHASE_EXECUTE,
+            accept=_accept_finish,
+            invalid_limit=self._max_steps,
+        )
+        if loop.error_code is not None:
+            return SubAgentResult(False, None, loop.error_code, loop.error, loop.steps)
+        output = str((loop.action or {}).get("output") or "").strip()
+        return SubAgentResult(True, output, None, None, loop.steps)
+
+    def _react(
+        self,
+        *,
+        client: Any,
+        messages: list[BaseMessage],
+        run_id: str,
+        tools: Sequence[BaseTool],
+        terminal: str,
+        phase: str,
+        accept: Accept,
+        invalid_limit: int,
+    ) -> _Loop:
+        steps: list[dict[str, Any]] = []
+        invalid = 0
+        for number in range(1, self._max_steps + 1):
+            try:
+                with usage_scope(SUBAGENT_PURPOSE, run_id=run_id, prompt_hash=self._digest):
+                    response = client.invoke(messages)
+            except Exception as exc:
+                return _Loop(steps, error_code="model_failed", error=f"模型调用失败：{exc}")
+            text = _text_of(response.content).strip()
+            messages.append(AIMessage(content=text))
+
+            action = parse_action(text)
+            hint = _phase_hint(action, terminal)
+            if hint is None and action is not None and action["action"] == terminal:
+                hint = accept(action)
+            if hint is not None:
+                steps.append({"step": number, "phase": phase, "action": "invalid"})
+                messages.append(HumanMessage(content=_observation({"ok": False, "error": hint})))
+                invalid += 1
+                if invalid >= invalid_limit:
+                    return _Loop(steps, error_code="invalid_output", error=hint)
+                continue
+            if action is None:
+                return _Loop(steps, error_code="invalid_output", error=INVALID_HINT)
+            if action["action"] == terminal:
+                steps.append({"step": number, "phase": phase, "action": terminal})
+                return _Loop(steps, action=action)
+
+            result = self._call_tool(action, tools)
+            succeeded = result.get("ok") is True
+            steps.append(
+                {
+                    "step": number,
+                    "phase": phase,
+                    "action": "tool",
+                    "tool": action.get("tool"),
+                    "args": action.get("args"),
+                    "ok": succeeded,
+                    "error": None if succeeded else result.get("error"),
+                }
+            )
+            messages.append(HumanMessage(content=_observation(result)))
+        return _Loop(
+            steps,
+            error_code="max_steps",
+            error=f"超过最大步数 {self._max_steps}，未完成任务",
+        )
+
+    def _pick(self, skill: Skill, names: Sequence[str]) -> tuple[list[BaseTool], list[str]]:
+        missing = [name for name in names if name not in self._tools]
+        return [self._tools[name] for name in names if name in self._tools], missing
+
+    def _call_tool(self, action: dict[str, Any], tools: Sequence[BaseTool]) -> dict[str, Any]:
+        name = action.get("tool")
+        args = action.get("args") or {}
+        available = {tool.name: tool for tool in tools}
+        if name not in available:
+            return {"ok": False, "error": f"工具 {name} 不可用"}
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "args 必须是对象"}
+        try:
+            result = available[name].invoke(args)
+        except Exception as exc:
+            return {"ok": False, "error": f"工具执行失败：{exc}"}
+        if not isinstance(result, dict):
+            return {"ok": True, "content": str(result)}
+        return result
+
+    def _execute_prompt(
+        self, skill: Skill, task: str, tools: Sequence[BaseTool], draft: str
+    ) -> str:
+        return self._template.substitute(
+            capability_name=skill.name,
+            capability_description=skill.description,
+            task=task,
+            tools=_tool_lines(tools),
+            max_steps=str(self._max_steps),
+            draft=draft.strip() or NO_DRAFT,
+        )
+
+    def _draft_prompt(
+        self,
+        skill: Skill,
+        task: str,
+        tools: Sequence[BaseTool],
+        declarable: Sequence[str],
+    ) -> str:
+        return self._draft_template.substitute(
+            capability_name=skill.name,
+            capability_description=skill.description,
+            task=task,
+            tools=_tool_lines(tools),
+            declarable=", ".join(declarable) or NO_DECLARABLE,
+            max_steps=str(self._max_steps),
+        )

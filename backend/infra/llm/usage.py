@@ -6,19 +6,31 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 
-from infra.store.db import connect
-from infra.store.repositories import llm_usage
-from infra.store.repositories.llm_usage import UsageRecord
-
 logger = logging.getLogger("pet")
 
-UsageSink = Callable[[UsageRecord], None]
+
+@dataclass(frozen=True)
+class UsageSample:
+    provider: str
+    model: str
+    purpose: str | None
+    run_id: str | None
+    tokens_in: int | None
+    tokens_out: int | None
+    usage_raw: str | None
+    started_at: str
+    finished_at: str
+    latency_ms: int
+    success: bool
+    prompt_hash: str | None = None
+
+
+UsageSink = Callable[[UsageSample], None]
 
 
 @dataclass(frozen=True)
@@ -44,19 +56,8 @@ def usage_scope(
         _scope.reset(token)
 
 
-def discard_usage(record: UsageRecord) -> None:
+def discard_usage(sample: UsageSample) -> None:
     return None
-
-
-def db_usage_sink(db_file: Path) -> UsageSink:
-    def write(record: UsageRecord) -> None:
-        conn = connect(db_file)
-        try:
-            llm_usage.insert(conn, record)
-        finally:
-            conn.close()
-
-    return write
 
 
 class TrackedChatModel:
@@ -98,7 +99,7 @@ class TrackedChatModel:
     def _record(self, started_at: str, started: float, response: Any, *, success: bool) -> None:
         tokens_in, tokens_out, usage_raw = _usage(response)
         scope = _scope.get()
-        record = UsageRecord(
+        sample = UsageSample(
             provider=self._provider,
             model=self._model_name,
             purpose=scope.purpose if scope else None,
@@ -113,7 +114,7 @@ class TrackedChatModel:
             prompt_hash=scope.prompt_hash if scope else None,
         )
         try:
-            self._sink(record)
+            self._sink(sample)
         except Exception:
             logger.exception("LLM 用量记录写入失败")
 
