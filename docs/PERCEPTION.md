@@ -1,5 +1,9 @@
 # 感知设计（M4）
 
+> 状态：旧稿（2026-10-29）。分层、契约、阈值归属以 [OBSERVER.md](OBSERVER.md) 为准，主动编排以 [PROACTIVE.md](PROACTIVE.md) 为准。
+>
+> 本文保留两类内容：**Win32 采集方式与判断条件细节**（OBSERVER.md 不重复），以及**早期主题/话术/节制草案**（已由 OBSERVER.md §5–§7 取代，仅作参考）。
+>
 > 本文只回答两件事：**感知什么、什么条件下成立**，以及**成立之后能聊什么主题**。
 > 不含任务序号与实施排期，排期见 `Task.md`。
 
@@ -16,7 +20,7 @@
 三条硬约束：
 
 1. **只上报结论，不上报原始输入。** 不记录键值、鼠标坐标、窗口标题、文件内容、URL。
-2. **一切感知最终落成结构化事件**，走已有的 `daily_events.EVENT_TYPES` 扩展点，不另起一套记忆。
+2. **一切感知只落成内存事件。** 九种事件属于 L2 流水，只进上下文；不扩 `EVENT_TYPES`、不写 `daily_log`、不写结构化记忆（§7）。
 3. **前端采集、后端决策。** 系统调用在 Tauri（Rust）侧做，后端只接收事实、判定条件、决定是否开口。
 
 ## 2. 状态模型
@@ -121,13 +125,13 @@ let exe = Path::new(from_wide(&buf[..len as usize]))
 | 2 | 回来 | `presence_return` | 由 away 转 active；带回 `away_minutes` | 是 | `greeting_return` | 每日 3 次 |
 | 3 | 久坐 | `sit_long` | 连续 active 累计 ≥ 90min；其后每 60min 一次；离开 ≥ 10min 重置 | 否 | `sit_long` | 每日 3 次 |
 | 4 | 忙碌进入 | `busy_enter` | 全屏（含无边框窗口化全屏）或锁屏，且状态变化后持续 ≥ 3s | 否 | — | — |
-| 5 | 忙碌退出 | `busy_exit` | 退出全屏/解锁，稳定 ≥ 30s 才确认；带回 `busy_minutes` | 是 | `busy_released` | 每日 2 次，且需 `busy_minutes ≥ 30` |
+| 5 | 忙碌退出 | `busy_exit` | 退出全屏/解锁，稳定 ≥ 30s 才确认；带回 `busy_minutes` | 是 | `busy_released` | 每日 1 次（默认主题上限），且需 `busy_minutes ≥ 30` |
 | 6 | 深夜 | `late_night` | 本地时间在 23:00–05:00 且 presence = active | 否 | `late_night` | 每日 1 次，00:00 后才真正发 |
 | 7 | 应用在用 | `app_in_use` | 白名单进程连续前台 ≥ 3min | 是（只留最近 1 条） | `app_in_use.<exe>` | 每进程每日 1 次 |
 | 8 | 应用启动 | `app_launched` | 白名单进程从「不在运行」→「运行」，稳定 ≥ 30s | 是 | `app_launched.<exe>` | 每进程每日 1 次 |
 | 9 | 应用关闭 | `app_quit` | 白名单进程从「运行」→「不在运行」；带回 `run_minutes` | 是 | `app_quit.<exe>` | 每进程每日 1 次 |
 
-「进上下文」指该事件是否作为【event】片段进入 `ContextBuilder` 的环境描述；**九种事件全部只是内存里的 L2 流水，都不写 `daily_log`**（§7）。进上下文的事件只保留最近 1–3 条，避免上下文膨胀。
+「进上下文」指该事件是否作为感知 notes（`[感知 HH:MM] ...`）进入 `ContextBuilder` 的时间线；**九种事件全部只是内存里的 L2 流水，都不写 `daily_log`**（§7）。观测器不缓存历史事件，只保留尚未被消费的 current 事件；进上下文时最多取 1–3 条：每次触发把 current 一并交给规则处理器并清空，被动对话读入上下文后同样清空。
 
 ## 5. 主题（能聊什么）
 
@@ -177,7 +181,7 @@ terminal: 在敲命令
 | 层 | 内容 | 存放 | 进上下文 | 写 `daily_log` | 寿命 |
 |---|---|---|---|---|---|
 | L1 实时状态 | 现在忙不忙、前台是谁、坐了多久 | 内存状态机 | 是（拼成一句现状） | 否 | 进程内 |
-| L2 感知流水 | 14:20 用了 vscode 45 分钟、10:05 离开过 | 内存环形缓冲（最近 24h，上限 200 条） | 是（只取最近 1–3 条） | **否** | 进程内，重启重建 |
+| L2 感知流水 | 14:20 用了 vscode 45 分钟、10:05 离开过 | 不缓存，只留未消费的 current 事件 | 是（只取 current，最多 1–3 条） | **否** | 进程内，随会话；触发或进上下文后清空 |
 | L3 有价值事件 | 完成一次任务、审批被拒、派发失败、切换人设、用户表达偏好 | `daily_log`（`role='event'`） | 按 `EVENT_TYPES.in_context` | **是** | 长期，不清理 |
 
 具体约束：
@@ -185,14 +189,14 @@ terminal: 在敲命令
 1. **感知 9 种事件（§4 全表）都属于 L2，一律不写 `daily_log`**。它们是环境噪声级信息，进长期日志只会把对话历史冲稀。
 2. **`EVENT_TYPES` 不因感知扩表**，维持现有 3 种（`session_boundary`、`dispatch_failed`、`approval_rejected`）。感知事件的重放与限额由 `service/perception/` 自己的轻量枚举负责，不复用 `daily_events.py` 的 `encode/decode`（那套带字段严格校验，不适合高频流水）。
 3. **不新增感知专表**，也不写结构化记忆（`index.json`）。感知是短时状态，进程重启后 5 秒内重新采样即可重建，没有持久化价值。
-4. **无落库 ⇒ 无保留期**，`Task.md` Q-17「保留期与清理」随之取消（原 P-1 项关闭）。
-5. **跨重启要保住的是"发过没发过"，不是"看见过什么"**：主动消息的当日台账（日期 + 已用主题键 + 计数）存 `app_settings` 的 `scheduler.sent`，重启后继续生效，避免重启刷屏。
+4. **无落库 ⇒ 无保留期**，`Task.md` Q-17「保留期与清理」随之取消（原 P-1 项关闭）。观测器与会话同生命周期，不缓存事件历史：只保留未消费的 current 事件，读入上下文即清空，每次触发把 current 一并交给规则处理器，不需要单独的过期策略。
+5. **跨重启要保住的是"发过没发过"，不是"看见过什么"**：主动消息的当日台账（日期 + 已用主题键 + 计数）存 `app_setting` 的 `scheduler.sent`，重启后继续生效，避免重启刷屏。
 
-`daily_log` 与 `app_settings` 的分工：前者是"发生过、值得记住的事"，后者是"运行状态"，都不承载感知流水。
+`daily_log` 与 `app_setting` 的分工：前者是"发生过、值得记住的事"，后者是"运行状态"，都不承载感知流水。
 
 ## 8. 开关与默认值
 
-全部落 `app_settings`，设置页可改：
+全部落 `app_setting`，设置页可改：
 
 ```yaml
 perception.enabled: true
@@ -204,7 +208,7 @@ perception.process_muted: []
 perception.topics: {}
 scheduler.enabled: true
 scheduler.min_interval_minutes: 60
-scheduler.daily_limit: 20
+scheduler.max_per_day: 20
 scheduler.dnd_start: "22:30"
 scheduler.dnd_end: "08:00"
 ```

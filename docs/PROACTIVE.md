@@ -1,0 +1,185 @@
+# 主动管线设计
+
+> 职责：定义解析器产出 Trigger 之后，如何调用 chat、写台账、推送 `proactive.message`，以及失败与并发处理。
+> 依赖：观测域解析器（Trigger）、ChatService（单入口）、`app_setting` 台账、WS 事件总线、`chat_active` 端口。
+> 不回答：采集、事件阈值、勿扰/限额判定（见 [OBSERVER.md](OBSERVER.md)）、话术内容（见 [CHAT.md](CHAT.md)）、气泡渲染。
+> 状态：已实现（2026-10-29）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8（T-061 已实现）。
+
+## 1. 定位
+
+管线只做**编排**：它不判断事件、不拼话术、不重算阈值，只把解析器已经决定好的 Trigger 变成一条实际发出的消息。
+
+| 做什么 | 不做什么 |
+|---|---|
+| 接收 `Trigger{topic, reason}` | 采集、解析事件、计算阈值 |
+| 调 `ChatService.chat()` 生成回复 | 选择模型、组装上下文、校验句长 |
+| 写 `scheduler.sent` 台账 | 决定勿扰/间隔/每日上限 |
+| 推送 `proactive.message` | 绘制气泡、处理忽略状态 |
+| 失败重试与静默放弃 | 按 topic 维护话术模板 |
+
+## 2. 概念定义
+
+- **管线（pipeline）**：Trigger 的消费者，主动消息的编排者。落点 `module/proactive/pipeline.py`。
+- **Trigger**：解析器输出的唯一指令，`{topic, reason}`；`reason` 是事实摘要，不是话术。
+- **发送台账**：`app_setting` 的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线写。
+- **主动消息**：一次成功生成并推送的 `me` 回复。它在 `daily_log` 中就是普通 `me` 行，不加 `source`（D-40）。
+- **最终并发保护**：管线在调用 chat 前再检查一次 `chat_active`。这不是重新判定规则，只防止“解析器判定后、生成前用户刚好开始对话”的竞态。
+
+## 3. 依赖与落点
+
+```
+observer → parser → Trigger → pipeline → chat → llm
+                                  ├─► ledger（scheduler.sent）
+                                  └─► WS（proactive.message）
+```
+
+| 组件 | 落点 | 说明 |
+|---|---|---|
+| 管线 | `module/proactive/pipeline.py` | 唯一入口 `handle(trigger)` |
+| 解析器 | 观测域 | 产出 Trigger；不 import 管线 |
+| chat | `module/chat/` | 单入口；管线只依赖 `ChatRequest` / `ChatReply` |
+| 台账 | `app_setting` | 解析器读；管线发送成功后写 |
+| WS | `infra/events/bus.py` | 新增 `proactive.message` 事件 |
+
+约束：
+
+- 管线不 import 观测器；只接收 Trigger。
+- 管线不 import 解析器内部；Trigger 是观测域对外的数据形状。
+- 管线不实现 tick；时钟与解析器调用由观测运行时负责（见 [OBSERVER.md](OBSERVER.md) §4.4）。
+- chat 调用是阻塞的；管线不得在事件循环线程直接执行，需通过工作线程或任务队列。
+
+## 4. 对外契约
+
+### 4.1 唯一入口
+
+```text
+ProactivePipeline.handle(trigger: Trigger) -> ProactiveResult
+```
+
+`ProactiveResult` 建议包含：
+
+| 字段 | 说明 |
+|---|---|
+| `sent` | 是否成功生成并推送 |
+| `topic` | 本次主题键 |
+| `message_id` | 成功时为 ChatReply.message_id |
+| `reason` | 未发送时的原因（`pipeline_busy` / `chat_active` / `model_unavailable` / `model_failed` / `invalid_output` / `ws_failed` 等） |
+
+管线对调用方（观测运行时）只暴露 `handle`；不暴露 chat、台账、WS 的细节。
+
+### 4.2 处理顺序
+
+```text
+handle(trigger)
+  1. chat_active?  → 丢弃，reason=chat_active
+  2. 组装 ChatRequest：
+       user_text=None
+       trigger_reason=trigger.reason
+       allow_dispatch=False
+       events=proactive sink
+  3. reply = chat.chat(request)
+  4. ledger.record_sent(trigger.topic)
+  5. WS publish proactive.message
+  6. 返回 sent=True
+```
+
+顺序理由：
+
+- **先 chat 后台账**：生成失败不应占用当日限额。
+- **先台账后推送**：推送失败时消息已经在历史里，按“已发送”计，避免下次重复。
+- **推送失败不回滚台账**：否则同一主题可能在重连后再次触发。
+
+### 4.3 `proactive.message` 载荷
+
+```text
+{
+  type: "proactive.message",
+  id: <ChatReply.message_id>,
+  text: <ChatReply.text>,
+  topic: <Trigger.topic>,
+  at: <ISO 8601>
+}
+```
+
+- 与前端 `types.ts` 的 WS 联合类型同步；`api/schemas/events.py` 增加模型。
+- 不包含 `sources`、`reason`、`source` 字段；前端只需要显示文本。
+- 不作为 `daily_log` 的 `source`；`daily_log` 仍是普通 `me` 行。
+
+## 5. 失败与重试
+
+| 场景 | 管线行为 | 台账 | 推送 |
+|---|---|---|---|
+| `chat_active` | 直接丢弃 | 不写 | 不推 |
+| `model_unavailable` | 静默放弃 | 不写 | 不推 |
+| `model_failed` | 重试整轮 1 次；仍失败放弃 | 不写 | 不推 |
+| `invalid_output` / `sentence_too_long` | chat 已重试；管线再重试整轮 1 次；仍失败放弃 | 不写 | 不推 |
+| 台账写入失败 | 记录日志；继续推送 | 失败 | 推 |
+| WS 推送失败 | 记录日志；不重试 | 已写 | 失败 |
+| 进程重启 | 不补发；解析器按新状态重新判定 | 保留当日台账 | — |
+
+原则：
+
+- 主动消息失败对用户静默，不弹错误。
+- 最多重试 1 次；不无限重试。
+- 生成成功但推送失败时，消息已在 `daily_log` 与当日快照中；下次打开对话可见。
+- 台账写入失败是已知风险：可能导致同一主题再次触发；记录日志，不阻塞推送。
+
+## 6. 并发与排队
+
+- 同一进程同时只允许一个主动轮生成；`ChatService` 的 `ChatActivity` 已提供“是否有对话进行中”的计数。
+- 若一个主动轮正在进行，新的 Trigger 直接丢弃并记录 `pipeline_busy`；不排队。
+- 理由：主动消息是时效性内容，排队后语境已变；解析器的最小间隔也会抑制连续触发。
+- 解析器与管线共享 `chat_active` 端口；管线在调用前做最后一次检查，缩小竞态窗口。
+
+## 7. 配置
+
+管线不新增配置键。它使用：
+
+| 键 | 来源 | 用途 |
+|---|---|---|
+| `scheduler.sent` | `app_setting` | 写当日台账 |
+| `scheduler.enabled` | 解析器已判定 | 管线不重复判断 |
+| `scheduler.min_interval_minutes` / `max_per_day` / `dnd_*` | 解析器已判定 | 管线不重复判断 |
+
+主动消息的文案、语气、长度由 chat 的提示词决定；管线不维护 `perception.topics` 之类的话术字典。
+
+## 8. 与前端/气泡的边界
+
+- 管线只负责推送 `proactive.message`；气泡由 pet 窗口（320×360，宠物贴底、气泡占上部）的 webview 绘制，不新开窗口。
+- 气泡逐条排队显示，默认 15 秒自动消失；每条消息独立计时，新消息到达不打断当前气泡的剩余时长。
+- 点击气泡：前端移除该气泡并打开对话窗口，定位到历史页；消息本身是 `daily_log` 的普通 `me` 行（D-40），并已追加进当日快照（D-43），可继续对话。
+- 忽略：清空当前队列并压制本会话后续主动气泡；只在前端内存，不调接口、不写库（D-46）。
+- 不做 `POST /api/proactive/feedback`（该路由不存在，请求返回 404），也不写 `proactive_feedback` 表——该表从未有写入方，已由迁移 `0009_drop_proactive_feedback.sql` 移除。
+- 主动消息进入对话历史的方式：`daily_log` 的普通 `me` 行 + 当日快照；前端历史面板不区分主动/被动（D-40）。
+
+## 9. 非目标
+
+1. 不实现事件解析、阈值、勿扰/间隔/上限；这些归观测域解析器。
+2. 不实现 tick；时钟与解析器调用归观测运行时。
+3. 不按 topic 写话术、不建 per-topic hook。
+4. 不做反馈接口、不写反馈表、不要求用户对主动消息评分。
+5. 不做主动轮派发/审批（Q-18 待确认）。
+6. 不新增 LLM 能力；主动轮复用 `chat` 能力。
+
+## 10. 待定
+
+| 项 | 建议 | 状态 |
+|---|---|---|
+| Q-18 主动轮是否允许派发 | 不允许；`allow_dispatch=False` | 已按此实现 |
+| 重试次数 | 整轮 1 次 | 已实现 |
+| 台账与推送顺序 | 先台账后推送 | 已实现 |
+| 管线忙碌时排队还是丢弃 | 丢弃 | 已实现 |
+| `proactive.message` 是否带 `reason` | 不带；调试看日志 | 已实现 |
+| 管线是否重复检查 `scheduler.enabled` | 不重复；只做 `chat_active` 并发保护 | 已实现 |
+| 事件 sink 注入方式 | 按调用传入 | 已实现 |
+| 气泡显示时长 | 15 秒，逐条计时 | 已实现 |
+| 忽略语义 | 本会话静音，不落库、不调接口 | 已实现 |
+| 点击气泡落点 | 打开对话并定位历史页 | 已实现 |
+
+## 11. 依据
+
+- D-40：主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`。
+- D-41：解析器集中判定，只输出 `Trigger{topic, reason}`；通用 hook 只做编排。
+- D-42：ChatService 提供完整 chat 能力，主动管线调用同一入口。
+- D-46：不做主动消息反馈；忽略只在前端本会话生效。
+- T-060 / T-061：主动消息编排、推送、气泡与忽略的验收口径。
