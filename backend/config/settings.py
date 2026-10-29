@@ -13,7 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 from constants.path import CONFIG_DIR, DATA_DIR, PERSONAS_DIR, resolve_from_root
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-QUIET_HOURS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
+# 勿扰、每日上限与最小间隔的唯一真源是 app_setting（设置页写入）；这三个 .env 键已废弃，
+# 启动时只在日志里提示一次，不再读取为配置、也不再迁移。
+DEPRECATED_SCHEDULER_KEYS = (
+    "PET_QUIET_HOURS",
+    "PET_PROACTIVE_MAX_PER_HOUR",
+    "PET_PROACTIVE_MAX_PER_DAY",
+)
 
 PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
 HEADER_NAME = re.compile(r"^[A-Za-z0-9-]+$")
@@ -133,6 +139,18 @@ def read_dotenv(path: Path) -> tuple[dict[str, str], list[str]]:
             warnings.append(f".env 中键 {key} 重复，以最后一次为准")
         values[key] = value
     return values, warnings
+
+
+def deprecated_scheduler_values(
+    config_dir: Path = CONFIG_DIR,
+    environ: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """读取 .env 中已废弃的调度键，只用于启动时提示，不参与任何配置。"""
+    file_values, _ = read_dotenv(config_dir / ".env")
+    source: Mapping[str, str] = os.environ if environ is None else environ
+    values = {key: value for key, value in file_values.items() if value}
+    values.update({key: value for key, value in source.items() if value})
+    return {key: values[key] for key in DEPRECATED_SCHEDULER_KEYS if key in values}
 
 
 def _read_llm_yaml(path: Path, errors: list[str]) -> dict[str, _ProviderYaml]:
@@ -313,9 +331,6 @@ class ServiceSettings(BaseModel):
     personas_dir: Path
     timezone: str
     log_level: str
-    quiet_hours: str
-    proactive_max_per_hour: int
-    proactive_max_per_day: int
     log_queue_size: int
     log_max_wait_seconds: float
 
@@ -389,13 +404,6 @@ def load_service_settings(
     if log_level not in LOG_LEVELS:
         errors.append(f"PET_LOG_LEVEL 必须是 {' / '.join(LOG_LEVELS)} 之一，当前为 {log_level!r}")
 
-    quiet_hours = values.get("PET_QUIET_HOURS", "23:00-08:00")
-    if not QUIET_HOURS.match(quiet_hours):
-        errors.append(f"PET_QUIET_HOURS 格式应为 HH:MM-HH:MM，当前为 {quiet_hours!r}")
-
-    per_hour = _int_value(values, "PET_PROACTIVE_MAX_PER_HOUR", 2, 0, 1000, errors)
-    per_day = _int_value(values, "PET_PROACTIVE_MAX_PER_DAY", 15, 0, 1000, errors)
-
     log_queue_size = _int_value(values, "PET_LOG_QUEUE_SIZE", 20, 1, 10000, errors)
     log_max_wait_seconds = _float_value(
         values, "PET_LOG_MAX_WAIT_SECONDS", 30.0, 0.1, 3600.0, errors
@@ -412,9 +420,6 @@ def load_service_settings(
         personas_dir=_path_value(values, "PET_PERSONAS_DIR", PERSONAS_DIR),
         timezone=timezone,
         log_level=log_level,
-        quiet_hours=quiet_hours,
-        proactive_max_per_hour=per_hour,
-        proactive_max_per_day=per_day,
         log_queue_size=log_queue_size,
         log_max_wait_seconds=log_max_wait_seconds,
     )

@@ -220,7 +220,7 @@ opencode:
 | `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
 
 - `ModelSettings` 中不包含密钥值，只包含密钥的环境变量名。
-- 服务层（`backend/service/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` §8.3.4。
+- 业务层（`backend/module/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` §8.3.4。
 - 解析失败时抛出 `ModelSettingsError`，其 `errors` 为收集到的全部错误。
 
 ## 11. 通用配置 PET_*
@@ -236,14 +236,13 @@ opencode:
 | `PET_PERSONAS_DIR` | `backend/config/personas` | 人设卡片目录，相对路径按项目根目录解析 |
 | `PET_TIMEZONE` | `Asia/Shanghai` | 必须是有效的 IANA 时区名 |
 | `PET_LOG_LEVEL` | `INFO` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 之一，大小写不敏感 |
-| `PET_QUIET_HOURS` | `23:00-08:00` | `HH:MM-HH:MM` 格式，小时 00–23，分钟 00–59 |
-| `PET_PROACTIVE_MAX_PER_HOUR` | `2` | 0 到 1000 的整数 |
-| `PET_PROACTIVE_MAX_PER_DAY` | `15` | 0 到 1000 的整数 |
 | `PET_LOG_QUEUE_SIZE` | `20` | 日志入库的批次大小，1 到 10000 的整数；批次满即写入数据库 |
 | `PET_LOG_MAX_WAIT_SECONDS` | `30` | 日志入库的最长等待，0.1 到 3600 秒；自批次第一条记录起超过该时间即写入 |
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。
+- 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `app_setting` 的 `scheduler.*`，由 `GET/PUT /api/scheduler/config` 或设置页的 `PUT /api/settings/proactive` 读写（同一份配置，见 `Arch.md` §6.8）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随 T-067 废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `app_setting` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
+- 同理，感知（`perception.*`）、形象（`avatar.active`）与互动（`interaction.config`）也不读 `.env`，都由设置页与各自接口写入 `app_setting`。
 
 ## 12. 人设卡片（personas/）
 
@@ -267,4 +266,4 @@ opencode:
 - 编码填充型主题的扩展字段按字段名排序输出。
 - 所有错误一次性报告，格式为 `persona.yaml <主题>...`。
 - `to_normalized_json()` 输出按键排序、非 ASCII 原样保留的 JSON，用于角色卡版本记录（T-019）。内容变化（包括解析方式的调整）会追加一条新的 `persona_version`。
-- 提示词渲染在 `service/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，填入 `persona.md` 的 `$persona` 占位符，作为 system prompt 的前部分。
+- 提示词渲染在 `module/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，填入 `persona.md` 的 `$persona` 占位符，作为 system prompt 的前部分。
