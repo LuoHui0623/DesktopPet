@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from datetime import datetime
 
 from api.schemas.approval import ApprovalItem
 from api.schemas.chat import SourceOut
@@ -6,12 +7,13 @@ from api.schemas.events import (
     ApprovalRequestEvent,
     ChatChunkEvent,
     ChatDoneEvent,
+    ProactiveMessageEvent,
     StatusEvent,
 )
 from infra.events.bus import EventBus
-from service.agent.approval import ApprovalTicket
-from service.chat.chat_service import PetState
-from service.chat.citations import CitedSource
+from module.agent.approval import ApprovalTicket
+from module.chat.chat_service import PetState
+from module.chat.citations import CitedSource
 
 
 def source_out(source: CitedSource) -> SourceOut:
@@ -59,3 +61,6 @@ class BusEventPublisher:
                 sources=[source_out(source) for source in sources],
             )
         )
+
+    def proactive_message(self, message_id: str, text: str, topic: str, at: datetime) -> None:
+        self._bus.publish(ProactiveMessageEvent(id=message_id, text=text, topic=topic, at=at))

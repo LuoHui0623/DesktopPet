@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, TypeAdapter
@@ -32,8 +33,16 @@ class ApprovalRequestEvent(BaseModel):
     items: list[ApprovalItem] = Field(default_factory=list)
 
 
+class ProactiveMessageEvent(BaseModel):
+    type: Literal["proactive.message"] = "proactive.message"
+    id: str
+    text: str
+    topic: str
+    at: datetime
+
+
 ServerEvent = Annotated[
-    StatusEvent | ChatChunkEvent | ChatDoneEvent | ApprovalRequestEvent,
+    StatusEvent | ChatChunkEvent | ChatDoneEvent | ApprovalRequestEvent | ProactiveMessageEvent,
     Field(discriminator="type"),
 ]
 
