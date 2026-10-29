@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-perception"
+description = "Enables the start_perception command without any pre-configured scope."
+commands.allow = ["start_perception"]
+
+[[permission]]
+identifier = "deny-start-perception"
+description = "Denies the start_perception command without any pre-configured scope."
+commands.deny = ["start_perception"]

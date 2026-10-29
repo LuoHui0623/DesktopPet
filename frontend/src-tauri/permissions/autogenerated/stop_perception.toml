@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-stop-perception"
+description = "Enables the stop_perception command without any pre-configured scope."
+commands.allow = ["stop_perception"]
+
+[[permission]]
+identifier = "deny-stop-perception"
+description = "Denies the stop_perception command without any pre-configured scope."
+commands.deny = ["stop_perception"]
