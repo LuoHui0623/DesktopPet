@@ -3,15 +3,13 @@ from fastapi.responses import Response
 
 from api.errors import error_response
 from api.schemas.memories import (
-    DailyRecordOut,
     MemoriesResponse,
     StructuredMemoryUpdate,
     TemporaryModeRequest,
     TemporaryModeResponse,
 )
-from service.memory.daily_events import display_content
-from service.memory.index import daily_memory_index
-from service.memory.services import MemoryServices
+from module.memory.index import daily_memory_index
+from module.memory.services import MemoryServices
 
 router = APIRouter(prefix="/api", tags=["memories"])
 
@@ -34,19 +32,9 @@ def list_memories(request: Request, date: str | None = None) -> Response | Memor
     daily_records = None
     if date is not None:
         try:
-            records = services.daily.read_day(date)
+            daily_records = services.daily.day_views(date)
         except ValueError as exc:
             return error_response(422, "invalid_date", str(exc))
-        daily_records = [
-            DailyRecordOut(
-                id=record.id,
-                date=record.date,
-                role=record.role,
-                content=display_content(record.role, record.content),
-                created_at=record.created_at,
-            )
-            for record in records
-        ]
     return MemoriesResponse(
         temporary_mode=services.daily.temporary_mode(),
         structured=services.structured.text(),

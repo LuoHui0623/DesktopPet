@@ -15,22 +15,19 @@ from config.settings import (
     ModelSettingsSource,
     ServiceSettings,
     ServiceSettingsError,
+    deprecated_scheduler_values,
     load_service_settings,
 )
+from constants.path import AVATAR_SOURCE_DIR
 from infra.events.bus import EventBus
 from infra.lifecycle import ShutdownController, watch_stdin
-from infra.llm.usage import db_usage_sink
 from infra.lock import InstanceLockError, SingleInstanceLock
 from infra.logging import attach_db_logging, setup_logging
-from infra.store.agent_runs import DbAgentRuns
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import MigrationError, migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.agent.approval import ApprovalRegistry
-from service.agent.orchestrator import Orchestrator
-from service.agent.prompt import (
+from module.agent.approval import ApprovalRegistry
+from module.agent.orchestrator import Orchestrator
+from module.agent.prompt import (
     CapabilityDescription,
     PromptError,
     PromptTemplates,
@@ -38,21 +35,32 @@ from service.agent.prompt import (
     load_templates,
     merge_capabilities,
 )
-from service.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
-from service.agent.subagent import SubAgent
-from service.agent.tools.explore import make_explore_tools
-from service.agent.tools.memory import make_memory_write_tools
-from service.chat.chat_service import ChatService
-from service.llm import LlmService
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import (
+from module.agent.repository import DbAgentRuns
+from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
+from module.agent.subagent import SubAgent
+from module.agent.tools.explore import make_explore_tools
+from module.agent.tools.memory import make_memory_write_tools
+from module.avatar.avatar_service import AvatarService
+from module.chat.activity import ChatActivity
+from module.chat.chat_service import ChatService
+from module.interaction.interaction_service import InteractionService
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import (
     MemoryReader,
     MemoryWriter,
     StructuredMemoryDoc,
 )
-from service.memory.services import MemoryServices
-from service.persona.persona_service import PersonaService, PersonaUnavailableError
+from module.memory.repository import DbDailyLog
+from module.memory.services import MemoryServices
+from module.menu.menu_service import MenuService
+from module.persona.persona_service import PersonaService, PersonaUnavailableError
+from module.persona.repository import DbPersonaVersions
+from module.proactive import ProactivePipeline
+from module.settings.settings_service import SettingsService
+from service.perception import PerceptionRuntime, PerceptionService
 
 logger = logging.getLogger("pet")
 GRACEFUL_SHUTDOWN_SECONDS = 5
@@ -94,12 +102,25 @@ def serve(
     else:
         logger.info("数据库已是最新版本，无需迁移")
     db_file = settings.data_dir / "pet.db"
+    settings_service = SettingsService(db_file)
+    deprecated = deprecated_scheduler_values()
+    if deprecated:
+        logger.warning(
+            ".env 中的 %s 已废弃：勿扰、上限、间隔只在设置页改（存 app_setting），本次启动已忽略",
+            "、".join(sorted(deprecated)),
+        )
+    chat_activity = ChatActivity()
+    perception = PerceptionService(
+        settings_service,
+        timezone=ZoneInfo(settings.timezone),
+        chat_active=chat_activity.is_active,
+    )
     memory_dir = settings.data_dir / "memory"
     structured_file = memory_dir / "structured.md"
     index_file = memory_dir / "index.json"
     daily_log = DailyLogService(
         DbDailyLog(db_file),
-        DbAppSettings(db_file),
+        SettingsService(db_file),
         ZoneInfo(settings.timezone),
     )
     structured_memory = StructuredMemoryDoc(structured_file)
@@ -158,7 +179,7 @@ def serve(
     approvals = ApprovalRegistry()
     personas = PersonaService(
         settings.personas_dir,
-        DbAppSettings(db_file),
+        SettingsService(db_file),
         DbPersonaVersions(db_file),
         session_marker=daily_log.record_session_boundary,
     )
@@ -171,19 +192,38 @@ def serve(
         logger.error("人设版本记录失败：%s", exc)
         print(f"人设版本记录失败：{exc}", file=sys.stderr)
         return 1
+    publisher = BusEventPublisher(event_bus)
+    avatars = AvatarService(
+        settings.data_dir / "avatars",
+        SettingsService(db_file),
+        seed_dir=AVATAR_SOURCE_DIR / "default",
+    )
+    interaction_service = InteractionService(settings_service)
+    menu_service = MenuService(avatars, perception.scheduler)
     chat_service = ChatService(
         llm_service,
         daily_log,
         personas,
         templates,
         db_usage_sink(db_file),
-        BusEventPublisher(event_bus),
+        publisher,
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
         capabilities=merge_capabilities(capabilities, skills.summaries()),
         orchestrator=orchestrator,
         approvals=approvals,
+        perception=perception,
+        activity=chat_activity,
+        interactions=interaction_service,
     )
+    proactive = ProactivePipeline(
+        chat_service,
+        perception.scheduler,
+        publisher,
+        chat_active=chat_activity.is_active,
+        status=publisher.status,
+    )
+    perception_runtime = PerceptionRuntime(perception, on_trigger=proactive.handle)
     app = create_app(
         settings.token.get_secret_value(),
         request_shutdown=shutdown.request,
@@ -193,6 +233,11 @@ def serve(
         memories=memory_services,
         persona_service=personas,
         approvals=approvals,
+        perception_service=perception,
+        perception_runtime=perception_runtime,
+        avatar_service=avatars,
+        interaction_service=interaction_service,
+        menu_service=menu_service,
     )
     config = uvicorn.Config(
         app,
@@ -231,7 +276,7 @@ def main() -> int:
     llm_service = LlmService(
         ModelSettingsSource(),
         usage_sink=db_usage_sink(settings.data_dir / "pet.db"),
-        active_store=DbAppSettings(settings.data_dir / "pet.db"),
+        active_store=SettingsService(settings.data_dir / "pet.db"),
     )
     try:
         llm_service.start()

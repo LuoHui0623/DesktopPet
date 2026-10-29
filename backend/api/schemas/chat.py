@@ -1,5 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field
 
+from module.memory.contracts import DailyLogView
+
 
 class ChatRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -21,14 +23,6 @@ class ChatReplyResponse(BaseModel):
     sources: list[SourceOut] = Field(default_factory=list)
 
 
-class ChatHistoryItem(BaseModel):
-    id: int
-    date: str
-    role: str
-    content: str
-    created_at: str
-
-
 class ChatHistoryResponse(BaseModel):
-    items: list[ChatHistoryItem]
+    items: list[DailyLogView]
     has_more: bool

@@ -1,19 +1,13 @@
 from pydantic import BaseModel, ConfigDict, StrictBool
 
-
-class DailyRecordOut(BaseModel):
-    id: int
-    date: str
-    role: str
-    content: str
-    created_at: str
+from module.memory.contracts import DailyLogView
 
 
 class MemoriesResponse(BaseModel):
     temporary_mode: bool
     structured: str
     daily_memory: dict[str, list[str]]
-    daily_records: list[DailyRecordOut] | None = None
+    daily_records: list[DailyLogView] | None = None
 
 
 class StructuredMemoryUpdate(BaseModel):

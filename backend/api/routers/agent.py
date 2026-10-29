@@ -3,7 +3,7 @@ from fastapi.responses import Response
 
 from api.errors import error_response
 from api.schemas.approval import ApprovalAck, ApprovalDecision
-from service.agent.approval import RESOLVE_CLOSED, RESOLVE_OK, RESOLVE_UNKNOWN, ApprovalRegistry
+from module.agent.approval import RESOLVE_CLOSED, RESOLVE_OK, RESOLVE_UNKNOWN, ApprovalRegistry
 
 router = APIRouter(prefix="/api", tags=["agent"])
 

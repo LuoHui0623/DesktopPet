@@ -3,7 +3,7 @@ from fastapi.responses import Response
 
 from api.errors import error_response
 from api.schemas.personas import PersonaActivateRequest, PersonaItemOut, PersonasResponse
-from service.persona.persona_service import PersonaService, PersonaUnavailableError
+from module.persona.persona_service import PersonaService, PersonaUnavailableError
 
 router = APIRouter(prefix="/api", tags=["personas"])
 

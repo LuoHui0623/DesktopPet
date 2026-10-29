@@ -13,7 +13,7 @@ from api.schemas.llm import (
     ReloadResponse,
 )
 from config.settings import CAPABILITY_VARS, DefaultModel
-from service.llm import LlmService, ModelSelectionError
+from module.llm import LlmService, ModelSelectionError
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 

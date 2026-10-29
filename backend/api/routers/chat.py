@@ -3,14 +3,9 @@ from fastapi.responses import Response
 
 from api.errors import error_response
 from api.event_publisher import source_out
-from api.schemas.chat import (
-    ChatHistoryItem,
-    ChatHistoryResponse,
-    ChatReplyResponse,
-    ChatRequest,
-)
-from service.chat.chat_service import ChatError, ChatService
-from service.memory.daily_events import display_content
+from api.schemas.chat import ChatHistoryResponse, ChatReplyResponse, ChatRequest
+from module.chat.chat_service import ChatError, ChatService
+from module.chat.chat_service import ChatRequest as ServiceChatRequest
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -44,7 +39,7 @@ def _service(request: Request) -> ChatService:
 def send_chat(request: Request, body: ChatRequest) -> Response | ChatReplyResponse:
     service = _service(request)
     try:
-        reply = service.reply(body.text)
+        reply = service.chat(ServiceChatRequest(user_text=body.text))
     except ChatError as exc:
         status = CHAT_ERROR_STATUS.get(exc.code, 500)
         return error_response(status, exc.code, str(exc))
@@ -81,14 +76,4 @@ def list_chat_history(
         )
     except ValueError as exc:
         return error_response(422, "invalid_date", str(exc))
-    items = [
-        ChatHistoryItem(
-            id=record.id,
-            date=record.date,
-            role=record.role,
-            content=display_content(record.role, record.content),
-            created_at=record.created_at,
-        )
-        for record in records
-    ]
-    return ChatHistoryResponse(items=items, has_more=has_more)
+    return ChatHistoryResponse(items=records, has_more=has_more)
