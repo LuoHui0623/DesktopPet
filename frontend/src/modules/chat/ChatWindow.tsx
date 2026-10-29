@@ -10,8 +10,12 @@ const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
   { key: "history", label: "历史" },
 ];
 
+function initialTab(): Tab {
+  return window.location.hash === "#history" ? "history" : "conversation";
+}
+
 export function ChatWindow() {
-  const [tab, setTab] = useState<Tab>("conversation");
+  const [tab, setTab] = useState<Tab>(initialTab);
 
   return (
     <div
