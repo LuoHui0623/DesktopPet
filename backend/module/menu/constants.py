@@ -1,0 +1,6 @@
+OPEN_CHAT = "open_chat"
+OPEN_SETTINGS = "open_settings"
+SWITCH_AVATAR = "switch_avatar"
+AVATAR_PREFIX = "avatar:"
+TOGGLE_PROACTIVE = "toggle_proactive"
+QUIT = "quit"
