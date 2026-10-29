@@ -480,7 +480,7 @@ language_style:
 | `log_record` | id, created_at, level, logger, message, exc_text | 运行日志入库（异步批量写入，见 Arch §9.6） |
 | `persona_version` | version, content, created_at | 角色卡历史版本（规范化后的内容） |
 | `behavior_event` | id, type, payload, occurred_at | 感知元数据，保留 30 天 |
-| `proactive_feedback` | id, message_id, type(like/dislike/ignore), created_at | 主动消息反馈 |
+| `proactive_feedback` | id, message_id, type(like/dislike/ignore), created_at | 主动消息反馈（已取消：不做反馈接口，迁移 0009 移除该表，见 Task.md D-46 / T-067） |
 | `capability_run` | id, action, params_summary, risk, confirmed, result, undo_payload, created_at | 能力执行日志（undo_payload 记录撤销所需的原路径等信息） |
 | `chat_import` | id, source, conversation, imported_at, file_path | 聊天记录导入记录 |
 | `weather_cache` | city_key, payload, fetched_at | 天气缓存 |
@@ -513,7 +513,7 @@ language_style:
 | **M5 聊天记录** | 导入、统一格式化、按天摘要、待办提取、Markdown 导出 |
 | **M6 受限能力** | 能力扩展注册、L0–L2 动作、确认流程、撤销、紧急停止、执行日志 |
 
-实现状态（截至 T-045）：M0、M1、M2 已完成；M3–M6 未开始。本表描述的是目标范围，具体完成情况以 `Task.md` 为准。
+实现状态：M0、M1、M2 已完成，后续进度以 `Task.md` 为准。本表描述的是目标范围，不登记任务与完成状态。
 
 每个里程碑结束后可日常使用，再决定是否进入下一个。
 
