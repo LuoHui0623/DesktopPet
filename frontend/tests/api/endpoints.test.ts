@@ -4,8 +4,14 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createApiClient, type ApiClient } from "../../src/api/client";
 import {
+  clearPerceptionRecords,
+  decidePerceptionProcess,
   getActiveLlm,
+  getInteractionConfig,
+  getPerceptionState,
+  getSettings,
   getHealth,
+  ingestPerception,
   listChatHistory,
   listLlmProviders,
   listMemories,
@@ -15,7 +21,12 @@ import {
   setActiveLlm,
   setMemoryTemporaryMode,
   submitApproval,
+  updateSettingsAvatar,
+  updateSettingsInteraction,
+  updateSettingsPerception,
+  updateSettingsProactive,
 } from "../../src/api/endpoints";
+import type { InteractionConfig, PerceptionConfig, SchedulerConfig } from "../../src/api/types";
 
 const FRONTEND_DIR = fileURLToPath(new URL("../..", import.meta.url));
 const CONTRACTS_FILE = path.join(FRONTEND_DIR, "src", "api", "api-contracts.json");
@@ -55,6 +66,26 @@ function bodyOf(init: RequestInit | undefined): unknown {
 }
 
 const BASE = `http://127.0.0.1:${info.port}`;
+
+const perceptionConfig: PerceptionConfig = {
+  enabled: true,
+  foreground_enabled: false,
+  idle_away_minutes: 20,
+  sit_minutes: 45,
+};
+const proactiveConfig: SchedulerConfig = {
+  enabled: false,
+  min_interval_minutes: 90,
+  max_per_day: 8,
+  dnd_start: "23:00",
+  dnd_end: "07:30",
+};
+const interactionConfig: InteractionConfig = {
+  report_enabled_kinds: ["click", "drag"],
+  hover_dwell_ms: 500,
+  report_interval_ms: 2000,
+  reaction_ms: 400,
+};
 
 describe("endpoint functions match the API contract", () => {
   const cases: {
@@ -124,6 +155,71 @@ describe("endpoint functions match the API contract", () => {
       template: "/api/agent/approvals",
       expectedPath: "/api/agent/approvals",
     },
+    {
+      operationId: "ingest_perception",
+      run: (c) =>
+        ingestPerception(c, {
+          kind: "idle",
+          value: 120_000,
+          at: "2026-10-29T10:00:00Z",
+        }),
+      template: "/api/perception",
+      expectedPath: "/api/perception",
+    },
+    {
+      operationId: "get_perception_state",
+      run: getPerceptionState,
+      template: "/api/perception/state",
+      expectedPath: "/api/perception/state",
+    },
+    {
+      operationId: "decide_perception_process",
+      run: (c) => decidePerceptionProcess(c, { exe: "code", decision: "allow" }),
+      template: "/api/perception/processes/decision",
+      expectedPath: "/api/perception/processes/decision",
+    },
+    {
+      operationId: "clear_perception_records",
+      run: clearPerceptionRecords,
+      template: "/api/perception/clear",
+      expectedPath: "/api/perception/clear",
+    },
+    {
+      operationId: "get_interaction_config",
+      run: getInteractionConfig,
+      template: "/api/interaction/config",
+      expectedPath: "/api/interaction/config",
+    },
+    {
+      operationId: "get_settings",
+      run: getSettings,
+      template: "/api/settings",
+      expectedPath: "/api/settings",
+    },
+    {
+      operationId: "update_settings_perception",
+      run: (c) => updateSettingsPerception(c, perceptionConfig),
+      template: "/api/settings/perception",
+      expectedPath: "/api/settings/perception",
+    },
+    {
+      operationId: "update_settings_proactive",
+      run: (c) => updateSettingsProactive(c, proactiveConfig),
+      template: "/api/settings/proactive",
+      expectedPath: "/api/settings/proactive",
+    },
+    {
+      operationId: "update_settings_avatar",
+      run: (c) => updateSettingsAvatar(c, "default"),
+      template: "/api/settings/avatar",
+      expectedPath: "/api/settings/avatar",
+    },
+    {
+      operationId: "update_settings_interaction",
+      run: (c) => updateSettingsInteraction(c, interactionConfig),
+      template: "/api/settings/interaction",
+      expectedPath: "/api/settings/interaction",
+    },
   ];
 
   for (const testCase of cases) {
@@ -190,6 +286,22 @@ describe("request bodies and queries", () => {
     expect(bodyOf(calls[0]?.init)).toEqual({ approval_id: "ap_1", approved: false });
   });
 
+  it("sends perception samples as JSON", async () => {
+    const { client, calls } = recordingClient();
+    const sample = { kind: "foreground" as const, value: "code", at: "2026-10-29T10:00:00Z" };
+    await ingestPerception(client, sample);
+    expect(calls[0]?.url).toBe(`${BASE}/api/perception`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual(sample);
+  });
+
+  it("sends the candidate decision as JSON", async () => {
+    const { client, calls } = recordingClient();
+    await decidePerceptionProcess(client, { exe: "code", decision: "ignore" });
+    expect(calls[0]?.url).toBe(`${BASE}/api/perception/processes/decision`);
+    expect(bodyOf(calls[0]?.init)).toEqual({ exe: "code", decision: "ignore" });
+  });
+
   it("sends the model selection as the PUT body", async () => {
     const { client, calls } = recordingClient();
     await setActiveLlm(client, { consolidate: { provider: "deepseek", model: "deepseek-flash" } });
@@ -197,6 +309,20 @@ describe("request bodies and queries", () => {
     expect(bodyOf(calls[0]?.init)).toEqual({
       consolidate: { provider: "deepseek", model: "deepseek-flash" },
     });
+  });
+
+  it("sends each settings group as the PUT body of the aggregate view", async () => {
+    const { client, calls } = recordingClient();
+    await updateSettingsPerception(client, perceptionConfig);
+    await updateSettingsProactive(client, proactiveConfig);
+    await updateSettingsAvatar(client, "alt");
+    await updateSettingsInteraction(client, interactionConfig);
+
+    expect(calls.map((call) => call.init?.method)).toEqual(["PUT", "PUT", "PUT", "PUT"]);
+    expect(bodyOf(calls[0]?.init)).toEqual(perceptionConfig);
+    expect(bodyOf(calls[1]?.init)).toEqual(proactiveConfig);
+    expect(bodyOf(calls[2]?.init)).toEqual({ id: "alt" });
+    expect(bodyOf(calls[3]?.init)).toEqual(interactionConfig);
   });
 
   it("does not send a body for GET requests", async () => {

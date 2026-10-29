@@ -4,14 +4,27 @@ import type {
   ActiveLlmResponse,
   ApprovalAck,
   ApprovalDecision,
+  AvatarsResponse,
   ChatHistoryQuery,
   ChatHistoryResponse,
   ChatReplyResponse,
+  InteractionConfig,
+  InteractionKind,
+  InteractionResponse,
   LlmProvidersResponse,
   MemoriesQuery,
   MemoriesResponse,
+  MenuResponse,
+  PerceptionConfig,
+  PerceptionIngestResponse,
+  PerceptionProcessDecision,
+  PerceptionSample,
+  PerceptionStateResponse,
   PersonasResponse,
   ReloadResponse,
+  SchedulerConfig,
+  SchedulerLedger,
+  SettingsView,
   StructuredMemoryUpdate,
   TemporaryModeResponse,
 } from "./types";
@@ -87,6 +100,29 @@ export function activatePersona(client: ApiClient, personaId: string): Promise<P
   });
 }
 
+export function listAvatars(client: ApiClient): Promise<AvatarsResponse> {
+  return request<AvatarsResponse>(client, "GET", "/api/avatars");
+}
+
+export function activateAvatar(client: ApiClient, id: string): Promise<AvatarsResponse> {
+  return request<AvatarsResponse>(client, "PUT", "/api/avatars/active", { body: { id } });
+}
+
+export function getMenu(client: ApiClient): Promise<MenuResponse> {
+  return request<MenuResponse>(client, "GET", "/api/menu");
+}
+
+export function getSchedulerConfig(client: ApiClient): Promise<SchedulerConfig> {
+  return request<SchedulerConfig>(client, "GET", "/api/scheduler/config");
+}
+
+export function updateSchedulerConfig(
+  client: ApiClient,
+  config: SchedulerConfig,
+): Promise<SchedulerConfig> {
+  return request<SchedulerConfig>(client, "PUT", "/api/scheduler/config", { body: config });
+}
+
 export function setMemoryTemporaryMode(
   client: ApiClient,
   enabled: boolean,
@@ -94,4 +130,72 @@ export function setMemoryTemporaryMode(
   return request<TemporaryModeResponse>(client, "POST", "/api/memories/temporary-mode", {
     body: { enabled },
   });
+}
+
+export function ingestPerception(
+  client: ApiClient,
+  sample: PerceptionSample,
+): Promise<PerceptionIngestResponse> {
+  return request<PerceptionIngestResponse>(client, "POST", "/api/perception", { body: sample });
+}
+
+export function getPerceptionState(client: ApiClient): Promise<PerceptionStateResponse> {
+  return request<PerceptionStateResponse>(client, "GET", "/api/perception/state");
+}
+
+export function decidePerceptionProcess(
+  client: ApiClient,
+  decision: PerceptionProcessDecision,
+): Promise<PerceptionStateResponse> {
+  return request<PerceptionStateResponse>(client, "POST", "/api/perception/processes/decision", {
+    body: decision,
+  });
+}
+
+export function reportInteraction(
+  client: ApiClient,
+  kind: InteractionKind,
+): Promise<InteractionResponse> {
+  return request<InteractionResponse>(client, "POST", "/api/interaction", { body: { kind } });
+}
+
+export function getInteractionConfig(client: ApiClient): Promise<InteractionConfig> {
+  return request<InteractionConfig>(client, "GET", "/api/interaction/config");
+}
+
+export function getSettings(client: ApiClient): Promise<SettingsView> {
+  return request<SettingsView>(client, "GET", "/api/settings");
+}
+
+export function updateSettingsPerception(
+  client: ApiClient,
+  config: PerceptionConfig,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/perception", { body: config });
+}
+
+export function updateSettingsProactive(
+  client: ApiClient,
+  config: SchedulerConfig,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/proactive", { body: config });
+}
+
+export function updateSettingsAvatar(client: ApiClient, id: string): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/avatar", { body: { id } });
+}
+
+export function updateSettingsInteraction(
+  client: ApiClient,
+  config: InteractionConfig,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/interaction", { body: config });
+}
+
+export function getSchedulerLedger(client: ApiClient): Promise<SchedulerLedger> {
+  return request<SchedulerLedger>(client, "GET", "/api/scheduler/ledger");
+}
+
+export function clearPerceptionRecords(client: ApiClient): Promise<{ cleared: boolean }> {
+  return request<{ cleared: boolean }>(client, "POST", "/api/perception/clear");
 }

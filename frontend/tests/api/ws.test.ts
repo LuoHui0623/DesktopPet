@@ -197,6 +197,17 @@ describe("event stream connection", () => {
     expect(parseServerEvent(JSON.stringify([]))).toBeNull();
   });
 
+  it("keeps proactive messages", () => {
+    const payload = {
+      type: "proactive.message",
+      id: "m1",
+      text: "起来动动吧。",
+      topic: "app_in_use.code",
+      at: "2026-10-29T10:00:00+08:00",
+    };
+    expect(parseServerEvent(JSON.stringify(payload))).toEqual(payload);
+  });
+
   it("keeps approval requests instead of dropping them", () => {
     const payload = {
       type: "approval.request",

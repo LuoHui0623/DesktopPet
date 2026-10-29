@@ -1,6 +1,26 @@
 {
   "operations": [
     {
+      "operationId": "activate_avatar",
+      "method": "PUT",
+      "path": "/api/avatars/active",
+      "tags": [
+        "avatars"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ActivateAvatarIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/AvatarsResponse"
+        },
+        "404": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
+      }
+    },
+    {
       "operationId": "activate_persona",
       "method": "PUT",
       "path": "/api/personas/active",
@@ -13,6 +33,37 @@
       "responses": {
         "200": {
           "$ref": "#/components/schemas/PersonasResponse"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "clear_perception_records",
+      "method": "POST",
+      "path": "/api/perception/clear",
+      "tags": [
+        "perception"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionClearResponse"
+        }
+      }
+    },
+    {
+      "operationId": "decide_perception_process",
+      "method": "POST",
+      "path": "/api/perception/processes/decision",
+      "tags": [
+        "perception"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ProcessDecisionRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionStateResponse"
         },
         "422": null
       }
@@ -32,6 +83,104 @@
       }
     },
     {
+      "operationId": "get_interaction_config",
+      "method": "GET",
+      "path": "/api/interaction/config",
+      "tags": [
+        "interaction"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/InteractionConfigView"
+        }
+      }
+    },
+    {
+      "operationId": "get_menu",
+      "method": "GET",
+      "path": "/api/menu",
+      "tags": [
+        "menu"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MenuResponse"
+        }
+      }
+    },
+    {
+      "operationId": "get_perception_config",
+      "method": "GET",
+      "path": "/api/perception/config",
+      "tags": [
+        "perception"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionConfigView"
+        }
+      }
+    },
+    {
+      "operationId": "get_perception_state",
+      "method": "GET",
+      "path": "/api/perception/state",
+      "tags": [
+        "perception"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionStateResponse"
+        }
+      }
+    },
+    {
+      "operationId": "get_scheduler_config",
+      "method": "GET",
+      "path": "/api/scheduler/config",
+      "tags": [
+        "scheduler"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SchedulerConfigView"
+        }
+      }
+    },
+    {
+      "operationId": "get_scheduler_ledger",
+      "method": "GET",
+      "path": "/api/scheduler/ledger",
+      "tags": [
+        "scheduler"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SchedulerLedgerView"
+        }
+      }
+    },
+    {
+      "operationId": "get_settings",
+      "method": "GET",
+      "path": "/api/settings",
+      "tags": [
+        "settings"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        }
+      }
+    },
+    {
       "operationId": "health",
       "method": "GET",
       "path": "/api/health",
@@ -46,6 +195,37 @@
           },
           "title": "Response Health",
           "type": "object"
+        }
+      }
+    },
+    {
+      "operationId": "ingest_perception",
+      "method": "POST",
+      "path": "/api/perception",
+      "tags": [
+        "perception"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/PerceptionRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionIngestResponse"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "list_avatars",
+      "method": "GET",
+      "path": "/api/avatars",
+      "tags": [
+        "avatars"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/AvatarsResponse"
         }
       }
     },
@@ -120,6 +300,26 @@
           "$ref": "#/components/schemas/ReloadResponse"
         },
         "422": null
+      }
+    },
+    {
+      "operationId": "report_interaction",
+      "method": "POST",
+      "path": "/api/interaction",
+      "tags": [
+        "interaction"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/InteractionRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/InteractionResponse"
+        },
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        },
+        "503": null
       }
     },
     {
@@ -235,10 +435,131 @@
         },
         "503": null
       }
+    },
+    {
+      "operationId": "update_perception_config",
+      "method": "PUT",
+      "path": "/api/perception/config",
+      "tags": [
+        "perception"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/PerceptionConfigIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/PerceptionConfigView"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "update_scheduler_config",
+      "method": "PUT",
+      "path": "/api/scheduler/config",
+      "tags": [
+        "scheduler"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/SchedulerConfigIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SchedulerConfigView"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "update_settings_avatar",
+      "method": "PUT",
+      "path": "/api/settings/avatar",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ActivateAvatarIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "404": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
+      }
+    },
+    {
+      "operationId": "update_settings_interaction",
+      "method": "PUT",
+      "path": "/api/settings/interaction",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/InteractionConfigIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
+      }
+    },
+    {
+      "operationId": "update_settings_perception",
+      "method": "PUT",
+      "path": "/api/settings/perception",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/PerceptionConfigIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "update_settings_proactive",
+      "method": "PUT",
+      "path": "/api/settings/proactive",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/SchedulerConfigIn"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "422": null
+      }
     }
   ],
   "components": {
     "schemas": {
+      "ActivateAvatarIn": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "ActivateAvatarIn",
+        "type": "object"
+      },
       "ActiveLlmRequest": {
         "additionalProperties": false,
         "properties": {
@@ -448,6 +769,106 @@
         "title": "ApprovalRequestEvent",
         "type": "object"
       },
+      "AvatarFrameOut": {
+        "properties": {
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "width",
+          "height"
+        ],
+        "title": "AvatarFrameOut",
+        "type": "object"
+      },
+      "AvatarPackOut": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "fallback": {
+            "title": "Fallback",
+            "type": "string"
+          },
+          "frame": {
+            "$ref": "#/components/schemas/AvatarFrameOut"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "states": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AvatarStateOut"
+            },
+            "title": "States",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "active",
+          "frame",
+          "fallback",
+          "states"
+        ],
+        "title": "AvatarPackOut",
+        "type": "object"
+      },
+      "AvatarStateOut": {
+        "properties": {
+          "frame_ms": {
+            "title": "Frame Ms",
+            "type": "integer"
+          },
+          "frames": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Frames",
+            "type": "array"
+          }
+        },
+        "required": [
+          "frames",
+          "frame_ms"
+        ],
+        "title": "AvatarStateOut",
+        "type": "object"
+      },
+      "AvatarsResponse": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "string"
+          },
+          "packs": {
+            "items": {
+              "$ref": "#/components/schemas/AvatarPackOut"
+            },
+            "title": "Packs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "active",
+          "packs"
+        ],
+        "title": "AvatarsResponse",
+        "type": "object"
+      },
       "ChatChunkEvent": {
         "properties": {
           "message_id": {
@@ -503,39 +924,6 @@
         "title": "ChatDoneEvent",
         "type": "object"
       },
-      "ChatHistoryItem": {
-        "properties": {
-          "content": {
-            "title": "Content",
-            "type": "string"
-          },
-          "created_at": {
-            "title": "Created At",
-            "type": "string"
-          },
-          "date": {
-            "title": "Date",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "integer"
-          },
-          "role": {
-            "title": "Role",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "date",
-          "role",
-          "content",
-          "created_at"
-        ],
-        "title": "ChatHistoryItem",
-        "type": "object"
-      },
       "ChatHistoryResponse": {
         "properties": {
           "has_more": {
@@ -544,7 +932,7 @@
           },
           "items": {
             "items": {
-              "$ref": "#/components/schemas/ChatHistoryItem"
+              "$ref": "#/components/schemas/DailyLogView"
             },
             "title": "Items",
             "type": "array"
@@ -602,7 +990,7 @@
         "title": "ChatRequest",
         "type": "object"
       },
-      "DailyRecordOut": {
+      "DailyLogView": {
         "properties": {
           "content": {
             "title": "Content",
@@ -621,6 +1009,12 @@
             "type": "integer"
           },
           "role": {
+            "enum": [
+              "master",
+              "me",
+              "system",
+              "event"
+            ],
             "title": "Role",
             "type": "string"
           }
@@ -632,7 +1026,7 @@
           "content",
           "created_at"
         ],
-        "title": "DailyRecordOut",
+        "title": "DailyLogView",
         "type": "object"
       },
       "DefaultInfo": {
@@ -664,6 +1058,132 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "InteractionConfigIn": {
+        "additionalProperties": false,
+        "properties": {
+          "hover_dwell_ms": {
+            "maximum": 3000,
+            "minimum": 100,
+            "title": "Hover Dwell Ms",
+            "type": "integer"
+          },
+          "reaction_ms": {
+            "maximum": 3000,
+            "minimum": 0,
+            "title": "Reaction Ms",
+            "type": "integer"
+          },
+          "report_enabled_kinds": {
+            "items": {
+              "enum": [
+                "click",
+                "hover",
+                "drag",
+                "menu"
+              ],
+              "type": "string"
+            },
+            "title": "Report Enabled Kinds",
+            "type": "array"
+          },
+          "report_interval_ms": {
+            "maximum": 10000,
+            "minimum": 0,
+            "title": "Report Interval Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "report_enabled_kinds",
+          "hover_dwell_ms",
+          "report_interval_ms",
+          "reaction_ms"
+        ],
+        "title": "InteractionConfigIn",
+        "type": "object"
+      },
+      "InteractionConfigView": {
+        "properties": {
+          "hover_dwell_ms": {
+            "title": "Hover Dwell Ms",
+            "type": "integer"
+          },
+          "reaction_ms": {
+            "title": "Reaction Ms",
+            "type": "integer"
+          },
+          "report_enabled_kinds": {
+            "items": {
+              "enum": [
+                "click",
+                "hover",
+                "drag",
+                "menu"
+              ],
+              "type": "string"
+            },
+            "title": "Report Enabled Kinds",
+            "type": "array"
+          },
+          "report_interval_ms": {
+            "title": "Report Interval Ms",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "report_enabled_kinds",
+          "hover_dwell_ms",
+          "report_interval_ms",
+          "reaction_ms"
+        ],
+        "title": "InteractionConfigView",
+        "type": "object"
+      },
+      "InteractionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "enum": [
+              "click",
+              "hover",
+              "drag",
+              "menu"
+            ],
+            "title": "Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "title": "InteractionRequest",
+        "type": "object"
+      },
+      "InteractionResponse": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "accepted",
+          "reason"
+        ],
+        "title": "InteractionResponse",
         "type": "object"
       },
       "LlmProvidersResponse": {
@@ -727,7 +1247,7 @@
             "anyOf": [
               {
                 "items": {
-                  "$ref": "#/components/schemas/DailyRecordOut"
+                  "$ref": "#/components/schemas/DailyLogView"
                 },
                 "type": "array"
               },
@@ -752,6 +1272,64 @@
           "daily_memory"
         ],
         "title": "MemoriesResponse",
+        "type": "object"
+      },
+      "MenuItemOut": {
+        "properties": {
+          "checked": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked"
+          },
+          "children": {
+            "items": {
+              "$ref": "#/components/schemas/MenuItemOut"
+            },
+            "title": "Children",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "enabled",
+          "checked"
+        ],
+        "title": "MenuItemOut",
+        "type": "object"
+      },
+      "MenuResponse": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/MenuItemOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "MenuResponse",
         "type": "object"
       },
       "ModelInfo": {
@@ -783,6 +1361,246 @@
           "roles"
         ],
         "title": "ModelInfo",
+        "type": "object"
+      },
+      "PerceptionClearResponse": {
+        "properties": {
+          "cleared": {
+            "title": "Cleared",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "cleared"
+        ],
+        "title": "PerceptionClearResponse",
+        "type": "object"
+      },
+      "PerceptionConfigIn": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "foreground_enabled": {
+            "title": "Foreground Enabled",
+            "type": "boolean"
+          },
+          "idle_away_minutes": {
+            "maximum": 720,
+            "minimum": 1,
+            "title": "Idle Away Minutes",
+            "type": "integer"
+          },
+          "sit_minutes": {
+            "maximum": 720,
+            "minimum": 15,
+            "title": "Sit Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "foreground_enabled",
+          "idle_away_minutes",
+          "sit_minutes"
+        ],
+        "title": "PerceptionConfigIn",
+        "type": "object"
+      },
+      "PerceptionConfigView": {
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "foreground_enabled": {
+            "title": "Foreground Enabled",
+            "type": "boolean"
+          },
+          "idle_away_minutes": {
+            "title": "Idle Away Minutes",
+            "type": "integer"
+          },
+          "sit_minutes": {
+            "title": "Sit Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "foreground_enabled",
+          "idle_away_minutes",
+          "sit_minutes"
+        ],
+        "title": "PerceptionConfigView",
+        "type": "object"
+      },
+      "PerceptionIngestResponse": {
+        "properties": {
+          "accepted": {
+            "title": "Accepted",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "accepted",
+          "reason",
+          "candidates"
+        ],
+        "title": "PerceptionIngestResponse",
+        "type": "object"
+      },
+      "PerceptionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "idle",
+              "foreground",
+              "fullscreen",
+              "locked",
+              "processes",
+              "process_candidate"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "value": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "string"
+              },
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Value"
+          }
+        },
+        "required": [
+          "kind",
+          "value",
+          "at"
+        ],
+        "title": "PerceptionRequest",
+        "type": "object"
+      },
+      "PerceptionStateResponse": {
+        "properties": {
+          "busy": {
+            "title": "Busy",
+            "type": "boolean"
+          },
+          "candidates": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "foreground": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Foreground"
+          },
+          "foreground_enabled": {
+            "title": "Foreground Enabled",
+            "type": "boolean"
+          },
+          "idle_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idle Seconds"
+          },
+          "muted": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Muted",
+            "type": "array"
+          },
+          "presence": {
+            "enum": [
+              "active",
+              "away",
+              "unknown"
+            ],
+            "title": "Presence",
+            "type": "string"
+          },
+          "whitelist": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Whitelist",
+            "type": "array"
+          }
+        },
+        "required": [
+          "enabled",
+          "foreground_enabled",
+          "presence",
+          "busy",
+          "idle_seconds",
+          "foreground",
+          "whitelist",
+          "muted",
+          "candidates"
+        ],
+        "title": "PerceptionStateResponse",
         "type": "object"
       },
       "PersonaActivateRequest": {
@@ -867,6 +1685,64 @@
         "title": "PersonasResponse",
         "type": "object"
       },
+      "ProactiveMessageEvent": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          },
+          "type": {
+            "const": "proactive.message",
+            "default": "proactive.message",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "topic",
+          "at"
+        ],
+        "title": "ProactiveMessageEvent",
+        "type": "object"
+      },
+      "ProcessDecisionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "decision": {
+            "enum": [
+              "allow",
+              "ignore"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "exe": {
+            "title": "Exe",
+            "type": "string"
+          }
+        },
+        "required": [
+          "exe",
+          "decision"
+        ],
+        "title": "ProcessDecisionRequest",
+        "type": "object"
+      },
       "ProviderInfo": {
         "properties": {
           "available": {
@@ -936,12 +1812,112 @@
         "title": "ReloadResponse",
         "type": "object"
       },
+      "SchedulerConfigIn": {
+        "additionalProperties": false,
+        "properties": {
+          "dnd_end": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Dnd End",
+            "type": "string"
+          },
+          "dnd_start": {
+            "pattern": "^([01]\\d|2[0-3]):[0-5]\\d$",
+            "title": "Dnd Start",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_per_day": {
+            "maximum": 100,
+            "minimum": 0,
+            "title": "Max Per Day",
+            "type": "integer"
+          },
+          "min_interval_minutes": {
+            "maximum": 1440,
+            "minimum": 0,
+            "title": "Min Interval Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "min_interval_minutes",
+          "max_per_day",
+          "dnd_start",
+          "dnd_end"
+        ],
+        "title": "SchedulerConfigIn",
+        "type": "object"
+      },
+      "SchedulerConfigView": {
+        "properties": {
+          "dnd_end": {
+            "title": "Dnd End",
+            "type": "string"
+          },
+          "dnd_start": {
+            "title": "Dnd Start",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "max_per_day": {
+            "title": "Max Per Day",
+            "type": "integer"
+          },
+          "min_interval_minutes": {
+            "title": "Min Interval Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "enabled",
+          "min_interval_minutes",
+          "max_per_day",
+          "dnd_start",
+          "dnd_end"
+        ],
+        "title": "SchedulerConfigView",
+        "type": "object"
+      },
+      "SchedulerLedgerView": {
+        "properties": {
+          "date": {
+            "title": "Date",
+            "type": "string"
+          },
+          "topics": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Topics",
+            "type": "object"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "date",
+          "topics",
+          "total"
+        ],
+        "title": "SchedulerLedgerView",
+        "type": "object"
+      },
       "ServerEvent": {
         "discriminator": {
           "mapping": {
             "approval.request": "#/components/schemas/ApprovalRequestEvent",
             "chat.chunk": "#/components/schemas/ChatChunkEvent",
             "chat.done": "#/components/schemas/ChatDoneEvent",
+            "proactive.message": "#/components/schemas/ProactiveMessageEvent",
             "status": "#/components/schemas/StatusEvent"
           },
           "propertyName": "type"
@@ -958,8 +1934,36 @@
           },
           {
             "$ref": "#/components/schemas/ApprovalRequestEvent"
+          },
+          {
+            "$ref": "#/components/schemas/ProactiveMessageEvent"
           }
         ]
+      },
+      "SettingsView": {
+        "description": "设置页四个分组的统一读模型；真源仍是 app_setting 与形象清单。",
+        "properties": {
+          "avatar": {
+            "$ref": "#/components/schemas/AvatarsResponse"
+          },
+          "interaction": {
+            "$ref": "#/components/schemas/InteractionConfigView"
+          },
+          "perception": {
+            "$ref": "#/components/schemas/PerceptionConfigView"
+          },
+          "proactive": {
+            "$ref": "#/components/schemas/SchedulerConfigView"
+          }
+        },
+        "required": [
+          "perception",
+          "proactive",
+          "avatar",
+          "interaction"
+        ],
+        "title": "SettingsView",
+        "type": "object"
       },
       "SourceOut": {
         "properties": {
