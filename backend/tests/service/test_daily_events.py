@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from service.memory.daily_events import (
+from module.memory.daily_events import (
     EventError,
     decode_event,
     display_content,

@@ -15,7 +15,6 @@ EXPECTED_TABLES = {
     "agent_run",
     "persona_version",
     "behavior_event",
-    "proactive_feedback",
     "capability_run",
     "chat_import",
     "weather_cache",
@@ -58,8 +57,9 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2, 3, 4, 5, 6, 7, 8]
+    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9]
     assert EXPECTED_TABLES <= tables(conn)
+    assert not {"core_memory", "proactive_feedback"} & tables(conn)
 
 
 def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
@@ -75,6 +75,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
         (6, "daily_event_structure"),
         (7, "agent_run_rejected"),
         (8, "drop_core_memory"),
+        (9, "drop_proactive_feedback"),
     ]
 
 
@@ -85,12 +86,13 @@ def test_schema_version_records_checksum(conn: sqlite3.Connection):
 
 
 def test_foreign_key_is_enforced(conn: sqlite3.Connection):
+    """建表迁移已无外键（core_memory、proactive_feedback 均移除），现建一张子表验证连接级开关。"""
     migrate(conn)
+    conn.execute(
+        "CREATE TABLE daily_ref (log_id INTEGER REFERENCES daily_log (id) ON DELETE CASCADE)"
+    )
     with pytest.raises(sqlite3.IntegrityError):
-        conn.execute(
-            "INSERT INTO proactive_feedback (message_id, type, created_at) "
-            "VALUES (999, 'like', 'x')"
-        )
+        conn.execute("INSERT INTO daily_ref (log_id) VALUES (999)")
 
 
 @pytest.mark.parametrize(
@@ -255,7 +257,7 @@ def test_agent_run_accepts_rejected_status(tmp_path: Path):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(insert, ("r2", "rejected"))
 
-        assert migrate(conn) == [7, 8]
+        assert migrate(conn) == [7, 8, 9]
 
         conn.execute(insert, ("r2", "rejected"))
         rows = conn.execute("SELECT id, status, steps FROM agent_run ORDER BY id").fetchall()
@@ -284,7 +286,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         )
         conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES ('1', 1)")
 
-        assert migrate(conn) == [3, 4, 5, 6, 7, 8]
+        assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9]
 
         usage = conn.execute(
             "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_usage"
@@ -293,6 +295,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
         assert "memory" not in tables(conn)
         assert "daily_summary" not in tables(conn)
         assert "core_memory" not in tables(conn)
+        assert "proactive_feedback" not in tables(conn)
         versions = conn.execute("SELECT version FROM schema_version ORDER BY version").fetchall()
         assert [tuple(row) for row in versions] == [
             (1,),
@@ -303,6 +306,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
             (6,),
             (7,),
             (8,),
+            (9,),
         ]
     finally:
         conn.close()
@@ -311,7 +315,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8]
+        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
         assert migrate(conn) == []
     finally:
         conn.close()
@@ -333,7 +337,7 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
             "('2026-10-25', 'event', '切换人设', '2026-10-25T09:05:00+08:00')"
         )
 
-        assert migrate(conn) == [5, 6, 7, 8]
+        assert migrate(conn) == [5, 6, 7, 8, 9]
 
         rows = conn.execute("SELECT id, role, content FROM daily_log ORDER BY id").fetchall()
         assert [tuple(row) for row in rows] == [
@@ -371,7 +375,7 @@ def test_session_boundary_text_becomes_structured_event(tmp_path: Path):
             "('2026-10-25', 'event', '其他旧事件', 'y')"
         )
 
-        assert migrate(conn) == [6, 7, 8]
+        assert migrate(conn) == [6, 7, 8, 9]
 
         rows = conn.execute("SELECT content FROM daily_log ORDER BY id").fetchall()
         assert json.loads(rows[0][0]) == {"type": "session_boundary", "persona": "小桌"}

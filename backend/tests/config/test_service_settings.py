@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from config.settings import ServiceSettingsError, load_service_settings
+from config.settings import (
+    ServiceSettingsError,
+    deprecated_scheduler_values,
+    load_service_settings,
+)
 from constants.path import CONFIG_DIR, DATA_DIR, ROOT_DIR
 
 TOKEN = "test-token-value"
@@ -28,9 +32,6 @@ def test_defaults_when_only_token_is_set(config_dir: Path):
     assert settings.port == 0
     assert settings.timezone == "Asia/Shanghai"
     assert settings.log_level == "INFO"
-    assert settings.quiet_hours == "23:00-08:00"
-    assert settings.proactive_max_per_hour == 2
-    assert settings.proactive_max_per_day == 15
     assert settings.token.get_secret_value() == TOKEN
 
 
@@ -115,17 +116,20 @@ def test_log_level_is_case_insensitive(config_dir: Path):
     assert load(config_dir, {"PET_LOG_LEVEL": "warning"}).log_level == "WARNING"
 
 
-@pytest.mark.parametrize("value", ["23:00", "25:00-08:00", "23-08", "23:00~08:00"])
-def test_invalid_quiet_hours_is_rejected(config_dir: Path, value: str):
-    with pytest.raises(ServiceSettingsError) as exc:
-        load(config_dir, {"PET_QUIET_HOURS": value})
-    assert any("PET_QUIET_HOURS" in error for error in exc.value.errors)
+def test_deprecated_scheduler_values_come_from_env_and_dotenv(config_dir: Path):
+    """废弃的调度键只被读出用于启动提示；系统环境变量优先于 .env。"""
+    write_env(
+        config_dir,
+        "PET_QUIET_HOURS=23:00-08:00\nPET_PROACTIVE_MAX_PER_HOUR=2\nPET_PROACTIVE_MAX_PER_DAY=15\n",
+    )
 
+    values = deprecated_scheduler_values(config_dir, environ={"PET_QUIET_HOURS": "22:00-07:00"})
 
-def test_proactive_limits_are_validated(config_dir: Path):
-    with pytest.raises(ServiceSettingsError) as exc:
-        load(config_dir, {"PET_PROACTIVE_MAX_PER_HOUR": "-1", "PET_PROACTIVE_MAX_PER_DAY": "x"})
-    assert len(exc.value.errors) == 2
+    assert values == {
+        "PET_QUIET_HOURS": "22:00-07:00",
+        "PET_PROACTIVE_MAX_PER_HOUR": "2",
+        "PET_PROACTIVE_MAX_PER_DAY": "15",
+    }
 
 
 def test_all_errors_are_reported_together(config_dir: Path):

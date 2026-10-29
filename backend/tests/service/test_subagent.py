@@ -5,12 +5,12 @@ from langchain_core.tools import tool
 
 from config.settings import ModelSettingsSource
 from constants.agent import DRAFT_INVALID_LIMIT, PHASE_DRAFT, PHASE_EXECUTE
-from infra.llm.usage import db_usage_sink
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.agent.skills import Skill
-from service.agent.subagent import NO_DRAFT, SubAgent, parse_action
-from service.llm import LlmService
+from module.agent.skills import Skill
+from module.agent.subagent import NO_DRAFT, SubAgent, parse_action
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
 
 LLM_YAML = """
 providers:

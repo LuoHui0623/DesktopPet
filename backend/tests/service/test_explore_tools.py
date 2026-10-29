@@ -4,21 +4,21 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from constants.path import SKILLS_DIR
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.agent.skills import (
+from module.agent.skills import (
     MEMORY_RETRIEVE_CAPABILITY,
     SkillRegistry,
     SkillSpec,
     memory_retrieve_skill,
     memory_write_skill,
 )
-from service.agent.tools.explore import make_explore_tools
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemoryReader, StructuredMemoryDoc
+from module.agent.tools.explore import make_explore_tools
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import MemoryReader, StructuredMemoryDoc
+from module.memory.repository import DbDailyLog
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -36,7 +36,7 @@ def reader(tmp_path: Path, structured: StructuredMemoryDoc) -> MemoryReader:
     conn = connect(db_file)
     migrate(conn)
     conn.close()
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
     index = MemoryIndexService(structured.lines, daily.dates, tmp_path / "memory" / "index.json")
     index.rebuild()
     return MemoryReader(tmp_path / "memory" / "index.json", structured, daily)

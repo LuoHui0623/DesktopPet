@@ -1,9 +1,11 @@
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.repositories.daily_log import DailyLogRecord
-from service.memory.memory_service import (
+from module.memory.contracts import DailyLogEntry, DailyLogRole
+from module.memory.memory_service import (
     MemoryReader,
     MemoryReadError,
     MemoryWriteError,
@@ -144,22 +146,21 @@ def test_reader_reports_missing_index(doc: StructuredMemoryDoc, tmp_path: Path):
         reader.describe()
 
 
-def record(role: str, content: str, record_id: int = 1) -> DailyLogRecord:
-    return DailyLogRecord(
-        id=record_id,
-        date="2026-10-18",
+def record(role: DailyLogRole, content: str) -> DailyLogEntry:
+    return DailyLogEntry(
+        day=date(2026, 10, 18),
         role=role,
         content=content,
-        created_at="2026-10-18T09:00:00+08:00",
+        created_at=datetime(2026, 10, 18, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
     )
 
 
 def test_daily_turns_are_rendered_one_line_each():
     records = [
-        record("master", "喜欢美式咖啡", 1),
-        record("me", "记住啦", 2),
-        record("master", "第一行\n第二行", 3),
-        record("me", "好的", 4),
+        record("master", "喜欢美式咖啡"),
+        record("me", "记住啦"),
+        record("master", "第一行\n第二行"),
+        record("me", "好的"),
     ]
     assert render_daily_turns(records) == [
         "用户：喜欢美式咖啡 / 宠物：记住啦",
@@ -168,17 +169,17 @@ def test_daily_turns_are_rendered_one_line_each():
 
 
 def test_orphan_records_still_get_a_line():
-    records = [record("me", "开场白", 1), record("master", "你好", 2)]
+    records = [record("me", "开场白"), record("master", "你好")]
     assert render_daily_turns(records) == ["宠物：开场白", "用户：你好"]
 
 
 def test_events_are_rendered_as_text_and_kept_in_memory():
-    from service.memory.daily_events import encode_event
+    from module.memory.daily_events import encode_event
 
     records = [
-        record("master", "你好", 1),
-        record("event", encode_event("session_boundary", persona="小桌"), 2),
-        record("event", encode_event("dispatch_failed", capability="记忆检索", reason="超时"), 3),
+        record("master", "你好"),
+        record("event", encode_event("session_boundary", persona="小桌")),
+        record("event", encode_event("dispatch_failed", capability="记忆检索", reason="超时")),
     ]
     assert render_daily_turns(records) == [
         "用户：你好 / 事件：切换人设为小桌，新会话开始 / 事件：派发失败：记忆检索，超时"

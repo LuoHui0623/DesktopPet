@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage
 
-from infra.llm.usage import TrackedChatModel, db_usage_sink, usage_scope
+from infra.llm.usage import TrackedChatModel, UsageSample, usage_scope
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.repositories.llm_usage import UsageRecord
+from module.llm.repository import db_usage_sink
 
 
 class FakeModel:
@@ -33,14 +33,14 @@ def ai_message(with_usage: bool = True) -> AIMessage:
     return AIMessage(content="好的", usage_metadata=usage)
 
 
-def tracked(model: FakeModel, records: list[UsageRecord]) -> TrackedChatModel:
+def tracked(model: FakeModel, records: list[UsageSample]) -> TrackedChatModel:
     return TrackedChatModel(
         model, provider="deepseek", model_name="deepseek-flash", sink=records.append
     )
 
 
 def test_successful_call_writes_one_record():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     model = tracked(FakeModel(ai_message()), records)
     with usage_scope("chat", run_id="run-1"):
         response = model.invoke("你好")
@@ -56,7 +56,7 @@ def test_successful_call_writes_one_record():
 
 
 def test_failed_call_writes_success_zero_and_reraises():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     model = tracked(FakeModel(error=RuntimeError("boom")), records)
     with pytest.raises(RuntimeError, match="boom"):
         model.invoke("你好")
@@ -67,7 +67,7 @@ def test_failed_call_writes_success_zero_and_reraises():
 
 
 def test_missing_usage_is_recorded_as_null_not_estimated():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     model = tracked(FakeModel(ai_message(with_usage=False)), records)
     model.invoke("你好")
     record = records[0]
@@ -76,7 +76,7 @@ def test_missing_usage_is_recorded_as_null_not_estimated():
 
 
 def test_timestamps_are_timezone_aware_iso8601():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     tracked(FakeModel(ai_message()), records).invoke("你好")
     record = records[0]
     started = datetime.fromisoformat(record.started_at)
@@ -87,7 +87,7 @@ def test_timestamps_are_timezone_aware_iso8601():
 
 
 def test_async_call_is_recorded():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     model = tracked(FakeModel(ai_message()), records)
 
     async def run() -> None:
@@ -101,14 +101,14 @@ def test_async_call_is_recorded():
 
 
 def test_purpose_is_null_outside_scope():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     tracked(FakeModel(ai_message()), records).invoke("你好")
     assert records[0].purpose is None
     assert records[0].run_id is None
 
 
 def test_scope_ends_after_context():
-    records: list[UsageRecord] = []
+    records: list[UsageSample] = []
     model = tracked(FakeModel(ai_message()), records)
     with usage_scope("chat"):
         model.invoke("一")
@@ -117,7 +117,7 @@ def test_scope_ends_after_context():
 
 
 def test_sink_failure_does_not_break_the_call():
-    def broken_sink(record: UsageRecord) -> None:
+    def broken_sink(record: UsageSample) -> None:
         raise OSError("disk full")
 
     model = TrackedChatModel(

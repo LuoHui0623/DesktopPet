@@ -4,15 +4,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
-from service.agent.tools.explore import make_explore_tools
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import (
+from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
+from module.agent.tools.explore import make_explore_tools
+from module.memory.contracts import DailyLogRecord, DailyLogRole
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import (
     MemoryReader,
     MemoryReadError,
     StructuredMemoryDoc,
@@ -20,8 +19,14 @@ from service.memory.memory_service import (
     parse_ranges,
     section,
 )
+from module.memory.repository import DbDailyLog
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def rec(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
 
 
 class Clock:
@@ -36,7 +41,7 @@ def parts(tmp_path: Path):
     migrate(conn)
     conn.close()
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
     index_file = tmp_path / "memory" / "index.json"
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
@@ -136,11 +141,12 @@ def test_reads_structured_doc_after_append(parts):
 def test_reads_daily_turns_one_line_per_turn(parts):
     store = DbDailyLog(parts["db_file"])
     store.append(
-        "2026-10-18",
-        "2026-10-18T09:00:00+08:00",
-        [("master", "喜欢美式咖啡"), ("me", "记住啦")],
+        [
+            rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "喜欢美式咖啡"),
+            rec("2026-10-18", "2026-10-18T09:00:00+08:00", "me", "记住啦"),
+        ]
     )
-    store.append("2026-10-18", "2026-10-18T10:00:00+08:00", [("master", "早安")])
+    store.append([rec("2026-10-18", "2026-10-18T10:00:00+08:00", "master", "早安")])
     text = parts["reader"].read("daily", "2026-10-18")
     assert text == "1: 用户：喜欢美式咖啡 / 宠物：记住啦\n2: 用户：早安"
     assert parts["reader"].read("daily", "2026-10-18", [[2]]) == "2: 用户：早安"
@@ -148,7 +154,7 @@ def test_reads_daily_turns_one_line_per_turn(parts):
 
 def test_daily_range_out_of_bounds_is_reported(parts):
     DbDailyLog(parts["db_file"]).append(
-        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
+        [rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "早")]
     )
     with pytest.raises(MemoryReadError, match="超出范围"):
         parts["reader"].read("daily", "2026-10-18", [[1, 3]])
@@ -206,7 +212,7 @@ def test_tool_failures_return_readable_reasons(tools):
 
 def test_tool_range_error_is_returned_not_raised(parts, tools):
     DbDailyLog(parts["db_file"]).append(
-        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "早")]
+        [rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "早")]
     )
     result = tools["read"].invoke({"resource": "memory", "name": "2026-10-18", "lines": [[1, 9]]})
     assert result["ok"] is False

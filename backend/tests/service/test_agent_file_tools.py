@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from service.agent.tools.file import FILE_TOOLS, make_file_tools
+from module.agent.tools.file import FILE_TOOLS, make_file_tools
 
 
 @pytest.fixture

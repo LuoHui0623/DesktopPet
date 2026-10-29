@@ -1,6 +1,6 @@
 import threading
 
-from service.agent.approval import (
+from module.agent.approval import (
     REJECT_REASON,
     RESOLVE_CLOSED,
     RESOLVE_OK,

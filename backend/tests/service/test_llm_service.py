@@ -5,10 +5,10 @@ from langchain_core.messages import AIMessage
 
 from config.settings import DefaultModel, ModelSettingsSource
 from infra.llm.usage import usage_scope
-from infra.store.app_settings import DbAppSettings
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.llm import ActiveModel, LlmService, LlmUnavailableError, ModelSelectionError
+from module.llm import ActiveModel, LlmService, LlmUnavailableError, ModelSelectionError
+from module.settings.settings_service import SettingsService
 
 MULTI_ENV = """
 LLM_PROVIDERS=deepseek,opencode
@@ -235,11 +235,11 @@ def test_database_selection_persists_and_overrides_env(config_dir: Path, tmp_pat
     migrate(conn)
     conn.close()
 
-    service, _ = make_multi_service(config_dir, active_store=DbAppSettings(db_file))
+    service, _ = make_multi_service(config_dir, active_store=SettingsService(db_file))
     assert service.active_model("chat").source == "env"
     service.set_active_models({"chat": DefaultModel(provider="opencode", model="gpt-5.6-luna")})
 
-    restarted, _ = make_multi_service(config_dir, active_store=DbAppSettings(db_file))
+    restarted, _ = make_multi_service(config_dir, active_store=SettingsService(db_file))
     assert restarted.active_model("chat") == ActiveModel(
         "chat", "opencode", "gpt-5.6-luna", "database"
     )

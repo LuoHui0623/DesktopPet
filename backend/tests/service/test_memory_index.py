@@ -4,15 +4,20 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import DESCRIPTIONS, MemoryIndexService, build_index
-from service.memory.memory_service import StructuredMemoryDoc
+from module.memory.contracts import DailyLogRecord, DailyLogRole
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import DESCRIPTIONS, MemoryIndexService, build_index
+from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.repository import DbDailyLog
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def rec(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
 
 
 @pytest.fixture
@@ -28,7 +33,7 @@ def db_file(tmp_path: Path) -> Path:
 def stack(tmp_path: Path, db_file: Path):
     index_file = tmp_path / "memory" / "index.json"
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
     index.rebuild()
@@ -108,8 +113,8 @@ def test_external_file_removal_is_reflected_on_rebuild(stack):
 
 def test_daily_memory_dates_come_from_daily_log(stack):
     store = DbDailyLog(stack["db_file"])
-    store.append("2026-10-25", "2026-10-25T09:00:00+08:00", [("master", "早")])
-    store.append("2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好")])
+    store.append([rec("2026-10-25", "2026-10-25T09:00:00+08:00", "master", "早")])
+    store.append([rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好")])
     stack["index"].rebuild()
     assert read_index(stack["index_file"])["index"]["daily"] == {
         "2026-10": ["2026-10-18", "2026-10-25"]

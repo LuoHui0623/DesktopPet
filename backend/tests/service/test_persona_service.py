@@ -3,11 +3,11 @@ from pathlib import Path
 import pytest
 
 from constants.agent import DEFAULT_PERSONA_ID
-from infra.store.app_settings import DbAppSettings
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.persona.persona_service import ACTIVE_KEY, PersonaService, PersonaUnavailableError
+from module.persona.persona_service import ACTIVE_KEY, PersonaService, PersonaUnavailableError
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 CARD = "role:\n  名字: {name}\n  人设: 陪伴\npersonality:\n  - {trait}\n"
 BROKEN = "role:\n  名字: 小坏\n"
@@ -24,7 +24,7 @@ class Harness:
         self.markers: list[str] = markers if markers is not None else []
         self.service = PersonaService(
             self.directory,
-            DbAppSettings(self.db_file),
+            SettingsService(self.db_file),
             DbPersonaVersions(self.db_file),
             clock=lambda: "2026-10-27T09:00:00+08:00",
             session_marker=self.markers.append,
@@ -157,5 +157,5 @@ def test_setting_is_read_from_app_setting(tmp_path: Path):
     harness = Harness(tmp_path)
     harness.write("芙芙", card("芙芙"))
     harness.write("小桌", card("小桌"))
-    DbAppSettings(harness.db_file).put(ACTIVE_KEY, "小桌")
+    SettingsService(harness.db_file).put(ACTIVE_KEY, "小桌")
     assert harness.service.active_id() == "小桌"

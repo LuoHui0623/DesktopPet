@@ -6,8 +6,8 @@ from constants.agent import DEFAULT_PERSONA_ID
 from constants.path import MIGRATIONS_DIR
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from infra.store.repositories import persona_version
+from module.persona import repository as persona_version
+from module.persona.repository import DbPersonaVersions
 
 CREATED_AT = "2026-10-26T09:00:00+08:00"
 

@@ -5,12 +5,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.memory.daily_events import EventError
-from service.memory.daily_log_service import TEMPORARY_MODE_KEY, DailyLogService
+from module.memory.daily_events import EventError
+from module.memory.daily_log_service import TEMPORARY_MODE_KEY, DailyLogService
+from module.memory.repository import DbDailyLog
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -27,7 +27,7 @@ def db_file(tmp_path: Path) -> Path:
 def make_service(db_file: Path, now: datetime) -> DailyLogService:
     return DailyLogService(
         DbDailyLog(db_file),
-        DbAppSettings(db_file),
+        SettingsService(db_file),
         TZ,
         clock=lambda tz: now.astimezone(tz),
     )
@@ -39,14 +39,31 @@ def test_each_turn_writes_master_and_me_records(db_file: Path):
     records = service.read_day("2026-10-25")
     assert [(r.role, r.content) for r in records] == [("master", "你好"), ("me", "你好呀")]
     for record in records:
-        assert datetime.fromisoformat(record.created_at).tzinfo is not None
+        assert record.created_at.tzinfo is not None
+
+
+def test_proactive_reply_writes_only_one_me_record(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    assert service.record_reply("今天也辛苦啦") is True
+    records = service.read_day("2026-10-25")
+    assert [(r.role, r.content) for r in records] == [("me", "今天也辛苦啦")]
+
+
+def test_proactive_reply_is_blocked_in_temporary_mode(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    service.set_temporary_mode(True)
+    assert service.record_reply("不要留痕") is False
+    assert service.read_day("2026-10-25") == []
 
 
 def test_date_follows_configured_timezone(db_file: Path):
     utc_late = datetime(2026, 10, 25, 17, 30, tzinfo=ZoneInfo("UTC"))
     service = make_service(db_file, utc_late)
     service.record_turn("跨日", "好")
-    assert [r.date for r in service.read_day("2026-10-26")] == ["2026-10-26", "2026-10-26"]
+    assert [r.day.isoformat() for r in service.read_day("2026-10-26")] == [
+        "2026-10-26",
+        "2026-10-26",
+    ]
     assert service.read_day("2026-10-25") == []
 
 
@@ -70,7 +87,7 @@ def test_temporary_mode_can_be_turned_off(db_file: Path):
 def test_temporary_mode_is_stored_in_app_setting(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     service.set_temporary_mode(True)
-    assert DbAppSettings(db_file).get(TEMPORARY_MODE_KEY) == "true"
+    assert SettingsService(db_file).get(TEMPORARY_MODE_KEY) == "true"
     assert make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ)).temporary_mode()
 
 

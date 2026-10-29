@@ -65,7 +65,9 @@ def test_openapi_contains_event_schemas():
     client = TestClient(create_app(TOKEN))
     schemas = client.get("/openapi.json", headers=AUTH).json()["components"]["schemas"]
     assert "ServerEvent" in schemas
-    assert {"StatusEvent", "ChatChunkEvent", "ChatDoneEvent"} <= set(schemas)
+    assert {"StatusEvent", "ChatChunkEvent", "ChatDoneEvent", "ProactiveMessageEvent"} <= set(
+        schemas
+    )
     assert schemas["StatusEvent"]["properties"]["state"]["enum"] == [
         "idle",
         "thinking",

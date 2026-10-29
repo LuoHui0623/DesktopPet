@@ -5,7 +5,7 @@ import pytest
 
 from config.persona import parse_persona
 from constants.path import PROMPTS_DIR
-from service.agent.prompt import (
+from module.agent.prompt import (
     NO_CAPABILITIES,
     NO_RESOURCES,
     CapabilityDescription,

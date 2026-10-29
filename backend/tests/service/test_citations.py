@@ -1,5 +1,5 @@
-from service.chat.citations import fragment_key, resolve_sources, split_citations
-from service.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
+from module.chat.citations import fragment_key, resolve_sources, split_citations
+from module.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
 
 
 def test_markers_are_removed_with_their_leading_space_and_ids_kept_in_order():

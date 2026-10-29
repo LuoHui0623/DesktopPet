@@ -9,15 +9,15 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from config.settings import ModelSettingsSource
-from infra.llm.usage import db_usage_sink
-from infra.store.agent_runs import DbAgentRuns
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
-from service.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
-from service.agent.skills import SkillRegistry, SkillSpec
-from service.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
-from service.llm import LlmService
+from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
+from module.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
+from module.agent.repository import DbAgentRuns
+from module.agent.skills import SkillRegistry, SkillSpec
+from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
 
 TZ = ZoneInfo("Asia/Shanghai")
 GATE = AutoApprovalGate()

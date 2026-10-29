@@ -1,6 +1,6 @@
 import pytest
 
-from service.agent.skills import (
+from module.agent.skills import (
     MEMORY_RETRIEVE_CAPABILITY,
     MEMORY_WRITE_CAPABILITY,
     SkillError,

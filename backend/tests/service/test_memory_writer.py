@@ -4,18 +4,18 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import (
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import (
     MemoryWriteError,
     MemoryWriter,
     StructuredMemoryDoc,
 )
-from service.memory.sensitive import sensitive_reason
+from module.memory.repository import DbDailyLog
+from module.memory.sensitive import sensitive_reason
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -26,7 +26,7 @@ def stack(tmp_path: Path):
     conn = connect(db_file)
     migrate(conn)
     conn.close()
-    settings = DbAppSettings(db_file)
+    settings = SettingsService(db_file)
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     index_file = tmp_path / "memory" / "index.json"

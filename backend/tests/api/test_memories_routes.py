@@ -7,18 +7,23 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import MemoryWriter, StructuredMemoryDoc
-from service.memory.services import MemoryServices
+from module.memory.contracts import DailyLogRecord, DailyLogRole
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import MemoryWriter, StructuredMemoryDoc
+from module.memory.repository import DbDailyLog
+from module.memory.services import MemoryServices
+from module.settings.settings_service import SettingsService
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def daily(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
 
 
 class Clock:
@@ -35,7 +40,7 @@ def client(tmp_path: Path):
     conn = connect(db_file)
     migrate(conn)
     conn.close()
-    settings = DbAppSettings(db_file)
+    settings = SettingsService(db_file)
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     index_file = tmp_path / "memory" / "index.json"
@@ -66,7 +71,7 @@ def test_routes_require_token(client):
 def test_list_returns_structured_text_and_daily_index(client):
     client.structured.save("## 喜好\n- 咖啡：美式，不加糖")
     DbDailyLog(client.db_file).append(
-        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好")]
+        [daily("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好")]
     )
     body = client.get("/api/memories", headers=AUTH).json()
     assert body["structured"] == "## 喜好\n- 咖啡：美式，不加糖\n"
@@ -77,7 +82,10 @@ def test_list_returns_structured_text_and_daily_index(client):
 
 def test_list_returns_day_records(client):
     DbDailyLog(client.db_file).append(
-        "2026-10-18", "2026-10-18T09:00:00+08:00", [("master", "你好"), ("me", "你好呀")]
+        [
+            daily("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好"),
+            daily("2026-10-18", "2026-10-18T09:00:00+08:00", "me", "你好呀"),
+        ]
     )
     body = client.get("/api/memories?date=2026-10-18", headers=AUTH).json()
     assert [record["content"] for record in body["daily_records"]] == ["你好", "你好呀"]

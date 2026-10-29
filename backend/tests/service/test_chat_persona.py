@@ -5,20 +5,27 @@ import pytest
 from langchain_core.messages import AIMessage
 
 from config.settings import ModelSettingsSource
-from infra.llm.usage import db_usage_sink
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.agent.prompt import load_templates
-from service.chat.chat_service import ChatError, ChatService
-from service.llm import LlmService
-from service.memory.daily_events import event_text
-from service.memory.daily_log_service import DailyLogService
-from service.persona.persona_service import PersonaService
+from module.agent.prompt import load_templates
+from module.chat.chat_service import ChatError, ChatRequest, ChatService
+from module.chat.context import CURRENT_SEPARATOR
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
+from module.memory.daily_events import event_text
+from module.memory.daily_log_service import DailyLogService
+from module.memory.repository import DbDailyLog
+from module.persona.persona_service import PersonaService
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def ask(chat: ChatService, text: str, fragments=()):
+    return chat.chat(ChatRequest(user_text=text, fragments=fragments))
+
+
 LLM_YAML = """
 providers:
   deepseek:
@@ -74,7 +81,7 @@ def env(tmp_path: Path):
     directory.mkdir()
     (directory / "芙芙.yaml").write_text(card("芙芙"), encoding="utf-8")
     (directory / "小桌.yaml").write_text(card("小桌"), encoding="utf-8")
-    settings = DbAppSettings(db_file)
+    settings = SettingsService(db_file)
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     personas = PersonaService(
         directory,
@@ -98,17 +105,17 @@ def system_text(messages) -> str:
 
 
 def test_reply_uses_the_active_card(env):
-    env["chat"].reply("你好")
+    ask(env["chat"], "你好")
     assert "你的名字是芙芙" in system_text(env["model"].requests[0])
     env["personas"].activate("小桌")
-    env["chat"].reply("你好")
+    ask(env["chat"], "你好")
     assert "你的名字是小桌" in system_text(env["model"].requests[1])
 
 
 def test_switch_keeps_recent_turns_and_marks_a_new_session(env):
-    env["chat"].reply("第一句")
+    ask(env["chat"], "第一句")
     env["personas"].activate("小桌")
-    env["chat"].reply("第二句")
+    ask(env["chat"], "第二句")
     second = env["model"].requests[1]
     contents = [message.content for message in second[1:]]
     assert contents[0] == "第一句"
@@ -122,16 +129,17 @@ def test_switch_keeps_recent_turns_and_marks_a_new_session(env):
 
 def test_event_rows_are_not_sent_to_the_model(env):
     env["personas"].activate("小桌")
-    env["chat"].reply("第一句")
-    env["chat"].reply("第二句")
+    ask(env["chat"], "第一句")
+    ask(env["chat"], "第二句")
     roles = [type(message).__name__ for message in env["model"].requests[1][1:]]
-    assert roles == ["HumanMessage", "AIMessage", "HumanMessage"]
+    assert roles == ["HumanMessage", "AIMessage", "AIMessage", "HumanMessage"]
+    assert env["model"].requests[1][-2].content == CURRENT_SEPARATOR
 
 
 def test_unavailable_active_card_is_a_clear_error_and_calls_no_model(env):
     (env["dir"] / "芙芙.yaml").write_text("role:\n  名字: 坏\n", encoding="utf-8")
     with pytest.raises(ChatError) as exc:
-        env["chat"].reply("你好")
+        ask(env["chat"], "你好")
     assert exc.value.code == "persona_unavailable"
     assert "缺少必填字段：人设" in str(exc.value)
     assert env["model"].requests == []

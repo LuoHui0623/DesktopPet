@@ -3,11 +3,11 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from api.app import create_app
-from infra.store.app_settings import DbAppSettings
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.persona.persona_service import PersonaService
+from module.persona.persona_service import PersonaService
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -27,7 +27,7 @@ def make_client(tmp_path: Path) -> tuple[TestClient, Path]:
     (directory / "芙芙.yaml").write_text(card("芙芙"), encoding="utf-8")
     (directory / "小桌.yaml").write_text(card("小桌"), encoding="utf-8")
     (directory / "坏卡.yaml").write_text("role:\n  名字: 坏\n", encoding="utf-8")
-    service = PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+    service = PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
     return TestClient(create_app(TOKEN, persona_service=service)), directory
 
 

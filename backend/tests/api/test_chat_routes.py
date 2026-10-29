@@ -11,21 +11,27 @@ from api.app import create_app
 from api.event_publisher import BusEventPublisher
 from config.settings import ModelSettingsSource
 from infra.events.bus import EventBus
-from infra.llm.usage import db_usage_sink
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.agent.prompt import load_templates
-from service.chat.chat_service import ChatService
-from service.llm import LlmService
-from service.memory.daily_log_service import DailyLogService
-from service.persona.persona_service import PersonaService
+from module.agent.prompt import load_templates
+from module.chat.chat_service import ChatService
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
+from module.memory.contracts import DailyLogRecord, DailyLogRole
+from module.memory.daily_log_service import DailyLogService
+from module.memory.repository import DbDailyLog
+from module.persona.persona_service import PersonaService
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
 TZ = ZoneInfo("Asia/Shanghai")
+
+
+def daily(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
+
 
 LLM_YAML = """
 providers:
@@ -54,7 +60,7 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
 
 
 LONG = "很" * 41 + "。"
@@ -94,13 +100,13 @@ def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None):
         builder=lambda spec: fake,
         environ=environ,
         usage_sink=db_usage_sink(db_file),
-        active_store=DbAppSettings(db_file),
+        active_store=SettingsService(db_file),
     )
     llm.start()
     bus = EventBus()
     chat = ChatService(
         llm,
-        DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ),
+        DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ),
         persona_service(tmp_path, db_file),
         load_templates(),
         db_usage_sink(db_file),
@@ -205,9 +211,14 @@ def test_empty_body_is_rejected_by_schema(tmp_path: Path):
 def history_client(tmp_path: Path):
     client = make_client(tmp_path, [])
     store = DbDailyLog(tmp_path / "pet.db")
-    store.append("2026-10-24", "2026-10-24T09:00:00.000+08:00", [("master", "喜欢咖啡")])
-    store.append("2026-10-25", "2026-10-25T09:00:00.000+08:00", [("master", "早安"), ("me", "早")])
-    store.append("2026-10-25", "2026-10-25T10:00:00.000+08:00", [("master", "喜欢茶")])
+    store.append([daily("2026-10-24", "2026-10-24T09:00:00.000+08:00", "master", "喜欢咖啡")])
+    store.append(
+        [
+            daily("2026-10-25", "2026-10-25T09:00:00.000+08:00", "master", "早安"),
+            daily("2026-10-25", "2026-10-25T09:00:00.000+08:00", "me", "早"),
+        ]
+    )
+    store.append([daily("2026-10-25", "2026-10-25T10:00:00.000+08:00", "master", "喜欢茶")])
     return client
 
 

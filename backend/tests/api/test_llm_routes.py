@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from api.app import create_app
 from config.settings import ModelSettingsSource
-from service.llm import LlmService
+from module.llm import LlmService
 
 TOKEN = "test-token-value"
 SECRET = "sk-secret-value-do-not-leak"

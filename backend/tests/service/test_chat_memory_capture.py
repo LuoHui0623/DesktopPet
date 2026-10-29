@@ -6,40 +6,44 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import AIMessage
 
 from config.settings import ModelSettingsSource
-from infra.llm.usage import db_usage_sink
-from infra.store.agent_runs import DbAgentRuns
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.agent.approval import ApprovalRegistry
-from service.agent.orchestrator import Orchestrator
-from service.agent.prompt import load_templates
-from service.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
-from service.agent.subagent import SubAgent
-from service.agent.tools.explore import make_explore_tools
-from service.agent.tools.memory import make_memory_write_tools
-from service.chat.chat_service import ChatService
-from service.llm import LlmService
-from service.memory.daily_log_service import DailyLogService
-from service.memory.index import MemoryIndexService
-from service.memory.memory_service import (
+from module.agent.approval import ApprovalRegistry
+from module.agent.orchestrator import Orchestrator
+from module.agent.prompt import load_templates
+from module.agent.repository import DbAgentRuns
+from module.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
+from module.agent.subagent import SubAgent
+from module.agent.tools.explore import make_explore_tools
+from module.agent.tools.memory import make_memory_write_tools
+from module.chat.chat_service import ChatRequest, ChatService
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
+from module.memory.daily_log_service import DailyLogService
+from module.memory.index import MemoryIndexService
+from module.memory.memory_service import (
     MemoryReader,
     MemoryWriter,
     StructuredMemoryDoc,
 )
-from service.persona.persona_service import PersonaService
+from module.memory.repository import DbDailyLog
+from module.persona.persona_service import PersonaService
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
 CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和\n"
+
+
+def ask(chat: ChatService, text: str, fragments=()):
+    return chat.chat(ChatRequest(user_text=text, fragments=fragments))
 
 
 def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, DbAppSettings(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
 
 
 LLM_YAML = """
@@ -154,7 +158,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         usage_sink=db_usage_sink(db_file),
     )
     llm.start()
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
     index_file = tmp_path / "memory" / "index.json"
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
@@ -220,7 +224,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
         ],
         events,
     )
-    result = env["chat"].reply(text)
+    result = ask(env["chat"], text)
     assert result.text == "记住啦，美式不加糖～"
     assert result.recorded is True
     assert "咖啡：美式，不加糖" in env["structured"].text()
@@ -241,7 +245,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
 def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     events = RecordingEvents()
     env = build_chat(tmp_path, [chat_reply("好呀，我记着。")], events)
-    result = env["chat"].reply("记住，我喜欢美式咖啡")
+    result = ask(env["chat"], "记住，我喜欢美式咖啡")
     assert result.text == "好呀，我记着。"
     assert env["structured"].text() == ""
     assert env["chat_model"].calls == 1
@@ -268,7 +272,7 @@ def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
         events,
     )
     env["daily"].set_temporary_mode(True)
-    result = env["chat"].reply(text)
+    result = ask(env["chat"], text)
     assert result.text == "临时模式下，这次先不记。"
     assert result.recorded is False
     assert "咖啡：美式" not in env["structured"].text()
@@ -290,7 +294,7 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
         ],
         events,
     )
-    result = env["chat"].reply(text)
+    result = ask(env["chat"], text)
     assert result.text == "这个我就不记了。"
     assert "11010119900307123X" not in env["structured"].text()
     assert env["chat_model"].observed("敏感信息不写入记忆")

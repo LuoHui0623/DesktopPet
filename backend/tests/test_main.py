@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from constants.path import BACKEND_DIR
+from constants.path import BACKEND_DIR, CONFIG_DIR
 
 TOKEN = "test-token-value"
 TEST_DATA_DIR = Path(tempfile.mkdtemp(prefix="pet-test-data-"))
@@ -87,6 +87,21 @@ def test_non_loopback_host_exits_with_error():
     assert "PET_HOST" in stderr
 
 
+def _local_env_defines_token() -> bool:
+    """本机 config/.env 是否写了 PET_TOKEN；开发机通常已配，会让"缺令牌即退出"无法复现。"""
+    env_file = CONFIG_DIR / ".env"
+    if not env_file.exists():
+        return False
+    for line in env_file.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip() == "PET_TOKEN" and value.strip().strip("\"'"):
+            return True
+    return False
+
+
+@pytest.mark.skipif(
+    _local_env_defines_token(), reason="本机 config/.env 已配置 PET_TOKEN，无法模拟缺令牌"
+)
 def test_missing_token_exits_with_error():
     env = {key: value for key, value in os.environ.items() if key != "PET_TOKEN"}
     env["PET_PORT"] = "0"
