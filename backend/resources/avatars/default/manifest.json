@@ -1,0 +1,68 @@
+{
+  "id": "default",
+  "name": "默认形象",
+  "frame": {
+    "width": 240,
+    "height": 240
+  },
+  "fallback": "idle",
+  "states": {
+    "idle": {
+      "frames": [
+        "idle_0.png",
+        "idle_1.png",
+        "idle_2.png",
+        "idle_3.png",
+        "idle_4.png",
+        "idle_5.png",
+        "idle_6.png",
+        "idle_7.png"
+      ],
+      "frame_ms": 160
+    },
+    "thinking": {
+      "frames": [
+        "thinking_0.png",
+        "thinking_1.png",
+        "thinking_2.png",
+        "thinking_3.png",
+        "thinking_4.png",
+        "thinking_5.png"
+      ],
+      "frame_ms": 220
+    },
+    "speaking": {
+      "frames": [
+        "speaking_0.png",
+        "speaking_1.png",
+        "speaking_2.png",
+        "speaking_3.png"
+      ],
+      "frame_ms": 140
+    },
+    "executing": {
+      "frames": [
+        "executing_0.png",
+        "executing_1.png",
+        "executing_2.png",
+        "executing_3.png"
+      ],
+      "frame_ms": 140
+    },
+    "sleeping": {
+      "frames": [
+        "sleeping_0.png",
+        "sleeping_1.png",
+        "sleeping_2.png",
+        "sleeping_3.png"
+      ],
+      "frame_ms": 600
+    },
+    "disconnected": {
+      "frames": [
+        "disconnected.png"
+      ],
+      "frame_ms": 1000
+    }
+  }
+}

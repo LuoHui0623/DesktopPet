@@ -18,8 +18,9 @@ DRAFT_PATH = RESOURCE_DIR / "草稿本.md"
 EMOJI_DIR = RESOURCE_DIR / "表情包"
 MIGRATIONS_DIR = BACKEND_DIR / "infra" / "store" / "migrations"
 RESOURCES_DIR = BACKEND_DIR / "resources"
+AVATAR_SOURCE_DIR = RESOURCES_DIR / "avatars"
 SKILLS_DIR = RESOURCES_DIR / "skills"
-PROMPTS_DIR = BACKEND_DIR / "service" / "agent" / "prompts"
+PROMPTS_DIR = BACKEND_DIR / "module" / "agent" / "prompts"
 
 
 def resolve_from_root(value: str | Path) -> Path:
