@@ -13,6 +13,8 @@
 - 主对话中，用户提到“派发测试”时返回只含一项的合法 dispatch（能力名故意写成未注册的
   “天气查询”，用于验证失败检查点回灌），提到“坏格式测试”时返回非法 JSON。
 - 主对话拿到的最后一条消息是检查点回灌时，直接把检查点结论当作回复，模拟汇总结果。
+- 主对话收到主动触发（末条消息带“【本次触发】”）时，返回一句固定的主动开场白，模拟感知触发后的
+  主动消息（不发问、不解释触发来源）。
 - 其余情况返回固定问候，不编造内容。
 """
 
@@ -41,6 +43,8 @@ RETRIEVE_DRAFT = "先打开技能说明书，再按流程检索记忆。"
 RETRIEVE_FINISH = "记忆里写着：喜欢美式咖啡，不加糖"
 INVALID_TRIGGER = "坏格式测试"
 WRITE_TRIGGER = "请记住"
+PROACTIVE_MARK = "【本次触发】"
+PROACTIVE_REPLY = "我一直在，需要就说一声。"
 OBSERVATION_MARK = "观察："
 CHECKPOINT_MARK = "[finished_plan]"
 REPORTABLE_STATUSES = ("succeeded", "rejected")
@@ -76,6 +80,8 @@ def reply_for(body: dict) -> str:
         )
     if INVALID_TRIGGER in last_user:
         return '{"type": "chat", "text": '
+    if PROACTIVE_MARK in last_user:
+        return json.dumps({"type": "chat", "text": PROACTIVE_REPLY}, ensure_ascii=False)
     return json.dumps(
         {"type": "chat", "text": _checkpoint_output(last_user) or text}, ensure_ascii=False
     )

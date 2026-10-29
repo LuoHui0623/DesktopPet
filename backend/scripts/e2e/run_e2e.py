@@ -4,11 +4,13 @@
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
 覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
-记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、临时模式、正常关闭（stdin 指令）。
+记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、临时模式、正常关闭（stdin 指令）、
+设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）。
 """
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,17 +18,24 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from websockets.sync.client import connect as ws_connect
 
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fake_llm import FakeLlm  # noqa: E402
+from fake_llm import PROACTIVE_REPLY, FakeLlm  # noqa: E402
 
 TOKEN = "e2e-token-" + os.urandom(12).hex()
 PASSED: list[str] = []
+
+# 感知离开阈值设为最小可配值 1 分钟，空闲样本按 11 分钟上报，回来时才够 GREETING_MIN_AWAY_MINUTES
+AWAY_MINUTES = 11
+PROACTIVE_TOPIC = "greeting_return"
+TICK_SECONDS = 5
 
 
 def step(name: str) -> None:
@@ -125,8 +134,43 @@ class EventTap:
             time.sleep(0.05)
         raise AssertionError("未收到 idle 状态事件")
 
+    def wait_for(self, event_type: str, timeout: float, after: int = 0) -> dict:
+        """等待某一类事件；主动消息由 5 秒 tick 交付，超时窗口要盖住至少一个周期。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            for event in self.events[after:]:
+                if event.get("type") == event_type:
+                    return event
+            time.sleep(0.05)
+        raise AssertionError(f"未收到 {event_type} 事件（{timeout} 秒内）")
 
-def start_backend(data_dir: Path, llm_base_url: str) -> tuple[subprocess.Popen, int, Path]:
+    def count_since(self, event_type: str, start: int) -> int:
+        return sum(1 for event in self.events[start:] if event.get("type") == event_type)
+
+
+def zone_name(offset_hours: int) -> str:
+    if offset_hours == 0:
+        return "UTC"
+    # Etc/GMT 系列的符号与直觉相反：Etc/GMT-6 表示 UTC+6
+    return f"Etc/GMT{'-' if offset_hours > 0 else '+'}{abs(offset_hours)}"
+
+
+def pick_timezone() -> str:
+    """挑一个当前本地时间不在深夜（23:00–05:00）的固定偏移时区。
+
+    解析器在深夜窗口只为 late_night 放行，其余主题一律抑制；端到端要每次都跑出主动消息，
+    就不能跟着本机时钟碰运气。时区只影响本地时刻的换算，数据仍写在临时目录。
+    """
+    now = datetime.now(UTC)
+    for offset in (0, 3, 6, 9, 12, -2, -5, -8, -11):
+        if 5 <= now.astimezone(ZoneInfo(zone_name(offset))).hour < 23:
+            return zone_name(offset)
+    raise AssertionError("演示时区候选全部落在深夜窗口，请检查本机时钟")
+
+
+def start_backend(
+    data_dir: Path, llm_base_url: str, timezone: str
+) -> tuple[subprocess.Popen, int, Path]:
     python = (
         BACKEND_DIR / ".venv" / "Scripts" / "python.exe"
         if os.name == "nt"
@@ -138,6 +182,7 @@ def start_backend(data_dir: Path, llm_base_url: str) -> tuple[subprocess.Popen, 
         "PET_TOKEN": TOKEN,
         "PET_DATA_DIR": str(data_dir),
         "PET_LOG_LEVEL": "INFO",
+        "PET_TIMEZONE": timezone,
         "PET_PERSONAS_DIR": str(data_dir / "personas"),
         "LLM_PROVIDERS": "deepseek",
         "DEEPSEEK_BASE_URL": llm_base_url,
@@ -472,10 +517,178 @@ def check_persona_switch(api: Api, tap: EventTap, llm: FakeLlm, data_dir: Path) 
     step("人设切换：下一次对话使用新人设，历史中出现会话边界")
 
 
-def check_shutdown_outputs(data_dir: Path) -> None:
+def check_settings_defaults(api: Api) -> None:
+    """设置页读模型在首次启动时应完全等于后端常量，前端不携带任何默认值。"""
+    view = api.call("GET", "/api/settings")
+    check(
+        view["perception"]
+        == {
+            "enabled": True,
+            "foreground_enabled": True,
+            "idle_away_minutes": 10,
+            "sit_minutes": 90,
+        },
+        f"感知默认配置异常：{view['perception']}",
+    )
+    check(
+        view["proactive"]
+        == {
+            "enabled": True,
+            "min_interval_minutes": 60,
+            "max_per_day": 20,
+            "dnd_start": "22:30",
+            "dnd_end": "08:00",
+        },
+        f"主动消息默认配置异常：{view['proactive']}",
+    )
+    check(view["avatar"]["active"] == "default", f"默认形象包异常：{view['avatar']}")
+    check(
+        view["interaction"]
+        == {
+            "report_enabled_kinds": ["click", "hover", "drag", "menu"],
+            "hover_dwell_ms": 300,
+            "report_interval_ms": 1000,
+            "reaction_ms": 220,
+        },
+        f"互动默认配置异常：{view['interaction']}",
+    )
+    step("设置页：首次启动的四组配置等于后端常量（含勿扰 22:30–08:00 与最小间隔 60 分钟）")
+
+
+def report_idle(api: Api, value: int) -> None:
+    response = api.call(
+        "POST",
+        "/api/perception",
+        {"kind": "idle", "value": value, "at": datetime.now(UTC).isoformat()},
+    )
+    check(response["accepted"] is True, f"空闲样本未被接受：{response}")
+
+
+def leave_and_return(api: Api, away_minutes: int, return_ms: int = 0) -> None:
+    """按配置好的 1 分钟离开阈值伪造一次「离开 N 分钟后回来」。
+
+    两轮分别用不同的取值，避免 5 秒去重窗口把重复样本判掉。
+    """
+    report_idle(api, away_minutes * 60 * 1000)
+    check(
+        api.call("GET", "/api/perception/state")["presence"] == "away",
+        "上报空闲后应判为离开",
+    )
+    time.sleep(0.2)
+    report_idle(api, return_ms)
+    check(
+        api.call("GET", "/api/perception/state")["presence"] == "active",
+        "空闲归零后应判为在场",
+    )
+
+
+def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None:
+    """感知上报 → 解析器判定 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）。"""
+    api.call(
+        "PUT",
+        "/api/settings/perception",
+        {
+            "enabled": True,
+            "foreground_enabled": False,
+            "idle_away_minutes": 1,
+            "sit_minutes": 15,
+        },
+    )
+    api.call(
+        "PUT",
+        "/api/settings/proactive",
+        {
+            "enabled": True,
+            "min_interval_minutes": 0,
+            "max_per_day": 20,
+            "dnd_start": "04:00",
+            "dnd_end": "04:00",
+        },
+    )
+    step("设置页：把离开阈值改成 1 分钟并关闭勿扰，无需重启后端")
+
+    before = len(tap.events)
+    leave_and_return(api, AWAY_MINUTES)
+    message = tap.wait_for("proactive.message", timeout=TICK_SECONDS * 3 + 10, after=before)
+    check(message["topic"] == PROACTIVE_TOPIC, f"主动消息主题异常：{message}")
+    check(message["text"] == PROACTIVE_REPLY, f"主动消息文本异常：{message}")
+    check(message["id"], "主动消息应带 id，供前端排队与忽略")
+    request = last_chat_request(llm.requests)
+    prompt = "\n".join(str(item.get("content", "")) for item in request["messages"])
+    check(
+        f"【本次触发】离开 {AWAY_MINUTES} 分钟后回来" in prompt,
+        f"触发理由应进入本次输入：{prompt[-200:]}",
+    )
+    history = api.call("GET", "/api/chat/history")["items"]
+    check(
+        any(item["role"] == "me" and item["content"] == PROACTIVE_REPLY for item in history),
+        "主动消息应作为一条 me 记录写进当日对话",
+    )
+    ledger = api.call("GET", "/api/scheduler/ledger")
+    check(ledger["total"] == 1, f"发送台账应记一次：{ledger}")
+    check(
+        ledger["topics"] == {PROACTIVE_TOPIC: 1},
+        f"台账主题计数异常：{ledger['topics']}",
+    )
+    step("感知链路：离开后回来由解析器判定并触发，经 tick 的 on_trigger 生成一条主动消息并记账")
+
+    # 最小间隔改回 60 分钟：下一次同类事件应在解析阶段被抑制，不产生第二条主动消息
+    api.call(
+        "PUT",
+        "/api/settings/proactive",
+        {
+            "enabled": True,
+            "min_interval_minutes": 60,
+            "max_per_day": 20,
+            "dnd_start": "04:00",
+            "dnd_end": "04:00",
+        },
+    )
+    mark = len(tap.events)
+    leave_and_return(api, AWAY_MINUTES + 1, return_ms=1)
+    time.sleep(TICK_SECONDS * 2 + 1)
+    check(
+        tap.count_since("proactive.message", mark) == 0,
+        f"最小间隔内不应再发主动消息：{tap.events[mark:]}",
+    )
+    check(api.call("GET", "/api/scheduler/ledger")["total"] == 1, "被抑制的触发不应记账")
+    step("调度闸门：设置页把最小间隔改回 60 分钟立即生效，随后的触发被解析器抑制且不计入台账")
+
+
+def check_bubble_ignore_has_no_backend(api: Api, data_dir: Path) -> None:
+    """气泡的忽略只在前端本会话内存里：后端既没有反馈接口，也没有反馈表。"""
+    api.call("POST", "/api/proactive/feedback", {"id": "any", "type": "ignore"}, expect=404)
+    connection = sqlite3.connect(data_dir / "pet.db")
+    try:
+        left_over = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'proactive_feedback'"
+        ).fetchall()
+    finally:
+        connection.close()
+    check(left_over == [], f"反馈表应随迁移 0009 移除：{left_over}")
+    step("气泡忽略：无反馈接口（404）且 proactive_feedback 表已清理，忽略不影响后端状态")
+
+
+def _latest_log(data_dir: Path) -> str:
     log_files = sorted((data_dir / "logs").glob("*.log"))
     check(log_files, "未找到后端日志")
-    log_text = log_files[-1].read_text(encoding="utf-8")
+    return log_files[-1].read_text(encoding="utf-8")
+
+
+def check_perception_decisions_logged(data_dir: Path) -> None:
+    """判定与抑制都应在日志里可查，这是「为什么没主动说话」的唯一线索。"""
+    text = _latest_log(data_dir)
+    check("主动判定：greeting_return 允许发送" in text, "日志缺少允许发送的判定记录")
+    check(
+        "主动判定：greeting_return 抑制，原因=min_interval" in text,
+        "日志缺少最小间隔抑制记录",
+    )
+    check("主动消息已发送：greeting_return" in text, "日志缺少主动消息发送记录")
+    step("判定日志：允许与抑制两种决策都可追溯")
+
+
+def check_shutdown_outputs(data_dir: Path) -> None:
+    log_text = _latest_log(data_dir)
     check("后端已退出，退出原因：stdin 指令" in log_text, "日志中缺少正常退出记录")
     check(TOKEN not in log_text, "令牌不得出现在日志中")
     check((data_dir / "memory" / "structured.md").is_file(), "记忆文件应写入临时数据目录")
@@ -493,13 +706,16 @@ def run() -> Path:
     llm = FakeLlm()
     llm.start()
     data_dir = Path(tempfile.mkdtemp(prefix="pet-e2e-"))
+    timezone = pick_timezone()
     write_persona_cards(data_dir)
-    process, port, stderr_file = start_backend(data_dir, llm.base_url)
+    process, port, stderr_file = start_backend(data_dir, llm.base_url, timezone)
+    print(f"[演示时区] {timezone}，本地时间 {datetime.now(ZoneInfo(timezone)).strftime('%H:%M')}")
     try:
         api = Api(port)
         check(api.call("GET", "/api/health").get("status") == "ok", "健康检查异常")
         step("启动：后端就绪，健康检查通过")
         check_models_and_switch(api)
+        check_settings_defaults(api)
         with EventTap(port) as tap:
             check_streaming_chat(api, tap, llm)
             check_dispatch(api, tap, llm)
@@ -512,10 +728,13 @@ def run() -> Path:
             check_structured_in_prompt(api, tap, llm)
             check_temporary_mode(api, tap, structured)
             check_persona_switch(api, tap, llm, data_dir)
+            check_perception_to_proactive(api, tap, llm)
         check_daily_records(api)
+        check_bubble_ignore_has_no_backend(api, data_dir)
     finally:
         stop_backend(process)
         llm.stop()
+    check_perception_decisions_logged(data_dir)
     check_shutdown_outputs(data_dir)
     print(f"\n端到端验证通过：{len(PASSED)} 步。数据目录：{data_dir}")
     print(f"后端标准错误输出：{stderr_file}")

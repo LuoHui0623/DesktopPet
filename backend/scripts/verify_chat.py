@@ -14,18 +14,18 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config.settings import ModelSettingsSource, load_service_settings
-from infra.llm.usage import db_usage_sink
-from infra.store.app_settings import DbAppSettings
-from infra.store.daily_log import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from infra.store.persona_versions import DbPersonaVersions
-from service.agent.prompt import load_capabilities, load_templates
-from service.chat.chat_service import ChatError, ChatService, split_sentences
-from service.llm import LlmService
-from service.memory.daily_log_service import DailyLogService
-from service.memory.memory_service import StructuredMemoryDoc
-from service.persona.persona_service import PersonaService
+from module.agent.prompt import load_capabilities, load_templates
+from module.chat.chat_service import ChatError, ChatRequest, ChatService, split_sentences
+from module.llm import LlmService
+from module.llm.repository import db_usage_sink
+from module.memory.daily_log_service import DailyLogService
+from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.repository import DbDailyLog
+from module.persona.persona_service import PersonaService
+from module.persona.repository import DbPersonaVersions
+from module.settings.settings_service import SettingsService
 
 SAMPLES = [
     "你好",
@@ -82,7 +82,7 @@ def main() -> int:
     llm = LlmService(
         ModelSettingsSource(),
         usage_sink=db_usage_sink(db_file),
-        active_store=DbAppSettings(db_file),
+        active_store=SettingsService(db_file),
     )
     llm.start()
     active = llm.active_model("chat")
@@ -91,9 +91,9 @@ def main() -> int:
         return 1
 
     timezone = ZoneInfo(settings.timezone)
-    daily = DailyLogService(DbDailyLog(db_file), DbAppSettings(db_file), timezone)
+    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), timezone)
     personas = PersonaService(
-        settings.personas_dir, DbAppSettings(db_file), DbPersonaVersions(db_file)
+        settings.personas_dir, SettingsService(db_file), DbPersonaVersions(db_file)
     )
     raws: list[str] = []
     chat = ChatService(
@@ -112,7 +112,7 @@ def main() -> int:
         raws.clear()
         started = time.monotonic()
         try:
-            reply = chat.reply(sample)
+            reply = chat.chat(ChatRequest(user_text=sample))
             outcome = {"ok": True, "text": reply.text, "code": None}
         except ChatError as exc:
             outcome = {"ok": False, "text": None, "code": exc.code, "message": str(exc)}
