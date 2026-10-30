@@ -324,7 +324,7 @@ class SubAgent:
             if action is None:
                 return _Loop(steps, error_code="invalid_output", error=INVALID_HINT)
             if action["action"] == terminal:
-                steps.append({"step": number, "phase": phase, "action": terminal})
+                steps.append({"step": number, "phase": phase, "action": terminal, "ok": True})
                 return _Loop(steps, action=action)
 
             result = self._call_tool(action, tools)

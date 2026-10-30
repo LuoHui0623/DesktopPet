@@ -1,7 +1,8 @@
-"""复现记忆写入子代理的 invalid_output：打印每一轮模型原始输出。
+"""复现记忆写入子代理的 invalid_output：打印每一轮模型原始输出与草案摘要。
 
 用法（在 backend 目录）：python tests/acceptance/probe_memory_write.py [任务文本]
 仅在隔离数据目录 backend/tests/acceptance/probe-data 下运行，不触碰 backend/data。
+探针只跑 draft 阶段、不执行写入工具，因此记忆文件保持为空属预期结果。
 """
 
 from __future__ import annotations
@@ -118,6 +119,8 @@ def main() -> int:
                 "ok": result.ok,
                 "error_code": result.error_code,
                 "error": result.error,
+                "tools": list(result.tools),
+                "content": result.content,
                 "steps": result.steps,
             },
             ensure_ascii=False,
@@ -130,9 +133,14 @@ def main() -> int:
         print(turn["prompt"][:1500])
         print("--- 原始输出 ---")
         print(repr(turn["reply"]))
+    print("\n--- 记忆文件观察（探针不执行工具，预期不会被写入） ---")
+    for name in ("structured.md", "index.json"):
+        path = structured_file.parent / name
+        state = f"{path.stat().st_size} 字节" if path.exists() else "不存在"
+        print(f"memory/{name}: {state}")
     print(
-        "\nstructured.md:",
-        structured_file.read_text(encoding="utf-8") if structured_file.exists() else "(不存在)",
+        "说明：draft 阶段只产出草案，写入工具由 Orchestrator 在审批通过后调用，"
+        "因此本探针不会改动记忆文件，空文件属预期结果。"
     )
     return 0
 

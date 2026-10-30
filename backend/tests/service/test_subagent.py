@@ -105,6 +105,7 @@ def test_tool_call_then_finish_succeeds(tmp_path: Path):
     assert result.error_code is None
     assert [step["action"] for step in result.steps] == ["tool", "finish"]
     assert {step["phase"] for step in result.steps} == {PHASE_EXECUTE}
+    assert [step["ok"] for step in result.steps] == [True, True]
     observation = chat.calls[1][-1].content
     assert observation.startswith("观察：")
     assert "你好" in observation
@@ -294,6 +295,7 @@ def test_draft_returns_content_and_declared_tools(tmp_path: Path):
     assert draft.error_code is None
     assert [step["action"] for step in draft.steps] == ["draft"]
     assert draft.steps[0]["phase"] == PHASE_DRAFT
+    assert draft.steps[0]["ok"] is True
 
 
 def test_draft_prompt_uses_the_planner_wording_and_read_only_tools(tmp_path: Path):
