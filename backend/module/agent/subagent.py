@@ -33,10 +33,7 @@ SUBAGENT_DRAFT_PLACEHOLDERS = frozenset(
     {"capability_name", "capability_description", "task", "tools", "declarable", "max_steps"}
 )
 ACTIONS = ("tool", "finish", "draft")
-INVALID_HINT = (
-    "回复不是合法的动作 JSON：请只输出一个 JSON 对象，"
-    "不要输出解释文字，也不要在同一条回复里输出多个 JSON"
-)
+INVALID_HINT = "回复不是合法的JSON格式：请只输出一个标准 JSON 对象"
 NO_DRAFT = "（本次没有草案，按任务本身执行）"
 NO_TOOLS = "（本次没有可用工具）"
 NO_DECLARABLE = "（没有其他工具可声明）"
