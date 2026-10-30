@@ -19,13 +19,13 @@ providers:
         id: deepseek-flash
         api: chat_completions
         roles: [chat, consolidate]
-        temperature: 0.7
+        temperature: 0.5
         max_tokens: 1024
       - name: deepseek-v4-pro
         id: deepseek-v4-pro
         api: chat_completions
         roles: [chat]
-        temperature: 0.7
+        temperature: 0.5
         max_tokens: 2048
 
   opencode:
