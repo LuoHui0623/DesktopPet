@@ -117,7 +117,7 @@
   - **对话模型**：用于聊天，质量优先；
   - **整理模型**：用于 sub agent 的记忆读写与聊天记录格式化，成本优先，可用更便宜的模型。
 - 切换后立即生效，不需重启。
-- 每次调用由各 client 记录：provider、模型、用途（purpose）、结构化 token 用量、开始与结束时间、耗时、是否失败；写入本地表 `llm_usage`。token 不可得时记为空，不估算。
+- 每次调用由各 client 记录：provider、模型、用途（purpose）、结构化 token 用量、开始与结束时间、耗时、是否失败；写入本地表 `llm_call`。token 不可得时记为空，不估算。
 - API Key 不写入数据库，也不写入任何文件。`.env` 中只保存密钥对应的**系统环境变量名**，真正的密钥保存在系统环境变量中。
 - 模型预设（provider、模型、角色、温度）写在 `llm.yaml`，可入 Git；配置支持热更新，修改后无需重启。
 
@@ -474,7 +474,7 @@ language_style:
 | 表 | 主要字段 | 说明 |
 |---|---|---|
 | `daily_log` | id, date, role, content, created_at | 日常对话原文（daily_memory 的存储），只读 |
-| `llm_usage` | id, provider, model, purpose, run_id, tokens_in, tokens_out, usage_raw, prompt_hash, started_at, finished_at, latency_ms, success | 每次模型调用的结构化记录；run_id 指向 `agent_run`，可为空 |
+| `llm_call` | id, provider, model, purpose, run_id, tokens_in, tokens_out, usage_raw, prompt_hash, prompt_text, reply_text, started_at, finished_at, latency_ms, success | 每次模型调用的结构化记录（含请求与回复正文）；run_id 指向 `agent_run`，可为空 |
 | `agent_run` | id, session_id, capability, instruction, steps, output, status, error_code, started_at, finished_at | sub agent 每次派发的执行记录；steps 为简化后的行为路径（JSON），永久保留 |
 | `app_setting` | key, value, updated_at | 运行时设置，如设置页切换的当前对话模型与整理模型，临时模式状态 |
 | `log_record` | id, created_at, level, logger, message, exc_text | 运行日志入库（异步批量写入，见 Arch §9.6） |

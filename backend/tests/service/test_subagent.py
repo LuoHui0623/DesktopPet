@@ -9,7 +9,7 @@ from constants.agent import DRAFT_INVALID_LIMIT, PHASE_DRAFT, PHASE_EXECUTE
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.skills import Skill
-from module.agent.subagent import NO_DRAFT, SubAgent, parse_action
+from module.agent.subagent import INVALID_HINT, NO_DRAFT, SubAgent, parse_action
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 
@@ -125,7 +125,7 @@ def test_invalid_reply_is_returned_as_observation_and_run_continues(tmp_path: Pa
     result = make_agent(llm).run(SKILL, "任务", "run-1")
     assert result.ok is True
     assert result.steps[0]["action"] == "invalid"
-    assert "不是合法的动作 JSON" in chat.calls[1][-1].content
+    assert INVALID_HINT in chat.calls[1][-1].content
 
 
 def test_invalid_reply_is_logged_with_the_original_text(tmp_path: Path, caplog):
@@ -278,7 +278,7 @@ def test_model_usage_is_linked_to_the_run(tmp_path: Path):
     make_agent(llm).run(SKILL, "任务", "run-42")
     conn = connect(db_file)
     try:
-        row = conn.execute("SELECT purpose, run_id, success FROM llm_usage").fetchone()
+        row = conn.execute("SELECT purpose, run_id, success FROM llm_call").fetchone()
     finally:
         conn.close()
     assert tuple(row) == ("subagent", "run-42", 1)

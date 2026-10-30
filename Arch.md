@@ -314,11 +314,11 @@ backend/
 │  ├─ store/
 │  │  ├─ db.py               # SQLite 连接：WAL、外键、事务封装
 │  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version（含 SHA-256 校验）
-│  │  └─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure、0007_agent_run_rejected、0008_drop_core_memory、0009_drop_proactive_feedback、0010_llm_usage_text
+│  │  └─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure、0007_agent_run_rejected、0008_drop_core_memory、0009_drop_proactive_feedback、0010_llm_call
 │  ├─ llm/
 │  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
 │  │  ├─ paradigms.py        # build_chat_model(spec)：三种范式的 LangChain 构造
-│  │  └─ usage.py            # 调用用量记录（TrackedChatModel，写入 llm_usage，含请求与回复正文）
+│  │  └─ usage.py            # 调用用量记录（TrackedChatModel，写入 llm_call，含请求与回复正文）
 │  ├─ files/
 │  │  ├─ io.py               # 文件读写（只做 IO）
 │  │  ├─ access.py           # 文件权限：允许根目录、路径规范化、拒绝穿越与符号链接逃逸
@@ -334,7 +334,7 @@ backend/
 │  └─ e2e/                   # 端到端验证：fake_llm.py（本地假模型）与 run_e2e.py（真实后端进程）
 │
 ├─ data/                     # 运行数据（PET_DATA_DIR 指定，默认 backend/data），不入 Git
-│  ├─ pet.db                 # SQLite：daily_log、llm_usage、agent_run、app_setting 等
+│  ├─ pet.db                 # SQLite：daily_log、llm_call、agent_run、app_setting 等
 │  ├─ avatars/               # 形象包：<pack_id>/manifest.json 与帧图，首次启动从 resources/avatars/default 复制
 │  ├─ memory/                # structured.md（结构化记忆，纯文本大纲）与 index.json（由代码生成）
 │  ├─ logs/                  # 后端日志
@@ -468,7 +468,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | 组件 | 归属 | 说明 |
 |---|---|---|
 | **LLM 接口范式**（ChatOpenAI / ChatAnthropic 的构造） | `infra/llm/paradigms.py` | 技术适配，三种范式，换 SDK 只改这里 |
-| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量、起止时间与请求/回复正文，写入 `llm_usage` |
+| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量、起止时间与请求/回复正文，写入 `llm_call` |
 | **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
 | **LLM 客户端装配、缓存、热更新** | `module/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
 | **当前模型选择** | `module/llm/llm_service.py`（设置页切换的结果保存在数据库 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
@@ -887,7 +887,7 @@ providers:
 - 模型参数与 provider 信息只来自 `LlmConfig` 快照，业务代码不读取 `.env` 或 `llm.yaml`。
 - 每次调用前获取当前快照（`LlmService.current()`），同一次调用内始终使用同一快照。
 - 结构化输出使用 Pydantic 模型校验，校验失败则丢弃并记录，不无限重试。
-- 每个 client 记录每次调用的结构化用量（token、用途、开始与结束时间、是否失败）与请求/回复正文（超 8000 字符截断），写入 `llm_usage`；失败调用同样记一行，token 不可得时记为 NULL。
+- 每个 client 记录每次调用的结构化用量（token、用途、开始与结束时间、是否失败）与请求/回复正文（超 8000 字符截断），写入 `llm_call`；失败调用同样记一行，token 不可得时记为 NULL。
 
 ### 9.2 数据库与迁移
 - `sqlite3`，开启 WAL 与外键约束。

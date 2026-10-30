@@ -11,7 +11,7 @@ from infra.store.migrate import MigrationError, migrate, split_statements
 
 EXPECTED_TABLES = {
     "daily_log",
-    "llm_usage",
+    "llm_call",
     "agent_run",
     "persona_version",
     "behavior_event",
@@ -76,7 +76,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
         (7, "agent_run_rejected"),
         (8, "drop_core_memory"),
         (9, "drop_proactive_feedback"),
-        (10, "llm_usage_text"),
+        (10, "llm_call"),
     ]
 
 
@@ -99,7 +99,7 @@ def test_foreign_key_is_enforced(conn: sqlite3.Connection):
 @pytest.mark.parametrize(
     "statement",
     [
-        "INSERT INTO llm_usage (provider, model, success, created_at) VALUES ('p', 'm', 2, 'x')",
+        "INSERT INTO llm_call (provider, model, success, created_at) VALUES ('p', 'm', 2, 'x')",
         "INSERT INTO agent_run (id, session_id, capability, instruction, status, started_at) "
         "VALUES ('r', 's', 'c', 'i', 'unknown', 'x')",
     ],
@@ -204,9 +204,9 @@ def test_core_memory_table_is_dropped(conn: sqlite3.Connection):
     assert "core_memory" not in tables(conn)
 
 
-def test_llm_usage_has_agent_columns(conn: sqlite3.Connection):
+def test_llm_call_has_agent_columns(conn: sqlite3.Connection):
     migrate(conn)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_usage)")}
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(llm_call)")}
     assert {
         "purpose",
         "run_id",
@@ -269,7 +269,7 @@ def test_agent_run_accepts_rejected_status(tmp_path: Path):
         conn.close()
 
 
-def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Path):
+def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path):
     old_dir = tmp_path / "old"
     old_dir.mkdir()
     for name in ("0001_init.sql", "0002_log_record.sql"):
@@ -278,6 +278,7 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
     conn = connect(tmp_path / "pet.db")
     try:
         assert migrate(conn, old_dir) == [1, 2]
+        # 0001 建的是 llm_usage，0010 才改名为 llm_call，升级前的旧行必须跟着保留
         conn.execute(
             "INSERT INTO llm_usage (provider, model, success, created_at) "
             "VALUES ('deepseek', 'deepseek-flash', 1, '2026-10-25T10:00:00+08:00')"
@@ -291,10 +292,10 @@ def test_migration_upgrades_existing_database_and_keeps_usage_rows(tmp_path: Pat
 
         assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9, 10]
 
-        usage = conn.execute(
-            "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_usage"
+        call = conn.execute(
+            "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_call"
         ).fetchone()
-        assert tuple(usage) == ("deepseek", "deepseek-flash", 1, None, None, None)
+        assert tuple(call) == ("deepseek", "deepseek-flash", 1, None, None, None)
         assert "memory" not in tables(conn)
         assert "daily_summary" not in tables(conn)
         assert "core_memory" not in tables(conn)

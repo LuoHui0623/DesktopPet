@@ -147,7 +147,7 @@ def test_db_sink_writes_success_and_failure_rows(tmp_path: Path):
     try:
         rows = conn.execute(
             "SELECT provider, model, purpose, tokens_in, tokens_out, usage_raw, "
-            "started_at, finished_at, latency_ms, success FROM llm_usage ORDER BY id"
+            "started_at, finished_at, latency_ms, success FROM llm_call ORDER BY id"
         ).fetchall()
     finally:
         conn.close()
@@ -208,7 +208,7 @@ def test_db_sink_writes_prompt_and_reply_text(tmp_path: Path):
 
     conn = connect(db_file)
     try:
-        row = conn.execute("SELECT prompt_text, reply_text FROM llm_usage").fetchone()
+        row = conn.execute("SELECT prompt_text, reply_text FROM llm_call").fetchone()
     finally:
         conn.close()
     assert "你好" in row["prompt_text"]
@@ -232,7 +232,7 @@ def test_prompt_hash_from_scope_is_recorded(tmp_path: Path):
 
     conn = connect(db_file)
     try:
-        row = conn.execute("SELECT prompt_hash FROM llm_usage").fetchone()
+        row = conn.execute("SELECT prompt_hash FROM llm_call").fetchone()
     finally:
         conn.close()
     assert row[0] == "abc123"

@@ -27,7 +27,7 @@ def to_record(sample: UsageSample) -> UsageRecord:
 
 def insert(conn: sqlite3.Connection, record: UsageRecord) -> None:
     conn.execute(
-        "INSERT INTO llm_usage (provider, model, purpose, run_id, tokens_in, tokens_out, "
+        "INSERT INTO llm_call (provider, model, purpose, run_id, tokens_in, tokens_out, "
         "usage_raw, started_at, finished_at, latency_ms, success, prompt_hash, prompt_text, "
         "reply_text, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",

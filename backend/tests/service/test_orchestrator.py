@@ -379,7 +379,7 @@ def test_model_usage_links_to_the_dispatched_run(setup):
     checkpoint = orchestrator.dispatch("写笔记", "任务", gate=GATE)
     conn = connect(setup["db_file"])
     try:
-        run_ids = [row[0] for row in conn.execute("SELECT run_id FROM llm_usage")]
+        run_ids = [row[0] for row in conn.execute("SELECT run_id FROM llm_call")]
     finally:
         conn.close()
     assert set(run_ids) == {checkpoint.run_id}

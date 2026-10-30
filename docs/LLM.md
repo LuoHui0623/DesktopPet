@@ -1,6 +1,6 @@
 # 模型域设计
 
-> 职责：定义 provider/model 清单、能力映射、快照与热更、客户端装配与缓存、用量记录、不可用语义。
+> 职责：定义 provider/model 清单、能力映射、快照与热更、客户端装配与缓存、调用记录、不可用语义。
 > 依赖：`config/settings.py`（ModelSettings）、`infra/llm/`（范式与用量）、`app_setting`（当前模型）。
 > 不回答：提示词、上下文、业务重试、句长校验（见 [CHAT.md](CHAT.md)）、主动判定（见 [OBSERVER.md](OBSERVER.md) / [PROACTIVE.md](PROACTIVE.md)）。
 > 状态：草案（2026-10-29）。与现有 `module/llm` / `infra/llm` 基本一致。
@@ -25,7 +25,7 @@
 - **ActiveModel**：某个能力当前选中的 `{provider, model, source}`；`source` 为 `database` 或 `env`。
 - **ModelSettings**：一次配置解析得到的不可变快照，带内容哈希 `version`，不含密钥值。
 - **Client**：按快照装配出的 `TrackedChatModel`；按 `(provider, model, version)` 缓存。
-- **UsageSample**：一次模型调用的结构化用量记录。
+- **UsageSample**：一次模型调用的记录，含结构化用量与请求/回复正文。
 
 ## 3. 依赖与落点
 
@@ -33,10 +33,10 @@
 |---|---|---|
 | 配置解析与校验 | `config/settings.py` | `.env` + `llm.yaml` → `ModelSettings` |
 | 接口范式与 client 构造 | `infra/llm/spec.py`、`infra/llm/paradigms.py` | `chat_completions` / `responses` / `messages` |
-| 用量记录 | `infra/llm/usage.py` | `TrackedChatModel`、`usage_scope`、`UsageSink` |
+| 调用记录 | `infra/llm/usage.py` | `TrackedChatModel`、`usage_scope`、`UsageSink` |
 | 能力选择、装配、缓存、热更 | `module/llm/llm_service.py` | `LlmService` |
 | 当前模型持久化 | `app_setting` | `llm.active.<capability>` |
-| 用量落库 | `infra/store` | `llm_usage` 表 |
+| 调用落库 | `infra/store` | `llm_call` 表 |
 
 依赖方向：
 
@@ -114,14 +114,15 @@ app_setting 的 llm.active.<capability>
 - Windows 系统环境变量修改后需重启后端才能生效；若要做免重启，可在重载时用 `winreg` 读取，但需处理用户/系统优先级，待定。
 - `opencode` 的免费模型只能在 OpenCode 客户端使用；Gemini 原生接口不支持；Claude 走 `messages`，GPT 走 `responses`。
 
-## 6. 用量记录
+## 6. 调用记录
 
+- 落点表为 `llm_call`（首次建表时名为 `llm_usage`，迁移 `0010_llm_call` 改名，与 `agent_run`、`capability_run`、`behavior_event` 的命名对齐）。
 - 每个 client 包装为 `TrackedChatModel`，每次调用记录：
   `provider`、`model`、`purpose`、`run_id`、`tokens_in`、`tokens_out`、`usage_raw`、`started_at`、`finished_at`、`latency_ms`、`success`、`prompt_hash`、`prompt_text`、`reply_text`。
 - `purpose` 取能力名（`chat` / `consolidate`）；主动轮复用 `chat`，不新增 `proactive`。
 - token 不可得时记 NULL，不编造。
 - 记录写入失败只记日志，不影响业务返回。
-- 用量落 `llm_usage` 表；不写业务日志。
+- 记录落 `llm_call` 表；不写业务日志。
 
 ### 6.1 正文记录
 
@@ -199,7 +200,7 @@ app_setting 的 llm.active.<capability>
 
 ## 11. 已定口径与关联文档
 
-- 每次调用（含失败）连同请求与回复正文写入 `llm_usage`，正文超 8000 字符截断（见 §6）。
+- 每次调用（含失败）连同请求与回复正文写入 `llm_call`，正文超 8000 字符截断（见 §6）。
 - ChatService 提供完整 chat 能力；主动复用同一入口，不新增生成链路。
 - 主动轮失败最多重试 1 次，不抛给用户。
 - `Arch.md` §8.3：LLM 配置、热更、校验规则。

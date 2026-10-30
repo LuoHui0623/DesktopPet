@@ -45,7 +45,7 @@ class UsageScope:
     prompt_hash: str | None = None
 
 
-_scope: ContextVar[UsageScope | None] = ContextVar("llm_usage_scope", default=None)
+_scope: ContextVar[UsageScope | None] = ContextVar("llm_call_scope", default=None)
 
 
 @contextmanager

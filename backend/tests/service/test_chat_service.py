@@ -153,7 +153,7 @@ def test_normal_call_returns_reply_and_writes_usage_and_log(tmp_path: Path):
     result = ask(harness.chat, "你好")
     assert result.text == SHORT
     assert result.recorded is True
-    usage = harness.query("SELECT purpose, success, tokens_in, prompt_hash FROM llm_usage")
+    usage = harness.query("SELECT purpose, success, tokens_in, prompt_hash FROM llm_call")
     assert len(usage) == 1
     assert usage[0][:3] == ("chat", 1, 3)
     assert len(usage[0][3]) == 64
@@ -217,7 +217,7 @@ def test_overlong_sentence_is_regenerated_once(tmp_path: Path):
     result = ask(harness.chat, "你好")
     assert result.text == SHORT
     assert len(harness.fake.calls) == 2
-    assert harness.query("SELECT COUNT(*) FROM llm_usage")[0][0] == 2
+    assert harness.query("SELECT COUNT(*) FROM llm_call")[0][0] == 2
 
 
 def test_overlong_twice_returns_reason_not_truncated_text(tmp_path: Path):
@@ -235,7 +235,7 @@ def test_missing_key_is_clear_error_and_records_failure(tmp_path: Path):
         ask(harness.chat, "你好")
     assert exc.value.code == "model_unavailable"
     assert "DEEPSEEK_API_KEY" in str(exc.value)
-    usage = harness.query("SELECT provider, model, success FROM llm_usage")
+    usage = harness.query("SELECT provider, model, success FROM llm_call")
     assert usage == [("deepseek", "deepseek-flash", 0)]
     assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0
 
@@ -246,7 +246,7 @@ def test_unconfigured_chat_model_is_clear_error_and_records_failure(tmp_path: Pa
     with pytest.raises(ChatError) as exc:
         ask(harness.chat, "你好")
     assert exc.value.code == "model_unavailable"
-    assert harness.query("SELECT provider, success FROM llm_usage") == [("-", 0)]
+    assert harness.query("SELECT provider, success FROM llm_call") == [("-", 0)]
 
 
 def test_model_failure_is_reported_without_fabricated_reply(tmp_path: Path):
@@ -255,7 +255,7 @@ def test_model_failure_is_reported_without_fabricated_reply(tmp_path: Path):
         ask(harness.chat, "你好")
     assert exc.value.code == "model_failed"
     assert "upstream down" in str(exc.value)
-    assert harness.query("SELECT success FROM llm_usage") == [(0,)]
+    assert harness.query("SELECT success FROM llm_call") == [(0,)]
     assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0
 
 
