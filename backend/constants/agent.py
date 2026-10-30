@@ -3,5 +3,5 @@ SUBAGENT_PURPOSE = "subagent"
 DEFAULT_PERSONA_ID = "芙芙"
 PHASE_DRAFT = "draft"
 PHASE_EXECUTE = "execute"
-DRAFT_INVALID_LIMIT = 2  # 草案解析失败重试一次
+DRAFT_INVALID_LIMIT = 3  # 草案解析失败重试两次
 READ_ONLY_TOOLS = ("index", "read")

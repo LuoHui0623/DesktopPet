@@ -4,8 +4,9 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from constants.llm import LLM_CALL_TEXT_LIMIT
 from infra.llm.usage import TrackedChatModel, UsageSample, usage_scope
 from infra.store.db import connect
 from infra.store.migrate import migrate
@@ -161,6 +162,57 @@ def test_db_sink_writes_success_and_failure_rows(tmp_path: Path):
         assert datetime.fromisoformat(row["started_at"]).tzinfo is not None
         assert datetime.fromisoformat(row["finished_at"]).tzinfo is not None
         assert row["latency_ms"] >= 0
+
+
+def test_prompt_and_reply_text_are_recorded():
+    records: list[UsageSample] = []
+    model = tracked(FakeModel(ai_message()), records)
+    model.invoke([SystemMessage(content="你是助手"), HumanMessage(content="你好")])
+    record = records[0]
+    assert "你是助手" in record.prompt_text
+    assert "你好" in record.prompt_text
+    assert record.reply_text == "好的"
+
+
+def test_failed_call_still_records_prompt_text():
+    records: list[UsageSample] = []
+    model = tracked(FakeModel(error=RuntimeError("boom")), records)
+    with pytest.raises(RuntimeError):
+        model.invoke("你好")
+    record = records[0]
+    assert "你好" in record.prompt_text
+    assert record.reply_text is None
+
+
+def test_text_beyond_the_limit_is_truncated():
+    records: list[UsageSample] = []
+    long_text = "啊" * (LLM_CALL_TEXT_LIMIT + 500)
+    tracked(FakeModel(AIMessage(content=long_text)), records).invoke(long_text)
+    record = records[0]
+    assert len(record.prompt_text) <= LLM_CALL_TEXT_LIMIT
+    assert len(record.reply_text) <= LLM_CALL_TEXT_LIMIT
+    assert record.prompt_text.startswith("啊啊")
+    assert record.reply_text.endswith("已截断）")
+
+
+def test_db_sink_writes_prompt_and_reply_text(tmp_path: Path):
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+
+    model = TrackedChatModel(
+        FakeModel(ai_message()), provider="deepseek", model_name="m", sink=db_usage_sink(db_file)
+    )
+    model.invoke("你好")
+
+    conn = connect(db_file)
+    try:
+        row = conn.execute("SELECT prompt_text, reply_text FROM llm_usage").fetchone()
+    finally:
+        conn.close()
+    assert "你好" in row["prompt_text"]
+    assert row["reply_text"] == "好的"
 
 
 def test_prompt_hash_from_scope_is_recorded(tmp_path: Path):

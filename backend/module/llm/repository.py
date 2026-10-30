@@ -20,14 +20,17 @@ def to_record(sample: UsageSample) -> UsageRecord:
         latency_ms=sample.latency_ms,
         success=sample.success,
         prompt_hash=sample.prompt_hash,
+        prompt_text=sample.prompt_text,
+        reply_text=sample.reply_text,
     )
 
 
 def insert(conn: sqlite3.Connection, record: UsageRecord) -> None:
     conn.execute(
         "INSERT INTO llm_usage (provider, model, purpose, run_id, tokens_in, tokens_out, "
-        "usage_raw, started_at, finished_at, latency_ms, success, prompt_hash, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "usage_raw, started_at, finished_at, latency_ms, success, prompt_hash, prompt_text, "
+        "reply_text, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             record.provider,
             record.model,
@@ -41,6 +44,8 @@ def insert(conn: sqlite3.Connection, record: UsageRecord) -> None:
             record.latency_ms,
             int(record.success),
             record.prompt_hash,
+            record.prompt_text,
+            record.reply_text,
             record.finished_at,
         ),
     )

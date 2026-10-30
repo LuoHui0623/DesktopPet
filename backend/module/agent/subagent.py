@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -31,13 +32,26 @@ SUBAGENT_DRAFT_TEMPLATE = "subagent_draft.md"
 SUBAGENT_DRAFT_PLACEHOLDERS = frozenset(
     {"capability_name", "capability_description", "task", "tools", "declarable", "max_steps"}
 )
-FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 ACTIONS = ("tool", "finish", "draft")
-INVALID_HINT = "回复不是合法的动作 JSON，请只输出一个 JSON 对象"
+INVALID_HINT = (
+    "回复不是合法的动作 JSON：请只输出一个 JSON 对象，"
+    "不要输出解释文字，也不要在同一条回复里输出多个 JSON"
+)
 NO_DRAFT = "（本次没有草案，按任务本身执行）"
 NO_TOOLS = "（本次没有可用工具）"
 NO_DECLARABLE = "（没有其他工具可声明）"
+LOG_TEXT_LIMIT = 2000
 Accept = Callable[[dict[str, Any]], "str | None"]
+
+logger = logging.getLogger("pet.agent.subagent")
+
+# 模型偶尔会漏出工具调用私有标记（如 <｜｜DSML｜｜ calls>），整段去掉后再找 JSON
+_PRIVATE_TAG = re.compile(
+    r"<[^<>\n]{0,200}DSML[^<>\n]{0,200}>"
+    r"|<[|｜][^<>\n]{0,200}[|｜]>"
+)
+_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -68,19 +82,28 @@ class _Loop:
 
 
 def parse_action(text: str) -> dict[str, Any] | None:
-    stripped = FENCE.sub("", text.strip()).strip()
-    candidates = [stripped]
-    start, end = stripped.find("{"), stripped.rfind("}")
-    if start != -1 and end > start:
-        candidates.append(stripped[start : end + 1])
-    for candidate in candidates:
+    cleaned = _clean_reply(text)
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(cleaned):
+        if char != "{":
+            continue
         try:
-            data = json.loads(candidate)
+            data, _ = decoder.raw_decode(cleaned, index)
         except ValueError:
             continue
         if isinstance(data, dict) and data.get("action") in ACTIONS:
             return data
     return None
+
+
+def _clean_reply(text: str) -> str:
+    cleaned = _PRIVATE_TAG.sub("", text)
+    cleaned = _ZERO_WIDTH.sub("", cleaned)
+    return _CONTROL.sub("", cleaned)
+
+
+def _clip_log(text: str) -> str:
+    return text if len(text) <= LOG_TEXT_LIMIT else text[:LOG_TEXT_LIMIT] + "…"
 
 
 def _text_of(content: Any) -> str:
@@ -104,7 +127,7 @@ def _phase_hint(action: dict[str, Any] | None, terminal: str) -> str | None:
         return INVALID_HINT
     if action["action"] in ("tool", terminal):
         return None
-    return f"当前阶段只能使用 tool 或 {terminal}，请重新输出一个 JSON 对象"
+    return f"当前阶段只能使用 tool 或 {terminal}，请重新输出一个 JSON 对象（每次回复只输出一个）"
 
 
 def _accept_finish(action: dict[str, Any]) -> str | None:
@@ -193,6 +216,7 @@ class SubAgent:
             phase=PHASE_DRAFT,
             accept=lambda action: _accept_draft(action, skill),
             invalid_limit=DRAFT_INVALID_LIMIT,
+            capability=skill.name,
         )
         if loop.error_code is not None:
             return SubAgentDraft(
@@ -236,6 +260,7 @@ class SubAgent:
             phase=PHASE_EXECUTE,
             accept=_accept_finish,
             invalid_limit=self._max_steps,
+            capability=skill.name,
         )
         if loop.error_code is not None:
             return SubAgentResult(False, None, loop.error_code, loop.error, loop.steps)
@@ -253,6 +278,7 @@ class SubAgent:
         phase: str,
         accept: Accept,
         invalid_limit: int,
+        capability: str,
     ) -> _Loop:
         steps: list[dict[str, Any]] = []
         invalid = 0
@@ -261,6 +287,13 @@ class SubAgent:
                 with usage_scope(SUBAGENT_PURPOSE, run_id=run_id, prompt_hash=self._digest):
                     response = client.invoke(messages)
             except Exception as exc:
+                logger.error(
+                    "模型调用失败：能力=%s 阶段=%s 第%d步 错误=%s",
+                    capability,
+                    phase,
+                    number,
+                    exc,
+                )
                 return _Loop(steps, error_code="model_failed", error=f"模型调用失败：{exc}")
             text = _text_of(response.content).strip()
             messages.append(AIMessage(content=text))
@@ -270,10 +303,25 @@ class SubAgent:
             if hint is None and action is not None and action["action"] == terminal:
                 hint = accept(action)
             if hint is not None:
+                logger.warning(
+                    "动作无效：能力=%s 阶段=%s 第%d步 原因=%s 回复=%s",
+                    capability,
+                    phase,
+                    number,
+                    hint,
+                    _clip_log(text),
+                )
                 steps.append({"step": number, "phase": phase, "action": "invalid"})
                 messages.append(HumanMessage(content=_observation({"ok": False, "error": hint})))
                 invalid += 1
                 if invalid >= invalid_limit:
+                    logger.error(
+                        "放弃执行：能力=%s 阶段=%s 连续 %d 次动作无效，最后原因=%s",
+                        capability,
+                        phase,
+                        invalid,
+                        hint,
+                    )
                     return _Loop(steps, error_code="invalid_output", error=hint)
                 continue
             if action is None:
@@ -296,6 +344,7 @@ class SubAgent:
                 }
             )
             messages.append(HumanMessage(content=_observation(result)))
+        logger.error("超过最大步数：能力=%s 阶段=%s 步数=%d", capability, phase, self._max_steps)
         return _Loop(
             steps,
             error_code="max_steps",

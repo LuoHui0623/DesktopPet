@@ -9,7 +9,10 @@ from datetime import datetime
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
+
+from constants.llm import LLM_CALL_TEXT_LIMIT, LLM_CALL_TRUNCATED_MARK
 
 logger = logging.getLogger("pet")
 
@@ -28,6 +31,8 @@ class UsageSample:
     latency_ms: int
     success: bool
     prompt_hash: str | None = None
+    prompt_text: str | None = None
+    reply_text: str | None = None
 
 
 UsageSink = Callable[[UsageSample], None]
@@ -80,9 +85,9 @@ class TrackedChatModel:
         try:
             response = self._model.invoke(input, config, **kwargs)
         except Exception:
-            self._record(started_at, started, None, success=False)
+            self._record(started_at, started, None, success=False, prompt=_prompt_text(input))
             raise
-        self._record(started_at, started, response, success=True)
+        self._record(started_at, started, response, success=True, prompt=_prompt_text(input))
         return response
 
     async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
@@ -91,12 +96,20 @@ class TrackedChatModel:
         try:
             response = await self._model.ainvoke(input, config, **kwargs)
         except Exception:
-            self._record(started_at, started, None, success=False)
+            self._record(started_at, started, None, success=False, prompt=_prompt_text(input))
             raise
-        self._record(started_at, started, response, success=True)
+        self._record(started_at, started, response, success=True, prompt=_prompt_text(input))
         return response
 
-    def _record(self, started_at: str, started: float, response: Any, *, success: bool) -> None:
+    def _record(
+        self,
+        started_at: str,
+        started: float,
+        response: Any,
+        *,
+        success: bool,
+        prompt: str | None,
+    ) -> None:
         tokens_in, tokens_out, usage_raw = _usage(response)
         scope = _scope.get()
         sample = UsageSample(
@@ -112,6 +125,8 @@ class TrackedChatModel:
             latency_ms=round((time.perf_counter() - started) * 1000),
             success=success,
             prompt_hash=scope.prompt_hash if scope else None,
+            prompt_text=prompt,
+            reply_text=_clip(_content_text(getattr(response, "content", None))),
         )
         try:
             self._sink(sample)
@@ -135,3 +150,50 @@ def _usage(response: Any) -> tuple[int | None, int | None, str | None]:
 
 def _token(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _prompt_text(value: Any) -> str | None:
+    return _clip(_message_text(value))
+
+
+def _message_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, BaseMessage):
+        return _content_text(value.content)
+    if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], str):
+        return _message_text(value[1])
+    if isinstance(value, dict):
+        return _content_text(value.get("content"))
+    if isinstance(value, (list, tuple)):
+        parts = [_message_text(item) for item in value]
+        return "\n".join(part for part in parts if part) or None
+    text = getattr(value, "text", None)
+    if isinstance(text, str):
+        return text
+    return str(value)
+
+
+def _content_text(content: Any) -> str | None:
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    if isinstance(content, (list, tuple)):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and isinstance(block.get("text"), str):
+                parts.append(block["text"])
+        return "\n".join(parts) or None
+    return str(content)
+
+
+def _clip(text: str | None) -> str | None:
+    if text is None or len(text) <= LLM_CALL_TEXT_LIMIT:
+        return text
+    keep = LLM_CALL_TEXT_LIMIT - len(LLM_CALL_TRUNCATED_MARK)
+    return text[:keep] + LLM_CALL_TRUNCATED_MARK

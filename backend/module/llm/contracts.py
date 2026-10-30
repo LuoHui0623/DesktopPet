@@ -15,3 +15,5 @@ class UsageRecord:
     latency_ms: int
     success: bool
     prompt_hash: str | None = None
+    prompt_text: str | None = None
+    reply_text: str | None = None

@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 
 from langchain_core.messages import AIMessage
@@ -127,8 +128,73 @@ def test_invalid_reply_is_returned_as_observation_and_run_continues(tmp_path: Pa
     assert "不是合法的动作 JSON" in chat.calls[1][-1].content
 
 
+def test_invalid_reply_is_logged_with_the_original_text(tmp_path: Path, caplog):
+    chat = ScriptedChat(["我想想……", '{"action": "finish", "output": "好了"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    with caplog.at_level(logging.WARNING, logger="pet.agent.subagent"):
+        make_agent(llm).run(SKILL, "任务", "run-1")
+    messages = [
+        record.getMessage() for record in caplog.records if "动作无效" in record.getMessage()
+    ]
+    assert len(messages) == 1
+    assert "我想想……" in messages[0]
+    assert "回声" in messages[0]
+    assert PHASE_EXECUTE in messages[0]
+
+
+def test_model_failure_is_logged_with_the_capability(tmp_path: Path, caplog):
+    chat = ScriptedChat([RuntimeError("连接断开")])
+    llm, _ = make_llm(tmp_path, chat)
+    with caplog.at_level(logging.ERROR, logger="pet.agent.subagent"):
+        result = make_agent(llm).run(SKILL, "任务", "run-1")
+    assert result.error_code == "model_failed"
+    assert any("回声" in record.getMessage() for record in caplog.records)
+
+
 def test_fenced_json_is_accepted():
     action = parse_action('```json\n{"action": "finish", "output": "x"}\n```')
+    assert action == {"action": "finish", "output": "x"}
+
+
+def test_two_json_objects_take_the_first():
+    action = parse_action(
+        '{"action": "tool", "tool": "read", "args": {"name": "a"}}\n\n'
+        '{"action": "tool", "tool": "read", "args": {"name": "b"}}'
+    )
+    assert action == {"action": "tool", "tool": "read", "args": {"name": "a"}}
+
+
+def test_two_json_reply_is_executed_as_its_first_action(tmp_path: Path):
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "echo", "args": {"text": "看看"}}\n\n'
+            '{"action": "tool", "tool": "echo", "args": {"text": "再看看"}}',
+            '{"action": "finish", "output": "好了"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "任务", "run-1")
+    assert result.ok is True
+    assert [step["action"] for step in result.steps] == ["tool", "finish"]
+    assert result.steps[0]["args"] == {"text": "看看"}
+
+
+def test_private_tool_marker_before_json_is_ignored():
+    action = parse_action('<｜｜DSML｜｜ calls>\n{"action": "finish", "output": "x"}')
+    assert action == {"action": "finish", "output": "x"}
+
+
+def test_reply_with_only_private_markers_is_invalid():
+    assert parse_action('<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="tool"') is None
+
+
+def test_zero_width_and_control_characters_are_cleaned():
+    action = parse_action('{"action": "finish", "output": "你\u200b好\u0000"}')
+    assert action == {"action": "finish", "output": "你好"}
+
+
+def test_broken_json_before_valid_json_is_skipped():
+    action = parse_action('好的，我先看看 {这不是 json\n{"action": "finish", "output": "x"}')
     assert action == {"action": "finish", "output": "x"}
 
 
@@ -241,8 +307,8 @@ def test_draft_prompt_uses_the_planner_wording_and_read_only_tools(tmp_path: Pat
     assert "$task" not in system
 
 
-def test_draft_empty_content_is_retried_once_then_fails(tmp_path: Path):
-    chat = ScriptedChat(['{"action": "draft", "content": "  "}'] * 2)
+def test_draft_empty_content_is_retried_until_the_limit_then_fails(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "draft", "content": "  "}'] * DRAFT_INVALID_LIMIT)
     llm, _ = make_llm(tmp_path, chat)
     draft = make_agent(llm).draft(SKILL, "任务", "run-1")
     assert draft.ok is False
@@ -250,6 +316,20 @@ def test_draft_empty_content_is_retried_once_then_fails(tmp_path: Path):
     assert "草案内容不能为空" in draft.error
     assert len(draft.steps) == DRAFT_INVALID_LIMIT
     assert "草案内容不能为空" in chat.calls[1][-1].content
+
+
+def test_draft_tolerates_two_bad_replies_before_giving_up(tmp_path: Path):
+    chat = ScriptedChat(
+        [
+            '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="draft"',
+            "我想想……",
+            '{"action": "draft", "content": "先回声再作答", "tools": ["echo"]}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    draft = make_agent(llm).draft(SKILL, "任务", "run-1")
+    assert draft.ok is True
+    assert [step["action"] for step in draft.steps] == ["invalid", "invalid", "draft"]
 
 
 def test_draft_cannot_finish(tmp_path: Path):
@@ -264,7 +344,8 @@ def test_draft_cannot_finish(tmp_path: Path):
 
 
 def test_draft_tools_must_be_a_string_array(tmp_path: Path):
-    chat = ScriptedChat(['{"action": "draft", "content": "方案", "tools": "echo"}'] * 2)
+    reply = '{"action": "draft", "content": "方案", "tools": "echo"}'
+    chat = ScriptedChat([reply] * DRAFT_INVALID_LIMIT)
     llm, _ = make_llm(tmp_path, chat)
     draft = make_agent(llm).draft(SKILL, "任务", "run-1")
     assert draft.error_code == "invalid_output"
@@ -291,7 +372,9 @@ def test_draft_can_declare_tools_that_are_not_callable_yet(tmp_path: Path):
 
 
 def test_draft_cannot_declare_a_tool_outside_the_skill(tmp_path: Path):
-    chat = ScriptedChat(['{"action": "draft", "content": "方案", "tools": ["nope"]}'] * 2)
+    chat = ScriptedChat(
+        ['{"action": "draft", "content": "方案", "tools": ["nope"]}'] * DRAFT_INVALID_LIMIT
+    )
     llm, _ = make_llm(tmp_path, chat)
     draft = make_agent(llm).draft(SKILL, "任务", "run-1")
     assert draft.ok is False
