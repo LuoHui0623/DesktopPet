@@ -214,7 +214,7 @@ backend/
 ├─ config/                   # 【配置】.env、llm.yaml、角色卡；解析为不可变快照
 │  ├─ .env.example           # 环境变量模板，入 Git（本机 .env 不入 Git）
 │  ├─ llm.yaml               # 模型预设，入 Git（不含密钥）
-│  ├─ personas/              # 人设卡片，每卡一个 <id>.yaml，入 Git（D-13）
+│  ├─ personas/              # 人设卡片，每卡一个 <id>.yaml，入 Git
 │  ├─ persona.py             # 角色卡读取、校验与规范化，产出 PersonaConfig
 │  ├─ settings.py            # 解析入口：.env 与 llm.yaml → ModelSettings；PET_* → ServiceSettings
 │  └─ README.md              # 配置目录说明与解析规则
@@ -252,7 +252,7 @@ backend/
 │  │  ├─ contracts.py        # ActiveModel 等契约
 │  │  └─ repository.py       # app_setting 持久化
 │  ├─ persona/
-│  │  ├─ persona_service.py  # 人设卡片：列出、启用、按修改时间重新解析、按卡记录版本（D-13）
+│  │  ├─ persona_service.py  # 人设卡片：列出、启用、按修改时间重新解析、按卡记录版本
 │  │  ├─ contracts.py        # PersonaVersion 契约
 │  │  └─ repository.py       # 持久化
 │  ├─ avatar/
@@ -314,11 +314,11 @@ backend/
 │  ├─ store/
 │  │  ├─ db.py               # SQLite 连接：WAL、外键、事务封装
 │  │  ├─ migrate.py          # 按序号执行迁移，记录 schema_version（含 SHA-256 校验）
-│  │  └─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure、0007_agent_run_rejected、0008_drop_core_memory、0009_drop_proactive_feedback
+│  │  └─ migrations/         # 迁移 SQL，只增不改：0001_init、0002_log_record、0003_agent、0004_persona_card、0005_daily_log_roles、0006_daily_event_structure、0007_agent_run_rejected、0008_drop_core_memory、0009_drop_proactive_feedback、0010_llm_usage_text
 │  ├─ llm/
 │  │  ├─ spec.py             # ApiParadigm（chat_completions / responses / messages）与 ModelSpec
 │  │  ├─ paradigms.py        # build_chat_model(spec)：三种范式的 LangChain 构造
-│  │  └─ usage.py            # 调用用量记录（TrackedChatModel，写入 llm_usage）
+│  │  └─ usage.py            # 调用用量记录（TrackedChatModel，写入 llm_usage，含请求与回复正文）
 │  ├─ files/
 │  │  ├─ io.py               # 文件读写（只做 IO）
 │  │  ├─ access.py           # 文件权限：允许根目录、路径规范化、拒绝穿越与符号链接逃逸
@@ -468,7 +468,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | 组件 | 归属 | 说明 |
 |---|---|---|
 | **LLM 接口范式**（ChatOpenAI / ChatAnthropic 的构造） | `infra/llm/paradigms.py` | 技术适配，三种范式，换 SDK 只改这里 |
-| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量与起止时间，写入 `llm_usage` |
+| **LLM 用量记录** | `infra/llm/usage.py` | 技术观测：每个 client 记录结构化 token 用量、起止时间与请求/回复正文，写入 `llm_usage` |
 | **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
 | **LLM 客户端装配、缓存、热更新** | `module/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
 | **当前模型选择** | `module/llm/llm_service.py`（设置页切换的结果保存在数据库 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
@@ -490,7 +490,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | **感知 tick 循环** | `service/perception/runtime.py` | 每 5 秒 tick，向 `on_trigger` 交付 `Trigger` |
 | **主动管线** | `module/proactive/pipeline.py` | Trigger → chat → 台账 → WS；只做编排，见 docs/PROACTIVE.md |
 | **互动上报、节流与上下文注入** | `module/interaction/`，注入点在 `module/chat/chat_service.py` | 业务规则：互动只在用户对话时进入上下文，不落库、不写记忆 |
-| **右键菜单结构、可用与勾选状态** | `module/menu/menu_service.py`（读模型）、`api/routers/menu.py` | 业务规则：菜单项、文案、禁用与勾选由后端决定（D-45）；形象项来自形象包目录，暂停项取调度配置 |
+| **右键菜单结构、可用与勾选状态** | `module/menu/menu_service.py`（读模型）、`api/routers/menu.py` | 业务规则：菜单项、文案、禁用与勾选由后端决定；形象项来自形象包目录，暂停项取调度配置 |
 | **原生菜单构建与点击回传** | `frontend/src-tauri/src/menu.rs`、`frontend/src/service/menu.service.ts` | 桌面壳只按下发的条目建菜单；点击回传 id，由前端分发到既有服务，不硬编码菜单结构 |
 | **角色卡解析与校验** | `config/persona.py` | 配置层，启动时执行；直接用 PyYAML 解析 |
 | **形象包扫描、校验与默认包复制** | `module/avatar/avatar_service.py` | 业务规则：manifest 形状、R-02 大小/帧数限制、帧文件是否越界、当前启用项回退 |
@@ -534,12 +534,12 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 ```
 
 - 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
-- 检索：主 agent 可派发「记忆检索」能力读取历史记忆（T-052）；日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.chat` 接受的检索片段仍由调用方提供。
+- 检索：主 agent 可派发「记忆检索」能力读取历史记忆；日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.chat` 接受的检索片段仍由调用方提供。
 - 互动：自上次用户对话以来记录的行为由 `module/interaction` 在本次用户输入前取出，以 `[master] <行为>` 行进入上下文（§6.6），不写记忆。
 
 ### 6.2 主动消息
 
-解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=False))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动回复在 `daily_log` 中是一条普通 `me`，同时追加进当日会话快照；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 按时间排队，逐条显示气泡，到时自动消失；点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端（T-061 / D-46）。
+解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=False))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动回复在 `daily_log` 中是一条普通 `me`，同时追加进当日会话快照；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 按时间排队，逐条显示气泡，到时自动消失；点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端。
 
 ### 6.3 结构化记忆写入与检索
 
@@ -561,11 +561,11 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
   ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户
 ```
 
-拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看与编辑（T-043、T-053）。
+拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看与编辑。
 
 ### 6.3.1 记忆查看与检索
 
-设置页通过 `GET /api/memories?date=` 读取结构化记忆全文与每日对话，用 `PUT /api/memories/structured` 保存结构化记忆全文，均不经过子代理。子代理通过统一的两个探索工具访问资源：`index(resource)` 看清单，`read(resource, name, lines)` 读内容（支持行号区间）。`resource=skill` 读技能说明书，`resource=memory` 读记忆索引与条目（资源名为 `structured` 或日期），子代理不需要手填类型。检索能力（`tools/index:read`）已随「记忆检索」能力接入对话（T-052）。
+设置页通过 `GET /api/memories?date=` 读取结构化记忆全文与每日对话，用 `PUT /api/memories/structured` 保存结构化记忆全文，均不经过子代理。子代理通过统一的两个探索工具访问资源：`index(resource)` 看清单，`read(resource, name, lines)` 读内容（支持行号区间）。`resource=skill` 读技能说明书，`resource=memory` 读记忆索引与条目（资源名为 `structured` 或日期），子代理不需要手填类型。检索能力（`tools/index:read`）已随「记忆检索」能力接入对话。
 
 ### 6.4 能力执行
 
@@ -592,7 +592,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 
 ### 6.6 基础互动
 
-前端在悬浮窗上识别四种互动（单击、悬停、拖动、右键菜单），反应与上报分离（D-25）：反应只改本地展示（缩放/位移），上报异步发送，不阻塞交互。
+前端在悬浮窗上识别四种互动（单击、悬停、拖动、右键菜单），反应与上报分离：反应只改本地展示（缩放/位移），上报异步发送，不阻塞交互。
 
 ```
 前端 pet 窗口 ─► service/interaction.service.ts
@@ -610,7 +610,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 
 - 互动配置存放在 `app_setting` 的 `interaction.config`（单键 JSON），真源为 `module/interaction/constants.py` 的默认值与 `module/interaction/config.py` 的校验；非法取值保持原配置，未知种类被过滤。设置页与悬浮窗读同一份配置。
 - 悬浮窗在收到 Tauri 事件 `settings-changed` 且 `domain` 为 `interaction` 时重新拉取配置，保存后立即生效，不需要重启。取不到后端时使用 `FALLBACK_INTERACTION_CONFIG`（仅这一处兜底，其它窗口不在组件里写死默认值）。
-- 互动不写数据库、不写 `daily_log`、不进入 `structured.md`（D-24）；后端重启或超过有效期即丢弃。
+- 互动不写数据库、不写 `daily_log`、不进入 `structured.md`；后端重启或超过有效期即丢弃。
 - 只有用户发起的对话消费队列；主动消息（`trigger_reason`）不消费，互动留到下一次用户对话。
 - 行为文案由后端 `INTERACTION_LABELS` 决定，前端只上报种类，避免两侧文案漂移。
 - 悬停不抢焦点；右键打开原生菜单（§6.7），打开前同样以种类 `menu` 上报一次。
@@ -618,7 +618,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 
 ### 6.7 右键菜单
 
-菜单结构与状态由后端决定（D-45），前端不硬编码条目；Tauri 只按下发的数据构建原生菜单，点击后把 id 回传前端分发。
+菜单结构与状态由后端决定，前端不硬编码条目；Tauri 只按下发的数据构建原生菜单，点击后把 id 回传前端分发。
 
 ```
 前端 pet 窗口（onContextMenu）
@@ -641,7 +641,7 @@ Tauri src/menu.rs
    └─ quit → invoke("exit_app") → ExitRequested → 后端经 stdin 优雅退出
 ```
 
-- 五项顺序固定：打开对话、设置、切换形象、暂停主动消息、退出（Q-15）。勾选语义分两类：形象子项表示当前启用；暂停项表示已暂停，与调度配置 `enabled` 相反。
+- 五项顺序固定：打开对话、设置、切换形象、暂停主动消息、退出。勾选语义分两类：形象子项表示当前启用；暂停项表示已暂停，与调度配置 `enabled` 相反。
 - 暂停使用调度配置键 `scheduler.enabled`，与设置页「主动消息」开关共用同一份配置，两处状态自然一致；解析器闸门与调度读取同一份配置，切换后立即生效。
 - 切换形象写入 `app_setting.avatar.active`；宠物窗口按返回结果重新加载帧（`useAvatar(revision)`），无需重启，目录中不可用的包不会出现在子项中。
 - 退出复用既有安全退出路径（§1.3）：`exit_app` 结束应用 → `RunEvent::ExitRequested` 先向后端 stdin 写入退出指令并等待其结束，再结束进程。
@@ -650,7 +650,7 @@ Tauri src/menu.rs
 
 ### 6.8 设置页
 
-设置页把四组配置（感知 / 主动消息 / 形象 / 互动）统一到一份读模型上（D-39）：读用 `GET /api/settings`，写用 `PUT /api/settings/<group>`，唯一真源是数据库 `app_setting`；模型、记忆、人设三组仍走各自接口。
+设置页把四组配置（感知 / 主动消息 / 形象 / 互动）统一到一份读模型上：读用 `GET /api/settings`，写用 `PUT /api/settings/<group>`，唯一真源是数据库 `app_setting`；模型、记忆、人设三组仍走各自接口。
 
 ```
 前端 settings 窗口 ─► modules/settings/use-settings-bundle.ts
@@ -672,7 +672,7 @@ Tauri src/menu.rs
 - 立即生效：感知阈值改完当次 tick 即采用（离开判定不再等重启）；主动消息开关是调度与解析器的共用闸门；互动配置决定上报种类与停留、间隔；形象切换与右键菜单读写同一个 `avatar.active`。
 - 一次只保存一组：某组校验失败（422）或形象包不存在（404）返回 `{"error": {code, message}}`，其它组不受影响；读模型仍是后端算出的结果，前端不做二次推断。
 - 「清空感知记录」调用 `POST /api/perception/clear`，只丢弃内存缓冲（采样状态、候选、去重窗口），感知本就不落库，也不改配置。
-- 旧的 `.env` 调度项（`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY`）已废弃：T-067 删掉了一次性迁移，`main.py` 只在启动日志里提示一次「本次启动已忽略」，配置一律以 `app_setting` 为准（见 §8.2）。
+- 旧的 `.env` 调度项（`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY`）已废弃：一次性迁移已删除，`main.py` 只在启动日志里提示一次「本次启动已忽略」，配置一律以 `app_setting` 为准（见 §8.2）。
 
 ---
 
@@ -715,7 +715,7 @@ Tauri src/menu.rs
 | POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |
 | WS | `/ws` | — | 事件推送：`status`、`chat.chunk`、`chat.done`（含 sources）、`approval.request`、`proactive.message` |
 
-未实现的接口：`POST /api/settings/llm/test`（设置页的非模型部分）、`/api/capabilities/*`（M6）、`POST /api/imports`（M5）、`POST /api/emergency-stop`（M3）。主动消息不提供反馈接口（D-46）。
+未实现的接口：`POST /api/settings/llm/test`（设置页的非模型部分）、`/api/capabilities/*`（M6）、`POST /api/imports`（M5）、`POST /api/emergency-stop`（M3）。主动消息不提供反馈接口。
 
 - 错误响应统一为 `{ "error": { "code": "...", "message": "..." } }`，前端按 `code` 处理，不解析 `message`。
 - 模型调用失败时返回明确错误，不编造回复。
@@ -731,7 +731,7 @@ Tauri src/menu.rs
 | 本机配置 | `backend/config/.env` | 否 | 通用配置、provider 列表、各 provider 的 base_url 与 api_key 引用名 |
 | 环境变量模板 | `backend/config/.env.example` | 是 | 与 `.env` 结构一致，不含真实值 |
 | 模型预设 | `backend/config/llm.yaml` | 是（不含密钥） | provider 的模型预设 |
-| 人设卡片 | `backend/config/personas/<id>.yaml` | 是（不含密钥） | 每张卡一个文件，id 为文件名（D-13） |
+| 人设卡片 | `backend/config/personas/<id>.yaml` | 是（不含密钥） | 每张卡一个文件，id 为文件名 |
 | 解析规则 | `backend/config/README.md` | 是 | `.env`、`llm.yaml`、默认模型的解析与校验规则 |
 
 读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。`PET_*` 相对路径按项目根目录解析。完整解析规则见 `backend/config/README.md`。角色卡的主题与解析方式（`role` 为编码填充，`personality` 与 `language_style` 为可扩展列表）见该文件 §12。
@@ -744,7 +744,7 @@ Tauri src/menu.rs
 | `PET_PORT` | `0` | `0` 为随机端口，由前端通过 stdout 读取 |
 | `PET_TOKEN` | 必填 | 启动令牌 |
 | `PET_DATA_DIR` | `backend/data` | 数据目录：数据库、记忆文件、日志都在其下；相对路径按项目根目录解析 |
-| `PET_PERSONAS_DIR` | `backend/config/personas` | 人设卡片目录，每卡一个 `<id>.yaml`（D-13） |
+| `PET_PERSONAS_DIR` | `backend/config/personas` | 人设卡片目录，每卡一个 `<id>.yaml` |
 | `PET_TIMEZONE` | `Asia/Shanghai` | 时区 |
 | `PET_LOG_LEVEL` | `INFO` | 日志级别 |
 | `PET_LOG_QUEUE_SIZE` | `20` | 数据库日志每批条数 |
@@ -887,7 +887,7 @@ providers:
 - 模型参数与 provider 信息只来自 `LlmConfig` 快照，业务代码不读取 `.env` 或 `llm.yaml`。
 - 每次调用前获取当前快照（`LlmService.current()`），同一次调用内始终使用同一快照。
 - 结构化输出使用 Pydantic 模型校验，校验失败则丢弃并记录，不无限重试。
-- 每个 client 记录每次调用的结构化用量（token、用途、开始与结束时间、是否失败），写入 `llm_usage`；token 不可得时记为 NULL。
+- 每个 client 记录每次调用的结构化用量（token、用途、开始与结束时间、是否失败）与请求/回复正文（超 8000 字符截断），写入 `llm_usage`；失败调用同样记一行，token 不可得时记为 NULL。
 
 ### 9.2 数据库与迁移
 - `sqlite3`，开启 WAL 与外键约束。

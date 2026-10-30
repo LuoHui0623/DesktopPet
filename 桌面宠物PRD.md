@@ -480,7 +480,7 @@ language_style:
 | `log_record` | id, created_at, level, logger, message, exc_text | 运行日志入库（异步批量写入，见 Arch §9.6） |
 | `persona_version` | version, content, created_at | 角色卡历史版本（规范化后的内容） |
 | `behavior_event` | id, type, payload, occurred_at | 感知元数据，保留 30 天 |
-| `proactive_feedback` | id, message_id, type(like/dislike/ignore), created_at | 主动消息反馈（已取消：不做反馈接口，迁移 0009 移除该表，见 Task.md D-46 / T-067） |
+| `proactive_feedback` | id, message_id, type(like/dislike/ignore), created_at | 主动消息反馈（已取消：不做反馈接口，迁移 0009 移除该表） |
 | `capability_run` | id, action, params_summary, risk, confirmed, result, undo_payload, created_at | 能力执行日志（undo_payload 记录撤销所需的原路径等信息） |
 | `chat_import` | id, source, conversation, imported_at, file_path | 聊天记录导入记录 |
 | `weather_cache` | city_key, payload, fetched_at | 天气缓存 |

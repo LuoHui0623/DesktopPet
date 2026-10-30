@@ -286,10 +286,10 @@ parser 产出 Trigger
 | chat 的注入对象 | 注入 `PerceptionService`，由其转调解析器 | 注入解析器的读接口，不经过观测器 |
 | 主动轮读 current | 触发时清空 | 明确主动轮只用 `Trigger.reason` |
 
-## 12. 依据
+## 12. 已定口径与关联文档
 
-- D-41：解析器集中判定，只输出 `Trigger{topic, reason}`。
-- D-42：ChatService 提供完整 chat 能力，不做主动编排。
-- D-43：上下文来自当日会话快照；current 与历史用分隔串区分。
-- D-35 / Q-17：感知事件不落库，不写 `daily_log`，不扩 `EVENT_TYPES`。
+- 解析器集中判定，只输出 `Trigger{topic, reason}`。
+- 感知事件不落库，不写 `daily_log`，不扩 `EVENT_TYPES`。
+- ChatService 提供完整 chat 能力，不做主动编排；主动轮只用 `Trigger.reason`，不复读 current。
+- 上下文来自当日会话快照；current 与历史用分隔串区分。
 - [PERCEPTION.md](PERCEPTION.md)：采集方式、状态模型、九种事件的原始判断条件。

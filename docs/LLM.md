@@ -117,11 +117,23 @@ app_setting 的 llm.active.<capability>
 ## 6. 用量记录
 
 - 每个 client 包装为 `TrackedChatModel`，每次调用记录：
-  `provider`、`model`、`purpose`、`run_id`、`tokens_in`、`tokens_out`、`usage_raw`、`started_at`、`finished_at`、`latency_ms`、`success`、`prompt_hash`。
+  `provider`、`model`、`purpose`、`run_id`、`tokens_in`、`tokens_out`、`usage_raw`、`started_at`、`finished_at`、`latency_ms`、`success`、`prompt_hash`、`prompt_text`、`reply_text`。
 - `purpose` 取能力名（`chat` / `consolidate`）；主动轮复用 `chat`，不新增 `proactive`。
 - token 不可得时记 NULL，不编造。
 - 记录写入失败只记日志，不影响业务返回。
 - 用量落 `llm_usage` 表；不写业务日志。
+
+### 6.1 正文记录
+
+| 字段 | 内容 | 缺省 |
+|---|---|---|
+| `prompt_text` | 本次请求的消息正文（含系统提示词与对话）；按角色与内容拼接 | 请求未发出时为 `NULL` |
+| `reply_text` | 模型回复正文 | 失败调用为 `NULL` |
+
+- 正文超 `LLM_CALL_TEXT_LIMIT`（8000 字符）时截断，末尾追加 `LLM_CALL_TRUNCATED_MARK`（`…（已截断）`）。
+- 失败调用同样写一行，`success=false`，`prompt_text` 保留、`reply_text` 为空——用于复盘模型侧异常。
+- 正文只落库、不进日志；日志侧由调用方按需记录（见 [CHAT.md](CHAT.md) §6.3「子代理的输出契约」）。
+- 截断按字符数，不做字节数或 token 预算换算。
 
 ## 7. 配置
 
@@ -185,9 +197,10 @@ app_setting 的 llm.active.<capability>
 | `consolidate` 的用途边界 | 子代理整理；不参与日常对话主路径 | 已实现，文档待补 |
 | 多 provider 同名模型 | 要求 `provider/name` 显式写法 | 已定（校验规则） |
 
-## 11. 依据
+## 11. 已定口径与关联文档
 
+- 每次调用（含失败）连同请求与回复正文写入 `llm_usage`，正文超 8000 字符截断（见 §6）。
+- ChatService 提供完整 chat 能力；主动复用同一入口，不新增生成链路。
+- 主动轮失败最多重试 1 次，不抛给用户。
 - `Arch.md` §8.3：LLM 配置、热更、校验规则。
-- D-42：ChatService 提供完整 chat 能力；主动复用同一入口，不新增生成链路。
-- T-060：主动轮失败最多重试 1 次，不抛给用户。
 - `backend/config/README.md`：`.env`、`llm.yaml` 的完整解析规则。

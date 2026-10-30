@@ -241,7 +241,7 @@ opencode:
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。
-- 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `app_setting` 的 `scheduler.*`，由 `GET/PUT /api/scheduler/config` 或设置页的 `PUT /api/settings/proactive` 读写（同一份配置，见 `Arch.md` §6.8）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随 T-067 废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `app_setting` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
+- 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `app_setting` 的 `scheduler.*`，由 `GET/PUT /api/scheduler/config` 或设置页的 `PUT /api/settings/proactive` 读写（同一份配置，见 `Arch.md` §6.8）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随该组配置迁移废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `app_setting` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
 - 同理，感知（`perception.*`）、形象（`avatar.active`）与互动（`interaction.config`）也不读 `.env`，都由设置页与各自接口写入 `app_setting`。
 
 ## 12. 人设卡片（personas/）
@@ -265,5 +265,5 @@ opencode:
 - 列表元素去重后按字典序排列，因此列表顺序不影响提示词与版本哈希。
 - 编码填充型主题的扩展字段按字段名排序输出。
 - 所有错误一次性报告，格式为 `persona.yaml <主题>...`。
-- `to_normalized_json()` 输出按键排序、非 ASCII 原样保留的 JSON，用于角色卡版本记录（T-019）。内容变化（包括解析方式的调整）会追加一条新的 `persona_version`。
+- `to_normalized_json()` 输出按键排序、非 ASCII 原样保留的 JSON，用于角色卡版本记录。内容变化（包括解析方式的调整）会追加一条新的 `persona_version`。
 - 提示词渲染在 `module/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，填入 `persona.md` 的 `$persona` 占位符，作为 system prompt 的前部分。

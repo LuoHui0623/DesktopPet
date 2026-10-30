@@ -3,7 +3,7 @@
 > 职责：定义 ChatService 的唯一入口、请求/回复契约、上下文组装、生成校验与落账。
 > 依赖：`module/llm`（模型）、`module/memory`（daily_log / 结构化记忆）、`module/persona`、`module/agent`（派发分支）、观测域解析器（current 事件）。
 > 不回答：模型配置与热更（见 [LLM.md](LLM.md)）、感知采集与阈值（见 [OBSERVER.md](OBSERVER.md)）、主动判定与管线（见 [PROACTIVE.md](PROACTIVE.md)）、气泡与前端渲染。
-> 状态：已实现（2026-10-29）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，上下文按 D-43 使用内存当日快照。
+> 状态：已实现（2026-10-29）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，上下文使用内存当日快照。
 
 ## 1. 定位
 
@@ -76,7 +76,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 | `user_text` | `str \| None` | 必填 | `None` | 去除首尾空白；空串报 `empty_input` |
 | `fragments` | `tuple[MemoryFragment, ...]` | 可选 | 可选 | 调用方提供；主路径不自动检索 |
 | `trigger_reason` | `str \| None` | `None` | 必填 | 解析器给的事实依据；不写记录 |
-| `allow_dispatch` | `bool` | `True` | 建议 `False`（Q-18 待确认） | 能力开关 |
+| `allow_dispatch` | `bool` | `True` | 固定 `False` | 能力开关；主动轮不允许派发，见 [PROACTIVE.md](PROACTIVE.md) §9 |
 | `events` | `ChatEvents \| None` | 调用方注入 | 调用方注入 | 按调用传入；缺省用构造期注入的 sink |
 
 规则：
@@ -103,7 +103,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 | `persona_unavailable` | 当前人设不可用 | 否 |
 | `model_unavailable` | 能力未配置模型、provider 未启用、缺密钥 | 否 |
 | `model_failed` | 模型调用传输失败 | 否（chat 不重试；主动管线可重试整轮） |
-| `invalid_output` | 输出不是合法结构化 JSON、字段不符、派发后再次派发 | chat 重试 1 次 |
+| `invalid_output` | 输出不是合法结构化 JSON、字段不符、派发后再次派发；子代理动作连续不合规达到上限 | chat 重试 1 次 |
 | `sentence_too_long` | 单句超过 40 字符 | chat 重试 1 次 |
 
 ## 5. 上下文组装
@@ -124,7 +124,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 - 不按预算裁剪快照；只对结构化记忆和检索片段做预算。
 - `event` 按 AI 消息注入；三类 event 的上下文规则见 `module/memory/daily_events.py`。
 - `me` 按结构化输出形状（`{"type": "chat", "text": ...}`）保存，避免模型模仿纯文本回复。
-- 感知 notes 随写入回合并入：写入 `daily_log` 的回合把本轮 notes 追加进快照；未写入的回合（临时模式）整体不进快照（D-43：全量线性构造）。
+- 感知 notes 随写入回合并入：写入 `daily_log` 的回合把本轮 notes 追加进快照；未写入的回合（临时模式）整体不进快照。快照按全量线性重建，不做增量更新。
 
 ### 5.3 主动轮的上下文
 
@@ -185,8 +185,25 @@ chat 输出 dispatch
 ```
 
 - `allow_dispatch=false` 时，`dispatch` 视为 `invalid_output`。
-- 主动轮默认不允许派发（Q-18 待确认），避免无人值守时弹审批。
+- 主动轮固定不允许派发（`allow_dispatch=False`），避免无人值守时弹审批；见 [PROACTIVE.md](PROACTIVE.md) §9。
 - 审批拒绝、派发失败写入 `event`；不进入 `sources`。
+
+#### 子代理的输出契约
+
+草案与执行两个阶段都是 ReAct 循环，每轮只消费一个 JSON 动作对象，`action` 取值见 [Arch.md](../Arch.md) §6 的派发契约（`tool` / `draft` / `finish` 之类，由阶段决定）。
+
+| 项 | 规则 |
+|---|---|
+| 单对象约束 | 每次回复只输出一个 JSON 对象；同一回复里连写两个对象、或夹带 `tool_calls` / `<｜｜DSML｜｜ …>` 等私有标记都算不合规 |
+| 约束位置 | 提示词侧在 `module/agent/prompts/subagent_draft.md` 与 `subagent.md` 的「输出格式」章节；代码侧由 `INVALID_HINT` 与阶段提示追加纠正 |
+| 清洗 | 解析前先去掉零宽字符、控制字符与私有标记（`<｜…｜>` 包裹的整段） |
+| 解析 | 对清洗后的文本从左到右在每个 `{` 位置尝试 `json.JSONDecoder.raw_decode`，取第一个带合法 `action` 的 dict；不做括号截取 |
+| 解析失败 | 只要整段里找不到合法动作，立即判 `invalid_output`，不重试 |
+| 动作不合规 | 动作能解析但当前阶段不允许（如该 `finish` 时又调工具、用了技能未声明的工具）：追加一条纠正观测后继续，草案阶段最多 `DRAFT_INVALID_LIMIT`（3）次，执行阶段受 8 步上限约束 |
+| 上限用尽 | 记 `invalid_output`；`agent_run.steps` 里每次不合规都是一条 `action="invalid"`，不含原始回复 |
+| 日志 | 原始回复（截断到 `LOG_TEXT_LIMIT`＝2000 字符）写 `pet.agent.subagent`：不合规是 WARNING，模型调用失败、放弃执行、超步数是 ERROR；每条都带能力名、阶段、步号 |
+
+- 模型调用本身的用量与正文落库归模型域，见 [LLM.md](LLM.md) §6。
 
 ## 7. 落账与快照
 
@@ -198,9 +215,9 @@ chat 输出 dispatch
 | `me` | 宠物回复 | 每次成功生成（含主动） |
 | `event` | 结构化事件 | 审批拒绝、派发失败、会话边界 |
 
-- 不加 `source` 列；主动回复就是一条普通 `me` 行（D-40）。
+- 不加 `source` 列；主动回复就是一条普通 `me` 行——主动是触发路径的属性，不是数据属性。
 - 临时模式下不写；`recorded=false`。
-- 事件类型维持 3 种，不因感知扩表（D-35 / Q-17）。
+- 事件类型维持 3 种，不因感知扩表；感知只写 current 快照，不进 `daily_log`。
 
 ### 7.2 transcript
 
@@ -235,6 +252,7 @@ chat 输出 dispatch
 | 模型不可用 | 立即报 `model_unavailable` | 被动返回错误；主动静默放弃 |
 | 模型调用失败 | 立即报 `model_failed` | 主动可重试整轮 1 次 |
 | 输出不合规 | 重试 1 次，仍失败报 `invalid_output` | 主动可重试整轮 1 次 |
+| 子代理动作不合规 | 追加纠正观测后继续；草案阶段最多 3 次，执行阶段受 8 步约束，用尽报 `invalid_output` | chat 可重试整轮 1 次（见 §6.3） |
 | 单句超长 | 重试 1 次，仍失败报 `sentence_too_long` | 主动静默放弃 |
 | 人设不可用 | 立即报 `persona_unavailable` | 被动返回错误 |
 | 空输入 | 立即报 `empty_input` | 被动返回 422 |
@@ -260,17 +278,17 @@ chat 输出 dispatch
 | 主入口写入 | 被动用 `record_turn`（两条），主动用 `record_reply`（一条 `me`） |
 | 快照写入 | 被动用 `append_turn`，主动用 `append_reply`；都只在写入 `daily_log` 时发生 |
 | 感知注入 | 注入 `PerceptionReader`（`PerceptionService` 实现），由 chat 只读 `recent_context_events` |
-| 感知 notes 生命周期 | 随写入回合并入；未写入回合不并入（D-43）；主动轮不读 current |
+| 感知 notes 生命周期 | 随写入回合并入；未写入回合不并入；主动轮不读 current |
 | 触发块措辞 | `module/chat/context.py` 的 `PROACTIVE_TRIGGER` |
 | 事件 sink | 构造期默认 sink，可按 `ChatRequest.events` 覆盖 |
 | 主动轮派发 | `allow_dispatch=False`，已实现 |
 | 临时模式 | 单条与双条写入都遵守 |
 
-## 12. 依据
+## 12. 已定口径
 
-- D-42：ChatService 提供完整 chat 能力，不做主动编排；不新增 `generate_proactive`、`TurnPipeline`。
-- D-43：上下文来自当日会话快照；不按轮配对；current 与历史用分隔串区分。
-- D-40：主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`。
-- D-41：解析器只输出 `Trigger{topic, reason}`；chat 不接收按 topic 的话术。
-- D-35 / Q-17：`daily_log` 只收有价值的 event；感知不写长期日志。
-- Q-18：主动轮是否允许派发/审批，待确认。
+- ChatService 提供完整 chat 能力，不做主动编排；不新增 `generate_proactive`、`TurnPipeline`。
+- 上下文来自内存当日快照；不按轮配对；current 与历史用分隔串区分；全量线性重建，不做增量更新。
+- 主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`。
+- 解析器只输出 `Trigger{topic, reason}`；chat 不接收按 topic 的话术。
+- `daily_log` 只收有价值的 event；感知不写长期日志，只进 current 快照。
+- 主动轮固定 `allow_dispatch=False`，不允许派发/审批。
