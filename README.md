@@ -79,6 +79,20 @@
 - uv（Python 版本与依赖管理，安装见 [uv 官方文档](https://docs.astral.sh/uv/)）
 - Node.js LTS（前端）
 
+### 0. 一键启动（推荐）
+
+仓库根目录的 `app.py` 把下面的 1–4 步串起来：缺 `backend/config/.env` 时按模板生成并写入随机 `PET_TOKEN`，缺 `backend/.venv` 时执行 `uv sync`，缺 `frontend/node_modules` 时执行 `npm install`，最后在 `frontend/` 运行 `npm run dev`。
+
+```powershell
+python app.py
+```
+
+- 需要 `uv`、`npm`、`cargo` 已在 PATH 中；脚本只补齐缺失项，不覆盖已有 `.env`。
+- 不单独启动后端：后端由 Tauri 壳拉起，另有单实例锁，再起一个进程会直接退出。
+- 已准备好依赖时可用 `python app.py --no-setup` 跳过自举。
+
+下面 1–4 步是等价的逐步手操方式。
+
 ### 1. 配置
 
 ```powershell
