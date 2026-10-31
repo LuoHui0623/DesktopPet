@@ -380,6 +380,7 @@ class ChatService:
             request.fragments,
             trigger_reason=trigger_reason,
             interaction_lines=self._interaction_lines(user_text is not None),
+            received_at=received_at,
         )
         messages = assembled.messages
         digest = _prompt_digest(assembled.template_digest, snapshot.id, snapshot.version)

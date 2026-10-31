@@ -71,7 +71,7 @@
 | 上下文来源 | 上下文来自当日会话快照；current 与历史用分隔串区分 | [CHAT.md](CHAT.md) §5 |
 | 连续发言 | 一轮回复 1–4 条，`text` 是数组；解析层兼容旧字符串，提示词只教数组 | [CHAT.md](CHAT.md) §6.1 |
 | 句长预算 | 单句按显示宽度 80 计（东亚宽字符 2、其余 1），中文约 40 字、英文约 80 字符 | [CHAT.md](CHAT.md) §6.2 |
-| 角色与时间戳 | 上下文只给用户历史加 `[master][HH:MM:SS]`；界面按 `created_at`/`at` 装配，不写正文 | [CHAT.md](CHAT.md) §5.2 |
+| 角色与时间戳 | 上下文用户的每一句话（历史行与本次输入）都带 `[master][HH:MM:SS]`，主动轮用 `【当前时间】`；界面按 `created_at`/`at` 装配，不写正文 | [CHAT.md](CHAT.md) §5.2 |
 | 历史读取顺序 | 快照与按日读取按 `created_at, id` 升序；`GET /api/chat/history` 新到旧，同轮多条在该接口里为倒序 | [CHAT.md](CHAT.md) §7.1 |
 | 当日日期标记 | 系统提示词结尾追加 `=======YYYY/MM/DD=======`，不写库、不进快照 | [CHAT.md](CHAT.md) §5.2.1 |
 | 主动轮边界 | 主动轮不允许派发/审批（`allow_dispatch=False`） | [PROACTIVE.md](PROACTIVE.md) §10 |

@@ -1,5 +1,5 @@
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -230,24 +230,46 @@ class FakeClock:
         return self.now
 
 
+class MutableClock:
+    def __init__(self, moment: datetime) -> None:
+        self.moment = moment
+
+    def __call__(self, zone: ZoneInfo) -> datetime:
+        return self.moment.astimezone(zone)
+
+
+class ShiftingClock:
+    """每次调用前进一秒，用来验证同一轮只采样一次接收时间。"""
+
+    def __init__(self, start: datetime) -> None:
+        self.moment = start
+
+    def __call__(self, zone: ZoneInfo) -> datetime:
+        current = self.moment.astimezone(zone)
+        self.moment = self.moment + timedelta(seconds=1)
+        return current
+
+
 def test_interactions_are_injected_once_without_being_persisted(tmp_path: Path):
-    clock = FakeClock(datetime(2026, 10, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
-    interactions = InteractionService(clock=clock)
-    harness = Harness(tmp_path, [SHORT, SHORT], interactions=interactions)
+    moment = datetime(2026, 10, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+    interactions = InteractionService(clock=FakeClock(moment))
+    harness = Harness(
+        tmp_path, [SHORT, SHORT], clock=MutableClock(moment), interactions=interactions
+    )
     interactions.record("click")
 
     ask(harness.chat, "你好")
 
     last = harness.fake.calls[0][-1]
     assert isinstance(last, HumanMessage)
-    assert last.content == "[master] 单击宠物\n\n你好"
+    assert last.content == "[master] 单击宠物\n\n[master][10:00:00]你好"
     assert harness.query("SELECT role, content FROM daily_log ORDER BY id") == [
         ("master", "你好"),
         ("me", SHORT),
     ]
 
     ask(harness.chat, "在吗")
-    assert harness.fake.calls[1][-1].content == "在吗"
+    assert harness.fake.calls[1][-1].content == "[master][10:00:00]在吗"
 
 
 def test_interactions_wait_for_the_next_user_turn(tmp_path: Path):
@@ -472,6 +494,7 @@ def test_proactive_request_writes_only_a_reply_and_uses_the_trigger_block(tmp_pa
     input_message = harness.fake.calls[0][-1]
     assert isinstance(input_message, HumanMessage)
     assert "【本次触发】使用 code 已 3 分钟" in input_message.content
+    assert "【当前时间】" in input_message.content
     assert "现在主动说一句话" in input_message.content
 
 
@@ -623,15 +646,20 @@ def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
     assert contents[0].startswith("[master][")
     assert contents[0].endswith("]第一句")
     assert contents[1] == json.dumps({"type": "chat", "text": [SHORT]}, ensure_ascii=False)
-    assert contents[-1] == "第二句"
+    assert contents[-1].startswith("[master][")
+    assert contents[-1].endswith("]第二句")
 
 
-class MutableClock:
-    def __init__(self, moment: datetime) -> None:
-        self.moment = moment
+def test_input_time_comes_from_the_receive_sample(tmp_path: Path):
+    """同一轮只采样一次接收时间，输入前缀与日期标记都来自它。"""
+    clock = ShiftingClock(datetime(2026, 10, 29, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    harness = Harness(tmp_path, [SHORT], clock=clock)
 
-    def __call__(self, zone: ZoneInfo) -> datetime:
-        return self.moment.astimezone(zone)
+    ask(harness.chat, "你好")
+
+    call = harness.fake.calls[0]
+    assert call[-1].content == "[master][10:00:00]你好"
+    assert call[0].content.endswith("=======2026/10/29=======")
 
 
 def test_context_ignores_daily_log_rows_written_outside_the_session(tmp_path: Path):
@@ -654,11 +682,12 @@ def test_day_change_starts_a_new_snapshot(tmp_path: Path):
     ask(harness.chat, "第二句")
 
     contents = [message.content for message in harness.fake.calls[1][1:]]
-    assert contents == ["第二句"]
+    assert contents == ["[master][08:00:00]第二句"]
 
 
 def test_temporary_mode_turns_stay_out_of_the_snapshot(tmp_path: Path):
-    harness = Harness(tmp_path, [SHORT, SHORT])
+    clock = MutableClock(datetime(2026, 10, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    harness = Harness(tmp_path, [SHORT, SHORT], clock=clock)
     harness.daily.set_temporary_mode(True)
     ask(harness.chat, "临时")
 
@@ -666,7 +695,7 @@ def test_temporary_mode_turns_stay_out_of_the_snapshot(tmp_path: Path):
     ask(harness.chat, "正式")
 
     contents = [message.content for message in harness.fake.calls[1][1:]]
-    assert contents == ["正式"]
+    assert contents == ["[master][10:00:00]正式"]
 
 
 CITED_FRAGMENTS = [

@@ -62,6 +62,12 @@ OBSERVATION_MARK = "观察："
 CHECKPOINT_MARK = "[finished_plan]"
 REPORTABLE_STATUSES = ("succeeded", "rejected")
 FAILURE_PREFIX = "这次没能做到："
+STAMP = re.compile(r"^\[master\]\[\d{2}:\d{2}:\d{2}\]")
+
+
+def _plain(text: str) -> str:
+    """去掉上下文里的 `[master][HH:MM:SS]` 前缀：模型只转述原始内容，不照抄上下文格式。"""
+    return STAMP.sub("", text)
 
 
 def reply_for(body: dict) -> str:
@@ -88,12 +94,12 @@ def reply_for(body: dict) -> str:
         )
     if WRITE_TRIGGER in last_user:
         return json.dumps(
-            {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": last_user}]},
+            {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": _plain(last_user)}]},
             ensure_ascii=False,
         )
     if NOTE_TRIGGER in last_user:
         return json.dumps(
-            {"type": "dispatch", "plan": [{"capability": "自记笔记", "task": last_user}]},
+            {"type": "dispatch", "plan": [{"capability": "自记笔记", "task": _plain(last_user)}]},
             ensure_ascii=False,
         )
     if INVALID_TRIGGER in last_user:

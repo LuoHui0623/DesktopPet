@@ -22,11 +22,14 @@ KIND_STRUCTURED = "结构化记忆"
 KIND_DAILY = "每日对话"
 CURRENT_SEPARATOR = "======= current ======="
 DAY_MARKER = "======={day}======="
+USER_ROLE = "master"
 CITATION_RULE = (
     "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
     "日期取自对应条目的日期。只引用上面列出的内容，不要编造日期。"
 )
-PROACTIVE_TRIGGER = "【本次触发】{reason}\n现在主动说一句话。不要问问题，不要解释你在主动。"
+PROACTIVE_TRIGGER = (
+    "【本次触发】{reason}\n【当前时间】{time}\n现在主动说一句话。不要问问题，不要解释你在主动。"
+)
 
 
 class PerceptionReader(Protocol):
@@ -55,6 +58,11 @@ class AssembledContext:
 
 def _flatten(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\n", " ")
+
+
+def _stamp(clock: str, text: str) -> str:
+    """给用户发言加角色与秒级时间前缀：`[master][HH:MM:SS]对话`。"""
+    return f"[{USER_ROLE}][{clock}]{text}"
 
 
 def _truncate_lines(lines: Sequence[str], budget: int) -> str:
@@ -107,6 +115,7 @@ class ContextBuilder:
         *,
         trigger_reason: str | None = None,
         interaction_lines: Sequence[str] = (),
+        received_at: datetime | None = None,
     ) -> AssembledContext:
         prompt = build_system_prompt(
             "chat",
@@ -133,10 +142,10 @@ class ContextBuilder:
         if injected:
             system_text += f"\n\n{CITATION_RULE}"
 
-        today = self._clock(self._timezone)
-        system_text += "\n\n" + DAY_MARKER.format(day=f"{today:%Y/%m/%d}")
+        moment = (received_at or self._clock(self._timezone)).astimezone(self._timezone)
+        system_text += "\n\n" + DAY_MARKER.format(day=f"{moment:%Y/%m/%d}")
 
-        timeline, notes = self._timeline(include_perception=user_text is not None)
+        timeline, notes = self._timeline(moment=moment, include_perception=user_text is not None)
         boundary = (
             max(
                 (index for index, line in enumerate(timeline) if line.is_reply),
@@ -151,12 +160,13 @@ class ContextBuilder:
             messages.extend(self._render_line(line) for line in timeline[boundary:])
         else:
             messages.extend(self._render_line(line) for line in timeline)
+        clock = f"{moment:%H:%M:%S}"
         input_blocks: list[str] = []
         if trigger_reason:
-            input_blocks.append(PROACTIVE_TRIGGER.format(reason=trigger_reason))
+            input_blocks.append(PROACTIVE_TRIGGER.format(reason=trigger_reason, time=clock))
         input_blocks.extend(interaction_lines)
         if user_text:
-            input_blocks.append(user_text)
+            input_blocks.append(_stamp(clock, user_text))
         if input_blocks:
             messages.append(HumanMessage(content="\n\n".join(input_blocks)))
         return AssembledContext(
@@ -174,7 +184,7 @@ class ContextBuilder:
         if not isinstance(line.message, HumanMessage):
             return line.message
         moment = line.at.astimezone(self._timezone)
-        return HumanMessage(content=f"[master][{moment:%H:%M:%S}]{line.message.content}")
+        return HumanMessage(content=_stamp(f"{moment:%H:%M:%S}", line.message.content))
 
     def _structured_block(self, warnings: list[str]) -> str:
         if self._structured is None:
@@ -205,8 +215,10 @@ class ContextBuilder:
             used += size
         return kept, 0
 
-    def _timeline(self, *, include_perception: bool) -> tuple[list[ChatLine], list[ChatLine]]:
-        today = self._clock(self._timezone).date()
+    def _timeline(
+        self, *, moment: datetime, include_perception: bool
+    ) -> tuple[list[ChatLine], list[ChatLine]]:
+        today = moment.date()
         lines: list[ChatLine] = list(self._transcript.lines()) if self._transcript else []
         notes: list[ChatLine] = []
         if self._perception is not None and include_perception:

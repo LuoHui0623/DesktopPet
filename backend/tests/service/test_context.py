@@ -110,7 +110,20 @@ def test_persona_is_first_then_structured_then_input(parts):
     assert isinstance(system, SystemMessage)
     assert system.content.index("【人设】") < system.content.index("【结构化记忆】")
     assert "喜欢美式咖啡，不加糖" in system.content
-    assert result.messages[-1] == HumanMessage(content="你好")
+    assert result.messages[-1] == HumanMessage(content="[master][21:30:00]你好")
+
+
+def test_current_input_carries_the_received_second(parts):
+    """本次输入也要带秒级接收时间，模型才知道这句话发生在什么时候。"""
+    result = parts["builder"]().build("在吗")
+    assert result.messages[-1] == HumanMessage(content="[master][21:30:00]在吗")
+
+
+def test_day_marker_and_input_follow_the_received_time(parts):
+    received = datetime(2026, 10, 17, 23, 59, 58, tzinfo=TZ)
+    result = parts["builder"]().build("还没睡", received_at=received)
+    assert result.messages[-1] == HumanMessage(content="[master][23:59:58]还没睡")
+    assert result.messages[0].content.endswith("=======2026/10/17=======")
 
 
 def test_proactive_build_appends_trigger_block_and_skips_perception(parts):
@@ -118,7 +131,7 @@ def test_proactive_build_appends_trigger_block_and_skips_perception(parts):
     result = parts["builder"](perception=perception).build(trigger_reason="使用 code 已 3 分钟")
 
     assert result.messages[-1] == HumanMessage(
-        content=PROACTIVE_TRIGGER.format(reason="使用 code 已 3 分钟")
+        content=PROACTIVE_TRIGGER.format(reason="使用 code 已 3 分钟", time="21:30:00")
     )
     assert result.notes == ()
     assert all("[感知" not in message.content for message in result.messages)
