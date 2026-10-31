@@ -40,13 +40,14 @@ fn get_backend_info(slot: State<'_, BackendSlot>) -> Result<BackendInfo, String>
     info.clone().ok_or_else(|| "后端尚未就绪".to_string())
 }
 
+// 必须 async：同步命令在 Windows 里创建 WebView 窗口会死锁（见 window_opening_commands_are_async）。
 #[tauri::command]
-fn open_chat_window(app: AppHandle, history: Option<bool>) -> Result<(), String> {
+async fn open_chat_window(app: AppHandle, history: Option<bool>) -> Result<(), String> {
     window::open_chat_window(&app, history.unwrap_or(false)).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
-fn open_settings_window(app: AppHandle) -> Result<(), String> {
+async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     window::open_settings_window(&app).map_err(|error| error.to_string())
 }
 
@@ -292,6 +293,23 @@ mod tests {
         let config: Value = serde_json::from_str(CONFIG).expect("tauri config json");
         let windows = config["app"]["windows"].as_array().expect("windows");
         assert!(windows.is_empty(), "窗口须在后端就绪后由代码创建");
+    }
+
+    /// Windows 上在同步命令里创建 WebView 窗口会死锁（wry issue #583）：
+    /// 主线程同步等待窗口创建，而窗口创建又要回到主线程，IPC 频道被永久阻塞。
+    /// 因此所有创建窗口的命令都必须是 `async fn`（跑在异步运行时，不占用主线程）。
+    #[test]
+    fn window_opening_commands_are_async() {
+        fn assert_async_command<F, Fut>(_command: F)
+        where
+            F: Fn(tauri::AppHandle) -> Fut,
+            Fut: std::future::Future,
+        {
+        }
+
+        assert_async_command(|app| crate::open_chat_window(app, None));
+        assert_async_command(|app| crate::open_chat_window(app, Some(true)));
+        assert_async_command(crate::open_settings_window);
     }
 
     #[test]

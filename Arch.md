@@ -415,6 +415,12 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 - 设置项的默认值与取值区间只写在后端（`api/schemas` 的 `ge/le` 与 `service/perception/constants.py`、`module/interaction/constants.py`）。前端 `settings-view.ts` 的 `LIMITS` 是同一区间的镜像，用于即时提示，真源仍是后端；组件的草稿初值一律来自 `GET /api/settings` 的读模型，不在组件里写死数字。
 - 设置窗口保存成功后，除 HTTP 回读外还会经 Tauri 事件 `settings-changed`（payload `{domain}`）广播给悬浮窗；悬浮窗按 domain 决定是否重新载入互动配置。这条 window→window 通道只用于「同一次保存立刻反映到另一个窗口」，跨进程的状态一致性仍以 `app_setting` 为准。
 
+### 4.5 Tauri 壳约定
+
+- **窗口全部由代码创建**：`tauri.conf.json` 的 `app.windows` 为空。悬浮窗在后端就绪后由后台线程创建（`start_backend` 的 `thread::spawn` → `on_backend_ready` → `window::create_pet_window`），对话窗口与设置窗口由命令按需创建；已存在的窗口只做 `show` + `set_focus`，不重复建。
+- **创建窗口的命令必须是 `async fn`**：Windows 上在同步命令（或同步事件处理器）里调用 `WebviewWindowBuilder::build()` 会死锁 —— 建窗口要回到主线程，而主线程正卡在该命令上，结果是该命令及其后所有 IPC 调用永久挂起，前端 `invoke` 既不 resolve 也不 reject，表现为「点了没反应」。异步命令跑到异步运行时，主线程得以继续处理窗口创建。`lib.rs` 的测试 `window_opening_commands_are_async` 用编译期断言守住这条约束，改回同步会直接编译失败。
+- 命令名、参数量与 `capabilities/*.json` 的白名单逐窗口对应；新增命令时同时改 `build.rs`/`invoke_handler`、对应窗口的 capability 与 `lib.rs` 的能力测试。
+
 ---
 
 ## 5. 后端架构
