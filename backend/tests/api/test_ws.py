@@ -27,11 +27,27 @@ def test_connection_with_wrong_token_is_closed_with_1008():
     assert exc.value.code == 1008
 
 
+def test_new_connection_receives_current_status_snapshot():
+    app = create_app(TOKEN)
+    client = TestClient(app)
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+
+
+def test_new_connection_replays_last_known_status():
+    app = create_app(TOKEN)
+    client = TestClient(app)
+    app.state.event_publisher.status("thinking")
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "thinking"}
+
+
 def test_events_arrive_in_publish_order():
     app = create_app(TOKEN)
     client = TestClient(app)
     bus = app.state.event_bus
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
         bus.publish(StatusEvent(state="thinking"))
         bus.publish(ChatChunkEvent(message_id="m1", text="你好"))
         bus.publish(ChatDoneEvent(message_id="m1", text="你好呀"))
@@ -82,8 +98,9 @@ def test_token_offered_as_subprotocol_is_accepted_and_negotiated():
     client = TestClient(app)
     with client.websocket_connect("/ws", subprotocols=["pet.v1", TOKEN]) as websocket:
         assert websocket.accepted_subprotocol == "pet.v1"
-        app.state.event_bus.publish(StatusEvent(state="idle"))
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        app.state.event_bus.publish(StatusEvent(state="thinking"))
+        assert websocket.receive_json() == {"type": "status", "state": "thinking"}
 
 
 def test_wrong_token_in_subprotocol_is_closed_with_1008():

@@ -4,6 +4,7 @@ from typing import Any
 from fastapi import APIRouter, WebSocket
 
 from api.auth import WS_SUBPROTOCOL
+from api.event_publisher import BusEventPublisher
 from infra.events.bus import EventBus, Subscription
 
 router = APIRouter(tags=["ws"])
@@ -12,10 +13,12 @@ router = APIRouter(tags=["ws"])
 @router.websocket("/ws")
 async def events_socket(websocket: WebSocket) -> None:
     bus: EventBus = websocket.app.state.event_bus
+    publisher: BusEventPublisher = websocket.app.state.event_publisher
     requested = websocket.scope.get("subprotocols", [])
     subprotocol = WS_SUBPROTOCOL if WS_SUBPROTOCOL in requested else None
     with bus.subscribe() as subscription:
         await websocket.accept(subprotocol=subprotocol)
+        await websocket.send_json(publisher.last_status.model_dump(mode="json"))
         await _pump(websocket, subscription)
 
 

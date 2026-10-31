@@ -229,6 +229,7 @@ def serve(
         request_shutdown=shutdown.request,
         llm_service=llm_service,
         event_bus=event_bus,
+        event_publisher=publisher,
         chat_service=chat_service,
         memories=memory_services,
         persona_service=personas,

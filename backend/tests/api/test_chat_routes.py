@@ -138,6 +138,7 @@ def test_chat_requires_token(tmp_path: Path):
 def test_websocket_receives_chunks_then_done_in_order(tmp_path: Path):
     client = make_client(tmp_path, ["第一句。第二句！"])
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
         response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
         message_id = response.json()["message_id"]
 

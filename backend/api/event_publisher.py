@@ -28,9 +28,17 @@ def source_out(source: CitedSource) -> SourceOut:
 class BusEventPublisher:
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
+        self._last_status = StatusEvent(state="idle")
+
+    @property
+    def last_status(self) -> StatusEvent:
+        """最近一次发布的状态，供新连接回放初始快照。"""
+        return self._last_status
 
     def status(self, state: PetState) -> None:
-        self._bus.publish(StatusEvent(state=state))
+        event = StatusEvent(state=state)
+        self._last_status = event
+        self._bus.publish(event)
 
     def chunk(self, message_id: str, text: str) -> None:
         self._bus.publish(ChatChunkEvent(message_id=message_id, text=text))

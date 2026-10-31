@@ -121,6 +121,7 @@ def test_proactive_trigger_publishes_message_and_logs_a_plain_reply(tmp_path: Pa
     client, pipeline, db_file = make_env(tmp_path, ["起来动动吧。"])
 
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
         result = pipeline.handle(Trigger("app_in_use.code", "使用 code 已 3 分钟"))
         assert result.sent is True
         events = []

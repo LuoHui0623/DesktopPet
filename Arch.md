@@ -713,9 +713,16 @@ Tauri src/menu.rs
 | GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
 | GET / PUT | `/api/llm/active` | `get_active_llm` / `set_active_llm` | 当前对话模型与整理模型 |
 | POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |
-| WS | `/ws` | — | 事件推送：`status`、`chat.chunk`、`chat.done`（含 sources）、`approval.request`、`proactive.message` |
+| WS | `/ws` | — | 事件推送：`status`、`chat.chunk`、`chat.done`（含 sources）、`approval.request`、`proactive.message`；握手后立即下发一帧当前状态，见下文「连接初始快照」 |
 
 未实现的接口：`POST /api/settings/llm/test`（设置页的非模型部分）、`/api/capabilities/*`（M6）、`POST /api/imports`（M5）、`POST /api/emergency-stop`（M3）。主动消息不提供反馈接口。
+
+连接初始快照：
+
+- `/ws` 握手成功后，服务端**先下发一帧 `status`**，值是「最近一次真实状态」：有历史状态时回放该值，服务启动后从未发布过状态时为 `idle`。之后才进入正常的事件泵送。
+- 该状态由 `api/event_publisher.py` 的 `BusEventPublisher` 维护（唯一状态发布入口，`status()` 发布时同步记录），`/ws` 从 `app.state.event_publisher.last_status` 取。
+- 目的是让前端不必依赖「先收到一次事件」才能显示状态：前端 store 初始 `status` 为 `null`，此时标签显示「连接中」；收到首帧后立即变为待机/思考/说话/执行中/休眠。
+- 该帧只描述状态，不含句段或历史消息；断线重连同样会重新收到它。
 
 - 错误响应统一为 `{ "error": { "code": "...", "message": "..." } }`，前端按 `code` 处理，不解析 `message`。
 - 模型调用失败时返回明确错误，不编造回复。

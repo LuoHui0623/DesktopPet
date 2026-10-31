@@ -9,6 +9,7 @@ from starlette.staticfiles import StaticFiles
 
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
+from api.event_publisher import BusEventPublisher
 from api.routers import (
     agent,
     avatars,
@@ -42,6 +43,7 @@ def create_app(
     request_shutdown: Callable[[str], bool] | None = None,
     llm_service: LlmService | None = None,
     event_bus: EventBus | None = None,
+    event_publisher: BusEventPublisher | None = None,
     chat_service: ChatService | None = None,
     memories: MemoryServices | None = None,
     persona_service: PersonaService | None = None,
@@ -66,6 +68,7 @@ def create_app(
     app.state.request_shutdown = request_shutdown or (lambda reason: False)
     app.state.llm_service = llm_service
     app.state.event_bus = event_bus or EventBus()
+    app.state.event_publisher = event_publisher or BusEventPublisher(app.state.event_bus)
     app.state.chat_service = chat_service
     app.state.memories = memories
     app.state.personas = persona_service
