@@ -7,9 +7,12 @@
 - 子代理起草“记忆检索”能力时，提交一份声明 index 与 read 的草案；执行时按说明书走
   ReAct：先 read（资源 skill）打开说明书，再 index（资源 memory）看清单，
   再 read（资源 memory）按清单里的名字读结构化记忆，最后返回片段。
+- 子代理起草“自记笔记”能力时，提交一份声明 file_read 与 file_write 的草案；执行时先
+  file_read 读出草稿本，再 file_write 把新条目追加在旧内容后面（整篇覆盖但不丢旧内容）。
 - 主对话中，用户说“请记住…”时返回只含一项「记忆写入」的合法 dispatch，模拟主 agent 自主
   决定写入记忆（写不写由主 agent 判断，不再靠关键词触发）。
 - 主对话中，用户说“检索测试”时返回只含一项「记忆检索」的合法 dispatch。
+- 主对话中，用户说“记一下”时返回只含一项「自记笔记」的合法 dispatch。
 - 主对话中，用户提到“派发测试”时返回只含一项的合法 dispatch（能力名故意写成未注册的
   “天气查询”，用于验证失败检查点回灌），提到“坏格式测试”时返回非法 JSON。
 - 主对话拿到的最后一条消息是检查点回灌时，直接把检查点结论当作回复，模拟汇总结果。
@@ -32,6 +35,13 @@ WRITE_FINISH = "我记住啦：喜欢美式咖啡，不加糖"
 REPLACE_MARK = "改成"
 REPLACE_DRAFT = "把结构化记忆里的「只喝热美式」改成「只喝冰美式」。"
 REPLACE_FINISH = "改好啦：只喝冰美式"
+NOTE_CAPABILITY = "当前能力：自记笔记"
+NOTE_TRIGGER = "记一下"
+NOTE_DRAFT = "先读草稿本，再把「周五问主人要不要续费」追加进去。"
+NOTE_DRAFT_TOOLS = ["file_read", "file_write"]
+NOTE_FILE = "草稿本.md"
+NOTE_ENTRY = "周五问主人要不要续费"
+NOTE_FINISH = "记到草稿本了：周五问主人要不要续费"
 
 
 CHAT_RULES = "【行动规则】"
@@ -44,7 +54,10 @@ RETRIEVE_FINISH = "记忆里写着：喜欢美式咖啡，不加糖"
 INVALID_TRIGGER = "坏格式测试"
 WRITE_TRIGGER = "请记住"
 PROACTIVE_MARK = "【本次触发】"
-PROACTIVE_REPLY = "我一直在，需要就说一声。"
+PROACTIVE_TEXTS = ("我一直在。", "需要就说一声。")
+PROACTIVE_REPLY = "\n".join(PROACTIVE_TEXTS)
+MULTI_TRIGGER = "多句测试"
+MULTI_REPLIES = ("第一句：我在听。", "第二句：今天还有两件事。", "第三句：要不要先休息？")
 OBSERVATION_MARK = "观察："
 CHECKPOINT_MARK = "[finished_plan]"
 REPORTABLE_STATUSES = ("succeeded", "rejected")
@@ -78,13 +91,23 @@ def reply_for(body: dict) -> str:
             {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": last_user}]},
             ensure_ascii=False,
         )
+    if NOTE_TRIGGER in last_user:
+        return json.dumps(
+            {"type": "dispatch", "plan": [{"capability": "自记笔记", "task": last_user}]},
+            ensure_ascii=False,
+        )
     if INVALID_TRIGGER in last_user:
         return '{"type": "chat", "text": '
+    if MULTI_TRIGGER in last_user:
+        return _chat_json(*MULTI_REPLIES)
     if PROACTIVE_MARK in last_user:
-        return json.dumps({"type": "chat", "text": PROACTIVE_REPLY}, ensure_ascii=False)
-    return json.dumps(
-        {"type": "chat", "text": _checkpoint_output(last_user) or text}, ensure_ascii=False
-    )
+        return _chat_json(*PROACTIVE_TEXTS)
+    return _chat_json(_checkpoint_output(last_user) or text)
+
+
+def _chat_json(*texts: str) -> str:
+    """按新契约输出多条发言；单条也写成数组。"""
+    return json.dumps({"type": "chat", "text": list(texts)}, ensure_ascii=False)
 
 
 def _content(message: dict) -> str:
@@ -168,6 +191,25 @@ def _retrieve_step(body: dict) -> str:
     return json.dumps({"action": "finish", "output": RETRIEVE_FINISH}, ensure_ascii=False)
 
 
+def _note_step(body: dict) -> str:
+    """按说明书走：先读草稿本现状，再整篇覆盖写入「旧内容 + 新条目」。"""
+    seen = _observations(body)
+    last = seen[-1] if seen else None
+    if last is None:
+        return _tool_action("file_read", {"path": NOTE_FILE})
+    if last.get("ok") is False:
+        return json.dumps(
+            {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
+        )
+    if last.get("action") == "read":
+        content = str(last.get("content") or "").rstrip()
+        return _tool_action(
+            "file_write",
+            {"path": NOTE_FILE, "content": f"{content}\n\n- {NOTE_ENTRY}\n"},
+        )
+    return json.dumps({"action": "finish", "output": NOTE_FINISH}, ensure_ascii=False)
+
+
 def _reply_text(body: dict) -> str:
     messages = body.get("messages", [])
     system = next((str(m.get("content", "")) for m in messages if m.get("role") == "system"), "")
@@ -175,7 +217,9 @@ def _reply_text(body: dict) -> str:
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
     if DRAFT_MARK in system:
-        if RETRIEVE_CAPABILITY in system:
+        if NOTE_CAPABILITY in system:
+            tools, content = NOTE_DRAFT_TOOLS, NOTE_DRAFT
+        elif RETRIEVE_CAPABILITY in system:
             tools, content = ["index", "read"], RETRIEVE_DRAFT
         elif REPLACE_MARK in system:
             tools, content = ["memory_replace"], REPLACE_DRAFT
@@ -184,6 +228,8 @@ def _reply_text(body: dict) -> str:
         return json.dumps(
             {"action": "draft", "content": content, "tools": tools}, ensure_ascii=False
         )
+    if NOTE_CAPABILITY in system:
+        return _note_step(body)
     if RETRIEVE_CAPABILITY in system:
         return _retrieve_step(body)
     if WRITE_CAPABILITY in system:

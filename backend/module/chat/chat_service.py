@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
@@ -11,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from constants.speech import SENTENCE_MAX_CHARS
+from constants.speech import REPLY_MAX_ITEMS, SENTENCE_MAX_WIDTH, visible_width
 from infra.llm.usage import TrackedChatModel, UsageSample, UsageSink, usage_scope
 from module.agent.approval import (
     ApprovalDraft,
@@ -30,7 +29,7 @@ from module.agent.orchestrator import (
     checkpoint_block,
     parse_plan_data,
 )
-from module.agent.prompt import CapabilityDescription, PromptTemplates
+from module.agent.prompt import CapabilityDescription, PromptTemplates, ResourceItem
 from module.chat.activity import ChatActivity
 from module.chat.citations import CitedSource, resolve_sources, split_citations
 from module.chat.context import AssembledContext, ContextBuilder, MemoryFragment, PerceptionReader
@@ -45,7 +44,12 @@ from module.persona.persona_service import PersonaService, PersonaSnapshot, Pers
 
 logger = logging.getLogger("pet")
 
-SENTENCE = re.compile(r"[^。！？!?…\n]*[。！？!?…]+|[^。！？!?…\n]+|\n")
+SENTENCE_ENDS = frozenset("。！？!?…")
+NEWLINE = "\n"
+# 英文缩写后的点不收句，其余英文句号按句末处理。
+ABBREVIATIONS = frozenset(
+    {"mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "vs", "etc", "e.g", "i.e"}
+)
 MAX_ATTEMPTS = 2
 DEFAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 UNSPECIFIED_CAPABILITY = "（未指定）"
@@ -71,7 +75,7 @@ class ChatEvents(Protocol):
 
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None: ...
 
-    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None: ...
+    def done(self, message_id: str, messages: Sequence["ReplyMessage"]) -> None: ...
 
 
 class NoChatEvents:
@@ -84,7 +88,7 @@ class NoChatEvents:
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
         return None
 
-    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
+    def done(self, message_id: str, messages: Sequence["ReplyMessage"]) -> None:
         return None
 
 
@@ -112,23 +116,94 @@ class ChatRequest:
 
 
 @dataclass(frozen=True)
-class ChatReply:
+class ReplyMessage:
+    """一次发言：一轮回复里可以有多条，各自带自己的 id、时间与引用来源。"""
+
     message_id: str
     text: str
-    recorded: bool
+    at: datetime
     sources: tuple[CitedSource, ...] = ()
 
 
+@dataclass(frozen=True)
+class ChatReply:
+    message_id: str
+    messages: tuple[ReplyMessage, ...] = ()
+    recorded: bool = True
+
+    @property
+    def text(self) -> str:
+        return "\n".join(message.text for message in self.messages)
+
+    @property
+    def sources(self) -> tuple[CitedSource, ...]:
+        seen: dict[str, CitedSource] = {}
+        for message in self.messages:
+            for source in message.sources:
+                seen.setdefault(source.id, source)
+        return tuple(seen.values())
+
+
+def _is_sentence_period(text: str, index: int) -> bool:
+    """判断 text[index] 处的英文句号是否收句。"""
+    before = text[index - 1] if index else ""
+    after = text[index + 1] if index + 1 < len(text) else ""
+    if before.isdigit() and after.isdigit():
+        return False
+    if after == ".":
+        return False
+    if before.isalpha() and after.isalpha():
+        return False
+    head = text[:index].rstrip()
+    word = head.rsplit(None, 1)[-1] if head else ""
+    if len(word) <= 1 and word.isalpha():
+        return False
+    return word.rstrip(".").lower() not in ABBREVIATIONS
+
+
+def _ends_sentence(text: str, index: int) -> bool:
+    char = text[index]
+    if char in SENTENCE_ENDS or char == NEWLINE:
+        return True
+    return char == "." and _is_sentence_period(text, index)
+
+
+def _split_ranges(text: str) -> list[tuple[int, int]]:
+    """把文本切成连续覆盖全文的句段区间，拼回去与原文完全一致。"""
+    ranges: list[tuple[int, int]] = []
+    start = 0
+    index = 0
+    while index < len(text):
+        if not _ends_sentence(text, index):
+            index += 1
+            continue
+        end = index + 1
+        while end < len(text) and text[end] in SENTENCE_ENDS:
+            end += 1
+        ranges.append((start, end))
+        start = end
+        index = end
+    if start < len(text):
+        ranges.append((start, len(text)))
+    return ranges
+
+
 def split_sentences(text: str) -> list[str]:
-    return [match.group().strip() for match in SENTENCE.finditer(text) if match.group().strip()]
+    return [
+        text[start:end].strip() for start, end in _split_ranges(text) if text[start:end].strip()
+    ]
 
 
 def split_segments(text: str) -> list[str]:
-    return [match.group() for match in SENTENCE.finditer(text) if match.group()]
+    return [text[start:end] for start, end in _split_ranges(text) if text[start:end]]
 
 
 def overlong_sentences(text: str) -> list[str]:
-    return [sentence for sentence in split_sentences(text) if len(sentence) > SENTENCE_MAX_CHARS]
+    return [
+        sentence
+        for sentence in split_sentences(text)
+        if visible_width(sentence) > SENTENCE_MAX_WIDTH
+    ]
 
 
 def _text_of(content: Any) -> str:
@@ -154,8 +229,35 @@ class DispatchRejectedError(ModelOutputError):
 @dataclass(frozen=True)
 class ChatOutput:
     kind: Literal["chat", "dispatch"]
-    text: str = ""
+    texts: tuple[str, ...] = ()
     plan: tuple[PlanStep, ...] = ()
+
+    @property
+    def text(self) -> str:
+        return "\n".join(self.texts)
+
+
+def _reply_texts(value: Any) -> tuple[str, ...]:
+    """归一化模型给出的发言：接受旧的单字符串，也接受 1–4 项的数组。"""
+    if isinstance(value, str):
+        raw: list[Any] = [value]
+    elif isinstance(value, list):
+        raw = value
+    else:
+        raise ModelOutputError("text 必须是字符串或字符串数组")
+    if not raw:
+        raise ModelOutputError("text 至少要有 1 条发言")
+    if len(raw) > REPLY_MAX_ITEMS:
+        raise ModelOutputError(f"text 最多 {REPLY_MAX_ITEMS} 条发言")
+    texts: list[str] = []
+    for item in raw:
+        if not isinstance(item, str) or not item.strip():
+            raise ModelOutputError("text 数组的每一项都必须是非空字符串")
+        text = item.strip()
+        if not split_citations(text)[0]:
+            raise ModelOutputError("text 为空，只有引用标记")
+        texts.append(text)
+    return tuple(texts)
 
 
 def parse_chat_output(content: str) -> ChatOutput:
@@ -179,12 +281,7 @@ def parse_chat_output(content: str) -> ChatOutput:
         raise ModelOutputError(f"type 不合法：{data['type']}")
     if set(data) != {"type", "text"}:
         raise ModelOutputError("chat 只能包含 type 与 text 两个字段")
-    text = data["text"]
-    if not isinstance(text, str) or not text.strip():
-        raise ModelOutputError("text 必须是非空字符串")
-    if not split_citations(text.strip())[0]:
-        raise ModelOutputError("text 为空，只有引用标记")
-    return ChatOutput(kind="chat", text=text.strip())
+    return ChatOutput(kind="chat", texts=_reply_texts(data["text"]))
 
 
 def _attempted_capability(content: str) -> str:
@@ -219,6 +316,7 @@ class ChatService:
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
+        resources: Sequence[ResourceItem] | None = None,
         orchestrator: Orchestrator | None = None,
         approvals: ApprovalRegistry | None = None,
         perception: PerceptionReader | None = None,
@@ -235,6 +333,7 @@ class ChatService:
         self._timezone = timezone or DEFAULT_TIMEZONE
         self._clock = clock
         self._capabilities = tuple(capabilities)
+        self._resources = None if resources is None else tuple(resources)
         self._orchestrator = orchestrator
         self._approvals = approvals
         self._perception = perception
@@ -262,6 +361,7 @@ class ChatService:
         trigger_reason = (request.trigger_reason or "").strip() or None
         if user_text is None and trigger_reason is None:
             raise ChatError("empty_input", "消息不能为空")
+        received_at = self._now() if user_text is not None else None
         events = request.events or self._events
         snapshot = self._current_persona()
         builder = ContextBuilder(
@@ -271,6 +371,7 @@ class ChatService:
             structured=self._structured,
             clock=self._clock,
             capabilities=self._capabilities,
+            resources=self._resources,
             perception=self._perception,
             transcript=self._transcript,
         )
@@ -293,30 +394,61 @@ class ChatService:
             output = self._generate(client, messages, digest, allow_dispatch=request.allow_dispatch)
             if output.kind == "dispatch":
                 return self._reply_from_dispatch(
-                    client, messages, digest, output, user_text, assembled, events
+                    client,
+                    messages,
+                    digest,
+                    output,
+                    user_text,
+                    assembled,
+                    events,
+                    received_at=received_at,
                 )
-            return self._finish_reply(user_text, output.text, assembled, events)
+            return self._finish_reply(
+                user_text, output.texts, assembled, events, received_at=received_at
+            )
         finally:
             events.status("idle")
 
     def _finish_reply(
         self,
         user_text: str | None,
-        raw: str,
+        texts: Sequence[str],
         assembled: AssembledContext,
         events: ChatEvents,
+        *,
+        received_at: datetime | None,
     ) -> ChatReply:
-        reply, cited = split_citations(raw)
-        recorded = self._record(user_text, reply)
+        replied_at = self._now()
+        replies: list[str] = []
+        citations: list[list[str]] = []
+        for text in texts:
+            reply, cited = split_citations(text)
+            replies.append(reply)
+            citations.append(cited)
+        recorded = self._record(user_text, replies, received_at=received_at, replied_at=replied_at)
         if recorded:
-            self._remember(user_text, reply, assembled.notes)
+            self._remember(
+                user_text,
+                replies,
+                assembled.notes,
+                received_at=received_at,
+                replied_at=replied_at,
+            )
         message_id = uuid4().hex
-        sources = tuple(resolve_sources(cited, assembled.injected))
+        messages = tuple(
+            ReplyMessage(
+                message_id=uuid4().hex,
+                text=reply,
+                at=replied_at,
+                sources=tuple(resolve_sources(cited, assembled.injected)),
+            )
+            for reply, cited in zip(replies, citations, strict=True)
+        )
         events.status("speaking")
-        for segment in split_segments(reply):
+        for segment in split_segments("\n".join(replies)):
             events.chunk(message_id, segment)
-        events.done(message_id, reply, sources)
-        return ChatReply(message_id=message_id, text=reply, recorded=recorded, sources=sources)
+        events.done(message_id, messages)
+        return ChatReply(message_id=message_id, messages=messages, recorded=recorded)
 
     def _reply_from_dispatch(
         self,
@@ -327,6 +459,8 @@ class ChatService:
         user_text: str | None,
         assembled: AssembledContext,
         events: ChatEvents,
+        *,
+        received_at: datetime | None,
     ) -> ChatReply:
         if self._orchestrator is None:
             raise ChatError("invalid_output", "派发执行器未配置，只能输出 chat")
@@ -355,20 +489,41 @@ class ChatService:
         ]
         events.status("thinking")
         generated = self._generate(client, follow_up, digest, allow_dispatch=False)
-        return self._finish_reply(user_text, generated.text, assembled, events)
+        return self._finish_reply(
+            user_text, generated.texts, assembled, events, received_at=received_at
+        )
 
-    def _record(self, user_text: str | None, reply_text: str) -> bool:
+    def _record(
+        self,
+        user_text: str | None,
+        replies: Sequence[str],
+        *,
+        received_at: datetime | None,
+        replied_at: datetime,
+    ) -> bool:
         if user_text is None:
-            return self._daily_log.record_reply(reply_text)
-        return self._daily_log.record_turn(user_text, reply_text)
+            return self._daily_log.record_reply(replies, at=replied_at)
+        return self._daily_log.record_turn(
+            user_text, replies, received_at=received_at, replied_at=replied_at
+        )
 
-    def _remember(self, user_text: str | None, reply_text: str, notes: Sequence[ChatLine]) -> None:
+    def _remember(
+        self,
+        user_text: str | None,
+        replies: Sequence[str],
+        notes: Sequence[ChatLine],
+        *,
+        received_at: datetime | None,
+        replied_at: datetime,
+    ) -> None:
         for note in notes:
             self._transcript.add(note)
         if user_text is None:
-            self._transcript.append_reply(reply_text)
+            self._transcript.append_reply(replies, at=replied_at)
         else:
-            self._transcript.append_turn(user_text, reply_text)
+            self._transcript.append_turn(
+                user_text, replies, at_received=received_at, at_replied=replied_at
+            )
 
     def _current_persona(self) -> PersonaSnapshot:
         try:
@@ -427,11 +582,15 @@ class ChatService:
                     )
                     continue
                 return output
-            body, _ = split_citations(output.text)
-            if overlong_sentences(body):
+            overlong = [
+                sentence
+                for text in output.texts
+                for sentence in overlong_sentences(split_citations(text)[0])
+            ]
+            if overlong:
                 failure = ChatError(
                     "sentence_too_long",
-                    f"回复中有单句超过 {SENTENCE_MAX_CHARS} 字符，重新生成后仍超限",
+                    f"回复中有单句超过 {SENTENCE_MAX_WIDTH} 显示宽度的上限，重新生成后仍超限",
                 )
                 continue
             return output

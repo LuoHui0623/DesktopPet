@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from datetime import datetime
 
 from api.schemas.approval import ApprovalItem
-from api.schemas.chat import SourceOut
+from api.schemas.chat import ReplyMessageOut, SourceOut
 from api.schemas.events import (
     ApprovalRequestEvent,
     ChatChunkEvent,
@@ -12,7 +12,7 @@ from api.schemas.events import (
 )
 from infra.events.bus import EventBus
 from module.agent.approval import ApprovalTicket
-from module.chat.chat_service import PetState
+from module.chat.chat_service import PetState, ReplyMessage
 from module.chat.citations import CitedSource
 
 
@@ -23,6 +23,20 @@ def source_out(source: CitedSource) -> SourceOut:
         date=source.date,
         text=source.text,
     )
+
+
+def reply_message_out(message: ReplyMessage) -> ReplyMessageOut:
+    return ReplyMessageOut(
+        message_id=message.message_id,
+        text=message.text,
+        at=message.at,
+        sources=[source_out(source) for source in message.sources],
+    )
+
+
+def joined_text(messages: Sequence[ReplyMessage]) -> str:
+    """旧字段 text 的取值：多条发言用换行拼接，保持与后端 reply.text 一致。"""
+    return "\n".join(message.text for message in messages)
 
 
 class BusEventPublisher:
@@ -61,14 +75,25 @@ class BusEventPublisher:
             )
         )
 
-    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
+    def done(self, message_id: str, messages: Sequence[ReplyMessage]) -> None:
         self._bus.publish(
             ChatDoneEvent(
                 message_id=message_id,
-                text=text,
-                sources=[source_out(source) for source in sources],
+                text=joined_text(messages),
+                sources=[source_out(source) for message in messages for source in message.sources],
+                messages=[reply_message_out(message) for message in messages],
             )
         )
 
-    def proactive_message(self, message_id: str, text: str, topic: str, at: datetime) -> None:
-        self._bus.publish(ProactiveMessageEvent(id=message_id, text=text, topic=topic, at=at))
+    def proactive_message(
+        self, message_id: str, messages: Sequence[ReplyMessage], topic: str, at: datetime
+    ) -> None:
+        self._bus.publish(
+            ProactiveMessageEvent(
+                id=message_id,
+                text=joined_text(messages),
+                topic=topic,
+                at=at,
+                messages=[reply_message_out(message) for message in messages],
+            )
+        )

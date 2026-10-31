@@ -59,7 +59,7 @@ CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和
 
 
 class FakeChat:
-    def __init__(self, outcomes: list[str]) -> None:
+    def __init__(self, outcomes: list[str | list[str]]) -> None:
         self.outcomes = [
             json.dumps({"type": "chat", "text": outcome}, ensure_ascii=False)
             for outcome in outcomes
@@ -138,13 +138,13 @@ def test_proactive_trigger_publishes_message_and_logs_a_plain_reply(tmp_path: Pa
         "proactive.message",
     ]
     assert [event["state"] for event in events[:3]] == ["thinking", "speaking", "idle"]
-    assert events[-1] == {
-        "type": "proactive.message",
-        "id": result.message_id,
-        "text": "起来动动吧。",
-        "topic": "app_in_use.code",
-        "at": "2026-10-29T10:00:00+08:00",
-    }
+    assert events[-1]["type"] == "proactive.message"
+    assert events[-1]["id"] == result.message_id
+    assert events[-1]["text"] == "起来动动吧。"
+    assert events[-1]["topic"] == "app_in_use.code"
+    assert events[-1]["at"] == "2026-10-29T10:00:00+08:00"
+    assert [item["text"] for item in events[-1]["messages"]] == ["起来动动吧。"]
+    assert all(item["message_id"] and item["at"] for item in events[-1]["messages"])
 
     conn = connect(db_file)
     try:
@@ -158,3 +158,27 @@ def test_proactive_trigger_publishes_message_and_logs_a_plain_reply(tmp_path: Pa
     ledger = json.loads(SettingsService(db_file).get(SCHEDULER_SENT_KEY) or "{}")
     assert ledger["total"] == 1
     assert ledger["topics"] == {"app_in_use.code": 1}
+
+
+def test_proactive_trigger_carries_every_utterance_in_one_event(tmp_path: Path):
+    client, pipeline, db_file = make_env(tmp_path, [["第一句。", "第二句！"]])
+
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        result = pipeline.handle(Trigger("app_in_use.code", "使用 code 已 3 分钟"))
+        assert result.sent is True
+        while True:
+            event = websocket.receive_json()
+            if event["type"] == "proactive.message":
+                break
+
+    assert event["id"] == result.message_id
+    assert event["text"] == "第一句。\n第二句！"
+    assert [item["text"] for item in event["messages"]] == ["第一句。", "第二句！"]
+
+    conn = connect(db_file)
+    try:
+        rows = conn.execute("SELECT role, content FROM daily_log ORDER BY id").fetchall()
+    finally:
+        conn.close()
+    assert [tuple(row) for row in rows] == [("me", "第一句。"), ("me", "第二句！")]

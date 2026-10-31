@@ -1,5 +1,6 @@
+import itertools
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -40,6 +41,51 @@ def test_each_turn_writes_master_and_me_records(db_file: Path):
     assert [(r.role, r.content) for r in records] == [("master", "你好"), ("me", "你好呀")]
     for record in records:
         assert record.created_at.tzinfo is not None
+
+
+def test_several_utterances_are_written_as_ordered_me_records(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    assert service.record_turn("你好", ["第一句。", "第二句！", "第三句。"]) is True
+    records = service.read_day("2026-10-25")
+    assert [(r.role, r.content) for r in records] == [
+        ("master", "你好"),
+        ("me", "第一句。"),
+        ("me", "第二句！"),
+        ("me", "第三句。"),
+    ]
+
+
+def test_input_and_reply_use_their_own_sampled_times(db_file: Path):
+    received = datetime(2026, 10, 25, 23, 59, 50, tzinfo=TZ)
+    replied = datetime(2026, 10, 26, 0, 0, 10, tzinfo=TZ)
+    service = make_service(db_file, received)
+
+    assert service.record_turn("晚安", ["晚安呀"], received_at=received, replied_at=replied) is True
+
+    assert [(r.day.isoformat(), r.role) for r in service.read_day("2026-10-25")] == [
+        ("2026-10-25", "master")
+    ]
+    assert [(r.day.isoformat(), r.role) for r in service.read_day("2026-10-26")] == [
+        ("2026-10-26", "me")
+    ]
+
+
+def test_master_and_reply_times_are_sampled_separately_by_default(db_file: Path):
+    base = datetime(2026, 10, 25, 9, 0, 0, tzinfo=TZ)
+    ticks = itertools.count()
+    service = DailyLogService(
+        DbDailyLog(db_file),
+        SettingsService(db_file),
+        TZ,
+        clock=lambda tz: (base + timedelta(seconds=next(ticks))).astimezone(tz),
+    )
+
+    assert service.record_turn("你好", ["你好呀"]) is True
+
+    records = service.read_day("2026-10-25")
+    assert records[0].role == "master"
+    assert records[1].role == "me"
+    assert records[0].created_at < records[1].created_at
 
 
 def test_proactive_reply_writes_only_one_me_record(db_file: Path):

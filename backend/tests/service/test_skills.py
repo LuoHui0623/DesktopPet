@@ -1,11 +1,16 @@
 import pytest
 
+from module.agent.orchestrator import read_only_tools
 from module.agent.skills import (
+    DRAFT_NOTE_CAPABILITY,
+    DRAFT_NOTE_TOOLS,
     MEMORY_RETRIEVE_CAPABILITY,
     MEMORY_WRITE_CAPABILITY,
+    Skill,
     SkillError,
     SkillRegistry,
     SkillSpec,
+    draft_note_skill,
     memory_retrieve_skill,
     memory_write_skill,
     parse_head_note,
@@ -108,6 +113,18 @@ def test_memory_write_skill_declares_write_tools():
     assert spec.tools == ("index", "read", "memory_append", "memory_replace")
 
 
+def test_draft_note_skill_declares_file_tools():
+    spec = draft_note_skill()
+    assert spec.name == DRAFT_NOTE_CAPABILITY
+    assert spec.file == "draft_note"
+    assert spec.tools == ("file_read", "file_write", "file_edit", "file_clear")
+
+
+def test_draft_note_allows_reading_while_drafting():
+    skill = Skill(DRAFT_NOTE_CAPABILITY, "便签", DRAFT_NOTE_TOOLS)
+    assert read_only_tools(skill) == ("file_read",)
+
+
 def test_memory_retrieve_skill_is_read_only():
     spec = memory_retrieve_skill()
     assert spec.name == MEMORY_RETRIEVE_CAPABILITY
@@ -119,7 +136,12 @@ def test_shipped_manuals_parse():
     registry = SkillRegistry()
     registry.register(memory_write_skill())
     registry.register(memory_retrieve_skill())
-    assert registry.names() == (MEMORY_WRITE_CAPABILITY, MEMORY_RETRIEVE_CAPABILITY)
+    registry.register(draft_note_skill())
+    assert registry.names() == (
+        MEMORY_WRITE_CAPABILITY,
+        MEMORY_RETRIEVE_CAPABILITY,
+        DRAFT_NOTE_CAPABILITY,
+    )
     for name in registry.names():
         assert registry.get(name).description
         assert "## 执行流程" in registry.read(name)

@@ -131,8 +131,8 @@ class RecordingEvents:
     def chunk(self, message_id, text):
         self.log.append(("chunk", message_id, text))
 
-    def done(self, message_id, text, sources):
-        self.log.append(("done", message_id, text))
+    def done(self, message_id, messages):
+        self.log.append(("done", message_id, [item.text for item in messages]))
 
     def approval_request(self, plan_id, tickets):
         self.plan_ids.append(plan_id)

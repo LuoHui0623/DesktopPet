@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
 from api.errors import error_response
-from api.event_publisher import source_out
+from api.event_publisher import reply_message_out, source_out
 from api.schemas.chat import ChatHistoryResponse, ChatReplyResponse, ChatRequest
 from module.chat.chat_service import ChatError, ChatService
 from module.chat.chat_service import ChatRequest as ServiceChatRequest
@@ -48,6 +48,7 @@ def send_chat(request: Request, body: ChatRequest) -> Response | ChatReplyRespon
         text=reply.text,
         recorded=reply.recorded,
         sources=[source_out(source) for source in reply.sources],
+        messages=[reply_message_out(message) for message in reply.messages],
     )
 
 

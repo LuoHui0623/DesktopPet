@@ -8,9 +8,9 @@ from typing import Protocol
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 
-def reply_message(text: str) -> AIMessage:
+def reply_message(texts: Sequence[str]) -> AIMessage:
     # 历史助手消息也按结构化输出格式呈现，避免模型模仿纯文本回复
-    return AIMessage(content=json.dumps({"type": "chat", "text": text}, ensure_ascii=False))
+    return AIMessage(content=json.dumps({"type": "chat", "text": list(texts)}, ensure_ascii=False))
 
 
 @dataclass(frozen=True)
@@ -48,18 +48,30 @@ class ChatTranscript:
             self._roll()
             self._lines.append(line)
 
-    def append_turn(self, user_text: str, reply_text: str) -> None:
-        now = self._clock(self._timezone)
+    def append_turn(
+        self,
+        user_text: str,
+        reply_texts: Sequence[str],
+        *,
+        at_received: datetime | None = None,
+        at_replied: datetime | None = None,
+    ) -> None:
+        received = at_received or self._clock(self._timezone)
+        replied = at_replied or self._clock(self._timezone)
         with self._lock:
             self._roll()
-            self._lines.append(ChatLine(at=now, message=HumanMessage(content=user_text)))
-            self._lines.append(ChatLine(at=now, message=reply_message(reply_text), is_reply=True))
+            self._lines.append(ChatLine(at=received, message=HumanMessage(content=user_text)))
+            self._lines.append(
+                ChatLine(at=replied, message=reply_message(reply_texts), is_reply=True)
+            )
 
-    def append_reply(self, reply_text: str) -> None:
-        now = self._clock(self._timezone)
+    def append_reply(self, reply_texts: Sequence[str], *, at: datetime | None = None) -> None:
+        replied = at or self._clock(self._timezone)
         with self._lock:
             self._roll()
-            self._lines.append(ChatLine(at=now, message=reply_message(reply_text), is_reply=True))
+            self._lines.append(
+                ChatLine(at=replied, message=reply_message(reply_texts), is_reply=True)
+            )
 
     def _roll(self) -> None:
         today = self._clock(self._timezone).date()

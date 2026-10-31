@@ -1,13 +1,24 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from module.chat.chat_service import ChatError, ChatReply, ChatRequest
+from module.chat.chat_service import ChatError, ChatReply, ChatRequest, ReplyMessage
 from module.proactive import ProactivePipeline, ProactiveResult
 from service.perception.events import Trigger
 
 TZ = ZoneInfo("Asia/Shanghai")
 AT = datetime(2026, 10, 29, 10, 0, tzinfo=TZ)
 TRIGGER = Trigger("app_in_use.code", "使用 code 已 3 分钟")
+
+
+def make_reply(message_id: str, texts: tuple[str, ...]) -> ChatReply:
+    return ChatReply(
+        message_id=message_id,
+        messages=tuple(
+            ReplyMessage(message_id=f"{message_id}-{index}", text=text, at=AT)
+            for index, text in enumerate(texts, 1)
+        ),
+        recorded=True,
+    )
 
 
 class FakeChat:
@@ -20,7 +31,8 @@ class FakeChat:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
-        return ChatReply(message_id=f"m{len(self.requests)}", text=outcome, recorded=True)
+        texts = (outcome,) if isinstance(outcome, str) else tuple(outcome)
+        return make_reply(f"m{len(self.requests)}", texts)
 
 
 class FakeLedger:
@@ -37,13 +49,13 @@ class FakeLedger:
 
 class FakePublisher:
     def __init__(self, *, fail: bool = False) -> None:
-        self.messages: list[tuple[str, str, str, datetime]] = []
+        self.messages: list[tuple[str, list[str], str, datetime]] = []
         self._fail = fail
 
-    def proactive_message(self, message_id: str, text: str, topic: str, at: datetime) -> None:
+    def proactive_message(self, message_id, messages, topic: str, at: datetime) -> None:
         if self._fail:
             raise RuntimeError("socket closed")
-        self.messages.append((message_id, text, topic, at))
+        self.messages.append((message_id, [item.text for item in messages], topic, at))
 
 
 def make_pipeline(
@@ -72,7 +84,18 @@ def test_success_generates_records_and_publishes_once():
     assert request.allow_dispatch is False
     assert request.events is not None
     assert ledger.topics == [("app_in_use.code", AT)]
-    assert publisher.messages == [("m1", "今天也辛苦啦。", "app_in_use.code", AT)]
+    assert publisher.messages == [("m1", ["今天也辛苦啦。"], "app_in_use.code", AT)]
+
+
+def test_several_utterances_are_published_in_one_event_and_recorded_once():
+    chat = FakeChat([("第一句。", "第二句！")])
+    pipeline, ledger, publisher = make_pipeline(chat)
+
+    result = pipeline.handle(TRIGGER)
+
+    assert result.sent is True
+    assert ledger.topics == [("app_in_use.code", AT)]
+    assert publisher.messages == [("m1", ["第一句。", "第二句！"], "app_in_use.code", AT)]
 
 
 def test_active_chat_drops_the_trigger_without_calling_the_model():
@@ -158,7 +181,7 @@ def test_new_trigger_is_dropped_while_a_round_is_running():
         def chat(self, request: ChatRequest) -> ChatReply:
             assert pipeline is not None
             nested.append(pipeline.handle(Trigger("sit_long", "已连续坐着 60 分钟")))
-            return ChatReply(message_id="m1", text="起来动动吧。", recorded=True)
+            return make_reply("m1", ("起来动动吧。",))
 
     pipeline = ProactivePipeline(NestedChat(), FakeLedger(), publisher, clock=lambda: AT)
 

@@ -3,7 +3,7 @@
 > 职责：定义解析器产出 Trigger 之后，如何调用 chat、写台账、推送 `proactive.message`，以及失败与并发处理。
 > 依赖：观测域解析器（Trigger）、ChatService（单入口）、`app_setting` 台账、WS 事件总线、`chat_active` 端口。
 > 不回答：采集、事件阈值、勿扰/限额判定（见 [OBSERVER.md](OBSERVER.md)）、话术内容（见 [CHAT.md](CHAT.md)）、气泡渲染。
-> 状态：已实现（2026-10-29）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8。
+> 状态：已实现（2026-10-29；2026-10-31 升级为一条 `proactive.message` 可携带 1–4 条发言）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8。
 
 ## 1. 定位
 
@@ -95,15 +95,20 @@ handle(trigger)
 {
   type: "proactive.message",
   id: <ChatReply.message_id>,
-  text: <ChatReply.text>,
+  text: <ChatReply.text>,          // 兼容字段：多条发言以 \n 拼接
+  messages: [                      // 1–4 条发言
+    { message_id: <str>, text: <str>, at: <ISO 8601>, sources: [] }
+  ],
   topic: <Trigger.topic>,
   at: <ISO 8601>
 }
 ```
 
 - 与前端 `types.ts` 的 WS 联合类型同步；`api/schemas/events.py` 增加模型。
-- 不包含 `sources`、`reason`、`source` 字段；前端只需要显示文本。
-- 不作为 `daily_log` 的 `source`；`daily_log` 仍是普通 `me` 行。
+- `messages` 是权威结构，前端逐条入队成气泡；`text` 只为旧调用方保留。
+- `at` 是管线推送时刻；每条发言自己的 `at` 在 `messages[i].at`，与 `daily_log` 的 `created_at` 同源。
+- 不包含 `sources`、`reason`、`source` 字段；前端只需要显示文本（`messages[i].sources` 恒为空数组）。
+- 不作为 `daily_log` 的 `source`；`daily_log` 仍是普通 `me` 行（多条发言即多行）。
 
 ## 5. 失败与重试
 
@@ -146,7 +151,8 @@ handle(trigger)
 ## 8. 与前端/气泡的边界
 
 - 管线只负责推送 `proactive.message`；气泡由 pet 窗口（320×360，宠物贴底、气泡占上部）的 webview 绘制，不新开窗口。
-- 气泡逐条排队显示，默认 15 秒自动消失；每条消息独立计时，新消息到达不打断当前气泡的剩余时长。
+- 一轮主动回复的多条发言各占一个气泡，按 `messages` 顺序逐条排队显示；气泡默认 15 秒自动消失，每条独立计时，新消息到达不打断当前气泡的剩余时长。
+- 气泡只显示正文，不带角色与时间头行（D-03 的界面时间口径只覆盖对话窗口的消息与历史面板）；点击气泡打开对话后，同一条 `me` 行在历史与消息列表里显示 `[me][HH:MM:SS]`。
 - 点击气泡：前端移除该气泡并打开对话窗口，定位到历史页；消息本身是 `daily_log` 的普通 `me` 行，并已追加进当日快照，可继续对话。
 - 忽略：清空当前队列并压制本会话后续主动气泡；只在前端内存，不调接口、不写库。
 - 不做 `POST /api/proactive/feedback`（该路由不存在，请求返回 404），也不写 `proactive_feedback` 表——该表从未有写入方，已由迁移 `0009_drop_proactive_feedback.sql` 移除。

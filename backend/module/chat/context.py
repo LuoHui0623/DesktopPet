@@ -7,7 +7,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from config.persona import PersonaConfig
 from constants.memory import FRAGMENT_TOKEN_BUDGET, STRUCTURED_MEMORY_TOKEN_BUDGET
-from module.agent.prompt import CapabilityDescription, PromptTemplates, build_system_prompt
+from module.agent.prompt import (
+    CapabilityDescription,
+    PromptTemplates,
+    ResourceItem,
+    build_system_prompt,
+)
 from module.chat.transcript import ChatLine, TranscriptReader
 from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 from service.perception.constants import CONTEXT_EVENT_LIMIT
@@ -16,6 +21,7 @@ from service.perception.events import PerceptionEvent
 KIND_STRUCTURED = "结构化记忆"
 KIND_DAILY = "每日对话"
 CURRENT_SEPARATOR = "======= current ======="
+DAY_MARKER = "======={day}======="
 CITATION_RULE = (
     "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
     "日期取自对应条目的日期。只引用上面列出的内容，不要编造日期。"
@@ -80,6 +86,7 @@ class ContextBuilder:
         structured: StructuredMemoryDoc | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
+        resources: Sequence[ResourceItem] | None = None,
         perception: PerceptionReader | None = None,
         transcript: TranscriptReader | None = None,
     ) -> None:
@@ -89,6 +96,7 @@ class ContextBuilder:
         self._structured = structured
         self._clock = clock or (lambda zone: datetime.now(zone))
         self._capabilities = tuple(capabilities)
+        self._resources = resources
         self._perception = perception
         self._transcript = transcript
 
@@ -101,7 +109,11 @@ class ContextBuilder:
         interaction_lines: Sequence[str] = (),
     ) -> AssembledContext:
         prompt = build_system_prompt(
-            "chat", self._persona, self._templates, capabilities=self._capabilities
+            "chat",
+            self._persona,
+            self._templates,
+            capabilities=self._capabilities,
+            resources=self._resources,
         )
         warnings: list[str] = []
 
@@ -121,6 +133,9 @@ class ContextBuilder:
         if injected:
             system_text += f"\n\n{CITATION_RULE}"
 
+        today = self._clock(self._timezone)
+        system_text += "\n\n" + DAY_MARKER.format(day=f"{today:%Y/%m/%d}")
+
         timeline, notes = self._timeline(include_perception=user_text is not None)
         boundary = (
             max(
@@ -131,11 +146,11 @@ class ContextBuilder:
         )
         messages: list[BaseMessage] = [SystemMessage(content=system_text)]
         if boundary > 0:
-            messages.extend(line.message for line in timeline[:boundary])
+            messages.extend(self._render_line(line) for line in timeline[:boundary])
             messages.append(AIMessage(content=CURRENT_SEPARATOR))
-            messages.extend(line.message for line in timeline[boundary:])
+            messages.extend(self._render_line(line) for line in timeline[boundary:])
         else:
-            messages.extend(line.message for line in timeline)
+            messages.extend(self._render_line(line) for line in timeline)
         input_blocks: list[str] = []
         if trigger_reason:
             input_blocks.append(PROACTIVE_TRIGGER.format(reason=trigger_reason))
@@ -153,6 +168,13 @@ class ContextBuilder:
             injected=injected,
             notes=tuple(notes),
         )
+
+    def _render_line(self, line: ChatLine) -> BaseMessage:
+        """用户历史行带角色与秒级时间前缀；助手行保持纯 JSON，避免污染输出格式。"""
+        if not isinstance(line.message, HumanMessage):
+            return line.message
+        moment = line.at.astimezone(self._timezone)
+        return HumanMessage(content=f"[master][{moment:%H:%M:%S}]{line.message.content}")
 
     def _structured_block(self, warnings: list[str]) -> str:
         if self._structured is None:

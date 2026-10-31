@@ -899,6 +899,13 @@
             "title": "Message Id",
             "type": "string"
           },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ReplyMessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/SourceOut"
@@ -950,6 +957,13 @@
           "message_id": {
             "title": "Message Id",
             "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ReplyMessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
           },
           "recorded": {
             "title": "Recorded",
@@ -1696,6 +1710,13 @@
             "title": "Id",
             "type": "string"
           },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ReplyMessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
           "text": {
             "title": "Text",
             "type": "string"
@@ -1810,6 +1831,38 @@
           "warnings"
         ],
         "title": "ReloadResponse",
+        "type": "object"
+      },
+      "ReplyMessageOut": {
+        "description": "一轮回复里的一条发言。",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "message_id": {
+            "title": "Message Id",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceOut"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message_id",
+          "text",
+          "at"
+        ],
+        "title": "ReplyMessageOut",
         "type": "object"
       },
       "SchedulerConfigIn": {

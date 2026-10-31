@@ -7,6 +7,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.settings import ModelSettingsSource
+from constants.speech import SENTENCE_MAX_WIDTH
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft
@@ -18,9 +19,11 @@ from module.chat.chat_service import (
     ChatService,
     DispatchRejectedError,
     ModelOutputError,
+    ReplyMessage,
     overlong_sentences,
     parse_chat_output,
     split_sentences,
+    visible_width,
 )
 from module.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
 from module.interaction.interaction_service import InteractionService
@@ -64,13 +67,14 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
 
 SHORT = "你好呀，今天过得怎么样？"
 LONG = "很" * 41 + "。"
+CJK = "字"
 
 
 class Raw(str):
     """模型原样输出的内容，用于验证协议错误。"""
 
 
-def chat_output(text: str) -> str:
+def chat_output(text: str | list[str]) -> str:
     return json.dumps({"type": "chat", "text": text}, ensure_ascii=False)
 
 
@@ -169,6 +173,55 @@ def test_system_prompt_comes_first_and_contains_persona(tmp_path: Path):
     assert "你的名字是小桌" in first.content
 
 
+def test_multiple_utterances_are_returned_and_logged_in_order(tmp_path: Path):
+    events = RecordingEvents()
+    harness = Harness(tmp_path, [["第一句。", "第二句！", "第三句。"]], events=events)
+    result = ask(harness.chat, "你好")
+
+    assert [message.text for message in result.messages] == ["第一句。", "第二句！", "第三句。"]
+    assert result.text == "第一句。\n第二句！\n第三句。"
+    assert [message.text for message in events.log[-2][2]] == [
+        "第一句。",
+        "第二句！",
+        "第三句。",
+    ]
+    logged = harness.query("SELECT role, content FROM daily_log ORDER BY id")
+    assert logged == [
+        ("master", "你好"),
+        ("me", "第一句。"),
+        ("me", "第二句！"),
+        ("me", "第三句。"),
+    ]
+
+
+def test_each_utterance_keeps_its_own_sources(tmp_path: Path):
+    reply = ["你上次说过喜欢美式 [引用 2026-10-18]。", "另外昨天聊过茶 [引用 2026-10-17]。"]
+    harness = Harness(tmp_path, [reply])
+    result = ask(harness.chat, "你好", CITED_FRAGMENTS)
+
+    assert [message.text for message in result.messages] == [
+        "你上次说过喜欢美式。",
+        "另外昨天聊过茶。",
+    ]
+    assert [[source.id for source in message.sources] for message in result.messages] == [
+        ["2026-10-18"],
+        ["2026-10-17"],
+    ]
+    assert [source.id for source in result.sources] == ["2026-10-18", "2026-10-17"]
+
+
+def test_reply_messages_share_one_generation_time(tmp_path: Path):
+    harness = Harness(tmp_path, [["第一句。", "第二句！"]])
+    result = ask(harness.chat, "你好")
+
+    assert isinstance(result.messages[0], ReplyMessage)
+    assert result.messages[0].at == result.messages[1].at
+    assert result.messages[0].at.tzinfo is not None
+    ids = [message.message_id for message in result.messages]
+    assert len(set(ids)) == 2
+    assert all(len(item) == 32 for item in ids)
+
+
 class FakeClock:
     def __init__(self, now: datetime) -> None:
         self.now = now
@@ -225,7 +278,7 @@ def test_overlong_twice_returns_reason_not_truncated_text(tmp_path: Path):
     with pytest.raises(ChatError) as exc:
         ask(harness.chat, "你好")
     assert exc.value.code == "sentence_too_long"
-    assert "40" in str(exc.value)
+    assert "80" in str(exc.value)
     assert harness.query("SELECT COUNT(*) FROM daily_log")[0][0] == 0
 
 
@@ -352,6 +405,45 @@ def test_chat_output_text_is_returned_stripped():
     assert parse_chat_output(chat_output(f"  {SHORT}  ")).text == SHORT
 
 
+def test_chat_output_accepts_an_ordered_array_of_up_to_four_items():
+    output = parse_chat_output(chat_output(["第一句。", "第二句！", "第三句。", "第四句。"]))
+    assert output.kind == "chat"
+    assert output.texts == ("第一句。", "第二句！", "第三句。", "第四句。")
+    assert output.text == "第一句。\n第二句！\n第三句。\n第四句。"
+
+
+def test_legacy_string_text_is_normalized_to_a_single_item():
+    output = parse_chat_output(chat_output(SHORT))
+    assert output.texts == (SHORT,)
+
+
+def test_empty_array_and_more_than_four_items_are_rejected():
+    with pytest.raises(ModelOutputError, match="1"):
+        parse_chat_output(chat_output([]))
+    with pytest.raises(ModelOutputError, match="4"):
+        parse_chat_output(chat_output(["一。", "二。", "三。", "四。", "五。"]))
+
+
+def test_every_item_must_be_a_non_blank_string():
+    with pytest.raises(ModelOutputError, match="字符串"):
+        parse_chat_output(json.dumps({"type": "chat", "text": ["好。", 1]}, ensure_ascii=False))
+    with pytest.raises(ModelOutputError, match="非空"):
+        parse_chat_output(chat_output(["好。", "   "]))
+
+
+def test_items_are_stripped_and_a_citation_only_item_is_rejected():
+    assert parse_chat_output(chat_output(["  好。  ", " 也好。 "])).texts == ("好。", "也好。")
+    with pytest.raises(ModelOutputError, match="只有引用标记"):
+        parse_chat_output(chat_output(["好。", "[引用 2026-10-18]"]))
+
+
+def test_one_overlong_item_in_the_array_is_enough_to_fail(tmp_path: Path):
+    harness = Harness(tmp_path, [chat_output(["好的。", CJK * 41]), SHORT])
+    assert ask(harness.chat, "你好").text == SHORT
+    assert len(harness.fake.calls) == 2
+    assert harness.query("SELECT COUNT(*) FROM daily_log WHERE role = 'me'")[0][0] == 1
+
+
 def test_temporary_mode_replies_without_writing_log(tmp_path: Path):
     harness = Harness(tmp_path, [SHORT])
     harness.daily.set_temporary_mode(True)
@@ -389,7 +481,7 @@ def test_proactive_reply_enters_the_next_context_as_a_reply(tmp_path: Path):
     ask(harness.chat, "你在干嘛")
 
     contents = [message.content for message in harness.fake.calls[1]]
-    assert chat_output(SHORT) in contents
+    assert chat_output([SHORT]) in contents
     assert "【本次触发】深夜仍在使用电脑" not in contents
 
 
@@ -414,10 +506,43 @@ def test_split_sentences_uses_all_boundaries():
     assert split_sentences(text) == ["你好。", "我在！", "真的吗？", "好的……", "嗯", "最后一句"]
 
 
-def test_sentence_length_counts_punctuation():
-    assert overlong_sentences("a" * 39 + "。") == []
-    assert overlong_sentences("a" * 40 + "。") == ["a" * 40 + "。"]
-    assert overlong_sentences("短句一。" + "字" * 41) == ["字" * 41]
+def test_split_sentences_handles_english_periods():
+    assert split_sentences("Hello there. Next one! Really?") == [
+        "Hello there.",
+        "Next one!",
+        "Really?",
+    ]
+    # 小数、域名、常见缩写内部的点不是句末
+    assert split_sentences("It costs 1.5 dollars.") == ["It costs 1.5 dollars."]
+    assert split_sentences("Visit example.com now.") == ["Visit example.com now."]
+    assert split_sentences("Mr. Smith is here.") == ["Mr. Smith is here."]
+
+
+def test_visible_width_counts_cjk_as_two_and_ascii_as_one():
+    assert visible_width("字") == 2
+    assert visible_width("a") == 1
+    assert visible_width(" ") == 1
+    assert visible_width("。") == 2
+    assert visible_width("你好ab") == 6
+
+
+def test_sentence_length_budget_accepts_both_languages():
+    assert SENTENCE_MAX_WIDTH == 80
+    assert overlong_sentences(CJK * 40) == []
+    assert overlong_sentences("a" * 80) == []
+    assert overlong_sentences(CJK * 20 + "a" * 40) == []
+
+
+def test_sentence_length_overflow_by_one_unit():
+    assert overlong_sentences(CJK * 41) == [CJK * 41]
+    assert overlong_sentences("a" * 81) == ["a" * 81]
+    assert overlong_sentences(CJK * 21 + "a" * 40) == [CJK * 21 + "a" * 40]
+
+
+def test_sentence_length_counts_the_trailing_punctuation():
+    assert overlong_sentences(CJK * 39 + "。") == []
+    assert overlong_sentences(CJK * 40 + "。") == [CJK * 40 + "。"]
+    assert overlong_sentences("短句一。" + CJK * 41) == [CJK * 41]
 
 
 class RecordingEvents:
@@ -430,8 +555,8 @@ class RecordingEvents:
     def chunk(self, message_id, text):
         self.log.append(("chunk", message_id, text))
 
-    def done(self, message_id, text, sources):
-        self.log.append(("done", message_id, text, list(sources)))
+    def done(self, message_id, messages):
+        self.log.append(("done", message_id, list(messages)))
 
 
 def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
@@ -443,7 +568,9 @@ def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
     assert events.log[0] == ("status", "thinking")
     assert events.log[1] == ("status", "speaking")
     assert events.log[-1] == ("status", "idle")
-    assert events.log[4] == ("done", result.message_id, "第一句。第二句！", [])
+    done = events.log[4]
+    assert done[1] == result.message_id
+    assert [message.text for message in done[2]] == ["第一句。第二句！"]
 
 
 def test_chunks_join_back_to_the_reply(tmp_path: Path):
@@ -453,6 +580,14 @@ def test_chunks_join_back_to_the_reply(tmp_path: Path):
     ask(harness.chat, "你好")
     chunks = [entry[2] for entry in events.log if entry[0] == "chunk"]
     assert "".join(chunks) == reply
+
+
+def test_chunks_of_several_items_join_back_to_the_joined_reply(tmp_path: Path):
+    events = RecordingEvents()
+    harness = Harness(tmp_path, [["第一句。", "第二句！"]], events=events)
+    result = ask(harness.chat, "你好")
+    chunks = [entry[2] for entry in events.log if entry[0] == "chunk"]
+    assert "".join(chunks) == result.text == "第一句。\n第二句！"
 
 
 def test_failed_reply_still_returns_status_to_idle(tmp_path: Path):
@@ -485,8 +620,9 @@ def test_second_reply_includes_the_earlier_turn_of_the_day(tmp_path: Path):
     ask(harness.chat, "第二句")
     second_call = harness.fake.calls[1]
     contents = [message.content for message in second_call[1:]]
-    assert contents[0] == "第一句"
-    assert contents[1] == json.dumps({"type": "chat", "text": SHORT}, ensure_ascii=False)
+    assert contents[0].startswith("[master][")
+    assert contents[0].endswith("]第一句")
+    assert contents[1] == json.dumps({"type": "chat", "text": [SHORT]}, ensure_ascii=False)
     assert contents[-1] == "第二句"
 
 
@@ -551,7 +687,7 @@ def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_pa
     assert [source.id for source in result.sources] == ["2026-10-18", "2026-10-17"]
     assert result.sources[0].text == "喜欢美式咖啡，不加糖"
     done = next(entry for entry in events.log if entry[0] == "done")
-    assert [source.id for source in done[3]] == ["2026-10-18", "2026-10-17"]
+    assert [source.id for source in done[2][0].sources] == ["2026-10-18", "2026-10-17"]
     assert harness.query("SELECT content FROM daily_log WHERE role = 'me'") == [(result.text,)]
 
 

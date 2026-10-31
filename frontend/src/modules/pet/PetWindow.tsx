@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useStore } from "zustand";
@@ -15,7 +15,7 @@ import { resolvePerceptionCandidate } from "../../service/perception.service";
 import { listenSettingsChanged } from "../../service/settings.service";
 import { openChatWindow } from "../../service/window.service";
 import { petStore } from "../../service/stores/pet.store";
-import { PetView } from "./PetView";
+import { PetView, type PetHitTest } from "./PetView";
 import { ProactiveBubble } from "./ProactiveBubble";
 import { petStatusLabel } from "./status";
 import { useAvatar } from "./use-avatar";
@@ -65,6 +65,12 @@ export function PetWindow() {
     [interact, interactionConfig.hover_dwell_ms],
   );
   const drag = useMemo(() => createDragTracker(() => interact("drag")), [interact]);
+  const hitTestRef = useRef<PetHitTest | null>(null);
+  // 命中按形象的不透明像素判定：透明区域既不挥手也不开窗。
+  const hits = useCallback(
+    (clientX: number, clientY: number): boolean => hitTestRef.current?.(clientX, clientY) ?? true,
+    [],
+  );
 
   useEffect(() => {
     let unlisten: (() => void) | null = null;
@@ -143,7 +149,8 @@ export function PetWindow() {
       role="button"
       tabIndex={0}
       aria-label={`宠物状态：${label}，点击打开对话`}
-      onClick={() => {
+      onClick={(event) => {
+        if (!hits(event.clientX, event.clientY)) return;
         interact("click");
         openChat();
       }}
@@ -155,7 +162,10 @@ export function PetWindow() {
           console.error("弹出右键菜单失败", error);
         });
       }}
-      onPointerEnter={hover.start}
+      onPointerMove={(event) => {
+        if (hits(event.clientX, event.clientY)) hover.start();
+        else hover.stop();
+      }}
       onPointerLeave={hover.stop}
       onKeyDown={(event) => {
         if (event.target !== event.currentTarget) return;
@@ -171,6 +181,7 @@ export function PetWindow() {
         height: 360,
         display: "flex",
         flexDirection: "column",
+        overflow: "hidden",
         background: "transparent",
         color: "#222",
         fontFamily: "system-ui, sans-serif",
@@ -182,6 +193,7 @@ export function PetWindow() {
         style={{
           flex: 1,
           minHeight: 0,
+          overflow: "hidden",
           display: "flex",
           flexDirection: "column",
           justifyContent: "flex-start",
@@ -246,9 +258,15 @@ export function PetWindow() {
           alignItems: "center",
           gap: 6,
           paddingBottom: 6,
+          flexShrink: 0,
         }}
       >
-        <PetView state={connected ? status : null} avatar={avatar} reaction={reaction} />
+        <PetView
+          state={connected ? status : null}
+          avatar={avatar}
+          reaction={reaction}
+          hitTestRef={hitTestRef}
+        />
         <span
           data-tauri-drag-region
           style={{

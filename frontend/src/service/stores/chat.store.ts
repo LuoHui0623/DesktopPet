@@ -3,6 +3,7 @@ import type {
   ApprovalItem,
   ChatReplyResponse,
   MemorySourceRef,
+  ReplyMessage,
   ServerEvent,
 } from "../../api/types";
 
@@ -15,6 +16,8 @@ export interface ChatMessage {
   text: string;
   status: ChatMessageStatus;
   messageId: string | null;
+  /** 秒级显示时间；用户消息用本地提交时间，助手消息用服务端生成时间。 */
+  at: string | null;
   sources: MemorySourceRef[];
 }
 
@@ -40,6 +43,8 @@ export interface ChatStoreState {
 
 export function createChatStore() {
   let sequence = 0;
+  // 已按多条发言展开过的回合；迟到的事件据此丢弃，避免重复渲染。
+  let settledTurnId: string | null = null;
   const nextLocalId = (): string => {
     sequence += 1;
     return `local_${sequence}`;
@@ -58,12 +63,59 @@ export function createChatStore() {
     const resolveTarget = (messageId: string): string | null => {
       const bound = get().messages.find((message) => message.messageId === messageId);
       if (bound) return bound.localId;
+      if (settledTurnId === messageId) return null;
       const pending = get().messages.find(
         (message) => message.localId === get().pendingLocalId && message.messageId === null,
       );
       if (!pending) return null;
       patchMessage(pending.localId, { messageId });
       return pending.localId;
+    };
+
+    // 把一轮回复落成 1~N 条助手消息：占位消息被首条发言取代，其余依次插入其后。
+    const settleTurn = (
+      localId: string,
+      reply: {
+        message_id: string;
+        text: string;
+        sources: MemorySourceRef[];
+        messages?: ReplyMessage[];
+      },
+    ): void => {
+      if (settledTurnId === reply.message_id) return;
+      set((state) => {
+        const index = state.messages.findIndex((message) => message.localId === localId);
+        if (index === -1) return {};
+        const placeholder = state.messages[index];
+        const items = reply.messages?.length ? reply.messages : null;
+        const settled: ChatMessage[] = items
+          ? items.map((item, position) => ({
+              localId: position === 0 ? placeholder.localId : nextLocalId(),
+              role: "assistant",
+              text: item.text,
+              status: "done",
+              messageId: item.message_id,
+              at: item.at,
+              sources: item.sources,
+            }))
+          : [
+              {
+                ...placeholder,
+                text: reply.text,
+                status: "done",
+                messageId: reply.message_id,
+                sources: reply.sources,
+              },
+            ];
+        return {
+          messages: [
+            ...state.messages.slice(0, index),
+            ...settled,
+            ...state.messages.slice(index + 1),
+          ],
+        };
+      });
+      settledTurnId = reply.message_id;
     };
 
     return {
@@ -82,6 +134,7 @@ export function createChatStore() {
           text: trimmed,
           status: "done",
           messageId: null,
+          at: new Date().toISOString(),
           sources: [],
         };
         const replyMessage: ChatMessage = {
@@ -90,6 +143,7 @@ export function createChatStore() {
           text: "",
           status: "pending",
           messageId: null,
+          at: null,
           sources: [],
         };
         set((state) => ({
@@ -100,21 +154,10 @@ export function createChatStore() {
         return replyMessage.localId;
       },
       completeSend: (localId, reply) => {
-        set((state) => ({
-          messages: state.messages.map((message) =>
-            message.localId === localId
-              ? {
-                  ...message,
-                  text: reply.text,
-                  status: "done",
-                  messageId: reply.message_id,
-                  sources: reply.sources,
-                }
-              : message,
-          ),
-          sending: false,
-          pendingLocalId: null,
-        }));
+        settleTurn(localId, reply);
+        set((state) =>
+          state.pendingLocalId === localId ? { sending: false, pendingLocalId: null } : {},
+        );
       },
       failSend: (localId, message) => {
         set((state) => ({
@@ -171,7 +214,7 @@ export function createChatStore() {
         } else if (event.type === "chat.done") {
           const localId = resolveTarget(event.message_id);
           if (!localId) return;
-          patchMessage(localId, { text: event.text, status: "done", sources: event.sources });
+          settleTurn(localId, event);
         }
       },
     };

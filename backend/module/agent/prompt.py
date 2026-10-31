@@ -6,8 +6,15 @@ from string import Template
 from typing import Literal
 
 from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListTheme, PersonaConfig
-from constants.path import CAPABILITIES_FILE, DRAFT_PATH, EMOJI_DIR, PROMPTS_DIR, ROOT_DIR
-from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS
+from constants.path import (
+    CAPABILITIES_FILE,
+    DRAFT_PATH,
+    EMOJI_DIR,
+    PROMPTS_DIR,
+    RESOURCE_DIR,
+    ROOT_DIR,
+)
+from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS, SENTENCE_MAX_WIDTH
 
 AgentRole = Literal["chat"]
 
@@ -20,6 +27,7 @@ CHAT_PLACEHOLDERS = frozenset(
         "capabilities",
         "resources",
         "sentence_max_chars",
+        "sentence_max_width",
         "persona_hint_chars",
     }
 )
@@ -85,15 +93,19 @@ def merge_capabilities(
     return tuple(merged.values())
 
 
-def default_resources() -> tuple[ResourceItem, ...]:
+def default_resources(resource_dir: Path = RESOURCE_DIR) -> tuple[ResourceItem, ...]:
     return (
-        ResourceItem("草稿本", _relative(DRAFT_PATH)),
-        ResourceItem("表情包", _relative(EMOJI_DIR)),
+        ResourceItem("草稿本", _display(resource_dir / DRAFT_PATH.name)),
+        ResourceItem("表情包", _display(resource_dir / EMOJI_DIR.name)),
     )
 
 
-def _relative(path: Path) -> str:
-    return path.relative_to(ROOT_DIR).as_posix()
+def _display(path: Path) -> str:
+    """仓库内的资源用相对路径展示，仓库外（自定义数据目录）用绝对路径。"""
+    try:
+        return path.resolve().relative_to(ROOT_DIR.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def load_templates(directory: Path = PROMPTS_DIR) -> PromptTemplates:
@@ -177,6 +189,7 @@ def _build_chat(
         capabilities=_render_capabilities(capabilities),
         resources=_render_resources(resources),
         sentence_max_chars=str(SENTENCE_MAX_CHARS),
+        sentence_max_width=str(SENTENCE_MAX_WIDTH),
         persona_hint_chars=str(PERSONA_HINT_CHARS),
     )
     return SystemPrompt(text=text, template_digest=templates.digest)

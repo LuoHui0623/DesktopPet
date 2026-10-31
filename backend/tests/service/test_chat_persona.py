@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -20,6 +21,13 @@ from module.persona.repository import DbPersonaVersions
 from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
+
+CLOCK_PREFIX = re.compile(r"^\[master\]\[\d{2}:\d{2}:\d{2}\]")
+
+
+def without_clock(content: str) -> str:
+    """去掉上下文里的 [角色][时间] 前缀，只比较对话正文。"""
+    return CLOCK_PREFIX.sub("", content)
 
 
 def ask(chat: ChatService, text: str, fragments=()):
@@ -117,7 +125,7 @@ def test_switch_keeps_recent_turns_and_marks_a_new_session(env):
     env["personas"].activate("小桌")
     ask(env["chat"], "第二句")
     second = env["model"].requests[1]
-    contents = [message.content for message in second[1:]]
+    contents = [without_clock(message.content) for message in second[1:]]
     assert contents[0] == "第一句"
     assert contents[-1] == "第二句"
     events = env["daily"].read_day(env["daily"].dates()[-1])

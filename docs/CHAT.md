@@ -3,7 +3,7 @@
 > 职责：定义 ChatService 的唯一入口、请求/回复契约、上下文组装、生成校验与落账。
 > 依赖：`module/llm`（模型）、`module/memory`（daily_log / 结构化记忆）、`module/persona`、`module/agent`（派发分支）、观测域解析器（current 事件）。
 > 不回答：模型配置与热更（见 [LLM.md](LLM.md)）、感知采集与阈值（见 [OBSERVER.md](OBSERVER.md)）、主动判定与管线（见 [PROACTIVE.md](PROACTIVE.md)）、气泡与前端渲染。
-> 状态：已实现（2026-10-29）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，上下文使用内存当日快照。
+> 状态：已实现（2026-10-29；2026-10-31 升级为多条连续发言、显示宽度句长、秒级时间戳与日期标记）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，上下文使用内存当日快照。
 
 ## 1. 定位
 
@@ -21,10 +21,11 @@ ChatService 提供**完整的对话能力**：把一次输入组装成上下文�
 ## 2. 概念定义
 
 - **ChatRequest**：唯一入口的请求对象。被动与主动的差异只体现在字段是否有值，不体现为方法名或 `kind` 字段。
-- **ChatReply**：一次调用的结果，含 `message_id`、`text`、`recorded`、`sources`。
-- **Turn**：一次对话回合。被动回合一问一答；主动回合没有用户输入，只有一条宠物回复。
+- **ChatReply**：一次调用的结果，含 `message_id`、`messages`、`recorded`、`sources`。一轮回复可以是 1–4 条发言。
+- **ReplyMessage（一条发言）**：`message_id`、`text`、`at`（回复时间，秒级）、`sources`。同一轮的多条发言各自带 id 与时间，都记在同一次回复里。
+- **Turn**：一次对话回合。被动回合一问一答；主动回合没有用户输入，只有宠物回复。回合内的多条发言共享同一份 `sources` 去重结果。
 - **Transcript（当日快照）**：进程内的当日原始对话，按顺序保存 `master` / `me` / `event` / 感知 notes；日切清空，不落库，不从 `daily_log` 还原。
-- **Context（上下文）**：系统提示词 + 结构化记忆全文 + 检索片段 + 当日快照 + current 感知 + 本次输入。
+- **Context（上下文）**：系统提示词 + 结构化记忆全文 + 检索片段 + 当日快照 + current 感知 + 本次输入。系统提示词结尾追加当日日期标记。
 - **Dispatch（派发）**：模型输出计划，由后端审批并执行子代理，再把检查点回灌给模型生成最终回复。
 - **`allow_dispatch`**：本次调用是否允许派发。它是能力开关，不是主动/被动标记。
 - **`trigger_reason`**：主动轮的事实依据，来自解析器的 `Trigger.reason`；不是话术，不写入记录。
@@ -90,10 +91,13 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 | 字段 | 说明 |
 |---|---|
-| `message_id` | 本次回复 id，WS 事件与前端使用 |
-| `text` | 已去引用标记的最终文本 |
+| `message_id` | 本轮回复 id（等于第一条发言的 id），WS 事件与前端使用 |
+| `messages` | 1–4 条发言，每条含 `message_id`、`text`、`at`、`sources` |
+| `text` | 兼容字段：各条发言以 `\n` 拼接，仅用于旧调用方与日志 |
 | `recorded` | 是否写入 `daily_log`（临时模式为 `false`） |
-| `sources` | 本次引用到的记忆片段 |
+| `sources` | 本轮引用到的记忆片段，按发言出现顺序去重 |
+
+一条发言的 `at` 与写库时间是同一次采样，等于后端收到这次结果的时刻，与用户输入的接收时间分开采样。
 
 ### 4.2 错误
 
@@ -103,14 +107,14 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 | `persona_unavailable` | 当前人设不可用 | 否 |
 | `model_unavailable` | 能力未配置模型、provider 未启用、缺密钥 | 否 |
 | `model_failed` | 模型调用传输失败 | 否（chat 不重试；主动管线可重试整轮） |
-| `invalid_output` | 输出不是合法结构化 JSON、字段不符、派发后再次派发；子代理动作连续不合规达到上限 | chat 重试 1 次 |
-| `sentence_too_long` | 单句超过 40 字符 | chat 重试 1 次 |
+| `invalid_output` | 输出不是合法结构化 JSON、字段不符、`text` 不是字符串或 1–4 项非空字符串数组、派发后再次派发；子代理动作连续不合规达到上限 | chat 重试 1 次 |
+| `sentence_too_long` | 任一条发言中有单句显示宽度超过 80（中文约 40 字） | chat 重试 1 次 |
 
 ## 5. 上下文组装
 
 ### 5.1 输入顺序
 
-1. **系统提示词**：人设、发言规则、能力名清单。
+1. **系统提示词**：人设、发言规则、能力名清单；结尾追加当日日期标记（见 §5.2）。
 2. **结构化记忆全文**：超出预算截断并记 warning。
 3. **检索片段**：调用方提供；超出预算舍弃并记 warning；有片段时追加引用规则。
 4. **当日快照**：`master → Human`、`me / event → AI`，按时间排序；不做 master/me 成对要求。
@@ -123,8 +127,15 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 - 允许连续同角色、允许以 `me` 开头、允许孤立 `me`。
 - 不按预算裁剪快照；只对结构化记忆和检索片段做预算。
 - `event` 按 AI 消息注入；三类 event 的上下文规则见 `module/memory/daily_events.py`。
-- `me` 按结构化输出形状（`{"type": "chat", "text": ...}`）保存，避免模型模仿纯文本回复。
+- `me` 按结构化输出形状（`{"type": "chat", "text": [...]}`）保存，历史里的助手消息也是数组，避免模型模仿纯文本回复。
+- 用户历史行加 `[master][HH:MM:SS]` 前缀，时间取该行写入快照时的采样值、按配置时区换算；助手历史行保持纯 JSON，不加时间前缀，避免污染输出格式。界面上的时间戳由前端按同一条记录装配，后端不在 `text` 里重复拼接。
 - 感知 notes 随写入回合并入：写入 `daily_log` 的回合把本轮 notes 追加进快照；未写入的回合（临时模式）整体不进快照。快照按全量线性重建，不做增量更新。
+
+### 5.2.1 日期标记
+
+- 系统提示词末尾固定追加一行 `=======YYYY/MM/DD=======`（7 个等号，与 `======= current =======` 视觉一致），日期按配置时区取当天。
+- 位置在系统提示词末尾，不进入快照、不写入 `daily_log`、不产生 `sources`。
+- 各层提示词不各自带日期；快照只覆盖当天，因此一次请求只出现一个日期标记。
 
 ### 5.3 主动轮的上下文
 
@@ -152,7 +163,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 模型只允许两种输出：
 
 ```json
-{"type": "chat", "text": "..."}
+{"type": "chat", "text": ["第一条", "第二条"]}
 ```
 
 ```json
@@ -162,15 +173,19 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 约束：
 
 - `type` 必须是第一个字段。
-- `chat` 只能有 `type` 与 `text`；`text` 非空，且不能只剩引用标记。
+- `chat` 只能有 `type` 与 `text`；`text` 是 1–4 项非空字符串数组，且不能只剩引用标记。
+- 兼容旧输出：`text` 为单个字符串时按一项数组归一化，不报错；空数组、超过 4 项、含空串或非字符串项都判 `invalid_output`。
+- 提示词只教数组写法，字符串兼容只存在于解析层。
 - `dispatch` 只能有 `type` 与 `plan`；计划必须通过 `parse_plan_data` 校验。
 - 派发执行后只允许再输出 `chat`，再次派发按 `invalid_output` 处理。
 
 ### 6.2 句长与引用
 
-- 单句上限 40 字符（`constants/speech.py`）。
-- 超限重试 1 次；仍超限报 `sentence_too_long`。
-- 回复按句段推送 `chat.chunk`，不是逐 token。
+- 逐句校验，单句上限 80 显示宽度（`constants/speech.py` 的 `SENTENCE_MAX_WIDTH`）。
+- 计量按 East Asian Width：`W`（宽）与 `F`（全角）字符计 2，其余（英文、数字、半角符号）计 1。因此中文约 40 字、英文约 80 字符，两种语言观感一致。
+- 分句按 `。！？!?…`、换行与英文句号切分；英文缩写（`Mr.`、`etc.`、`e.g.` 等）、小数点与句中点不收句。
+- 任一条发言中出现超限单句即重试 1 次；仍超限报 `sentence_too_long`。
+- 回复按句段推送 `chat.chunk`，不是逐 token；多条发言共享同一个 `message_id` 前缀，最终由 `chat.done` 携带完整 `messages`。
 
 ### 6.3 派发分支
 
@@ -187,6 +202,20 @@ chat 输出 dispatch
 - `allow_dispatch=false` 时，`dispatch` 视为 `invalid_output`。
 - 主动轮固定不允许派发（`allow_dispatch=False`），避免无人值守时弹审批；见 [PROACTIVE.md](PROACTIVE.md) §9。
 - 审批拒绝、派发失败写入 `event`；不进入 `sources`。
+
+#### 能力与工具分组
+
+| 能力 | 说明书 | 可声明工具 | 写到哪里 |
+|---|---|---|---|
+| 记忆写入 | `resources/skills/memory_write.md` | `memory_append`、`memory_replace` | `data/memory/structured.md` |
+| 记忆检索 | `resources/skills/memory_retrieve.md` | `index`、`read` | 只读 |
+| 自记笔记 | `resources/skills/draft_note.md` | `file_read`、`file_write`、`file_edit`、`file_clear` | 资源库内的 `草稿本.md` |
+
+- 工具清单在 `module/agent/skills.py` 登记；草案阶段只给 `READ_ONLY_TOOLS`（`index`、`read`、`file_read`）里的交集，执行阶段才放开写工具。
+- 每个技能声明的工具都必须在 `SubAgent` 构造时注册过，否则草案阶段直接返回 `tool_missing`。
+- 草稿本是**短期便签**，不是长期记忆：跨天依然成立的偏好与约定走「记忆写入」，临时计划与待办走「自记笔记」。
+- 文件工具只接受资源库内的相对路径（例如 `草稿本.md`），越界、`..` 穿越与符号链接外跳由 `infra/files/access` 拒绝；`file_write` 是整篇覆盖，追加必须先 `file_read` 再写回。
+- 资源库根目录取 `settings.data_dir / "resources"`，随 `PET_DATA_DIR` 变化；后端启动时由 `module/agent/workspace.prepare_workspace()` 建目录与 `草稿本.md`，已有内容不覆盖。
 
 #### 子代理的输出契约
 
@@ -216,8 +245,12 @@ chat 输出 dispatch
 | `event` | 结构化事件 | 审批拒绝、派发失败、会话边界 |
 
 - 不加 `source` 列；主动回复就是一条普通 `me` 行——主动是触发路径的属性，不是数据属性。
+- 一轮回复有多条发言时写多行 `me`：各行的 `created_at` 是同一次回复采样值，行间顺序即发言顺序，`daily_log` 的 `id` 自增保证读取顺序稳定。
+- 读取顺序有两种：按日读取（`read_day`）与构造快照按 `created_at, id` 升序，即发言顺序；历史检索接口 `GET /api/chat/history` 走 `newest_first`，按 `created_at DESC, id DESC` 返回新到旧，所以同一轮的多条发言在该接口里是倒序的。消费方要还原一轮对话时，取最近 N 条后需按时间正序翻转。
+- `master` 一行的内容就是用户原文，时间戳存在 `created_at` 列；`[角色][时间]` 前缀只在装配上下文与界面渲染时拼接，不写进 `content`。
 - 临时模式下不写；`recorded=false`。
 - 事件类型维持 3 种，不因感知扩表；感知只写 current 快照，不进 `daily_log`。
+- 历史跨天永久保留；按天清空的只有内存快照。
 
 ### 7.2 transcript
 
@@ -239,7 +272,7 @@ chat 输出 dispatch
 | `status` | thinking / speaking / executing / idle | 宠物状态 |
 | `chunk` | 生成完成后的句段 | 不是逐 token |
 | `approval_request` | 派发审批 | 前端弹确认 |
-| `done` | 回复完成 | 含 `sources` |
+| `done` | 回复完成 | 含 `message_id`、完整 `messages` 与去重后的 `sources` |
 
 - 事件出口由调用方注入：被动入口用 WS/事件总线；主动管线用按请求传入的 `ProactiveEvents`，只转发状态，句段与完成事件由 `proactive.message` 承载。
 - chat 不判断“这次该发哪个事件”；它只调用本次请求的 sink。
@@ -275,7 +308,7 @@ chat 输出 dispatch
 |---|---|
 | 入口 | `chat(ChatRequest)` 单入口；HTTP 路由构造 `ChatRequest(user_text=...)` |
 | 主动轮 | 同一入口，`user_text=None` + `trigger_reason`；由 `module/proactive/pipeline.py` 调用 |
-| 主入口写入 | 被动用 `record_turn`（两条），主动用 `record_reply`（一条 `me`） |
+| 主入口写入 | 被动用 `record_turn`（`master` 1 条 + `me` 1–4 条），主动用 `record_reply`（`me` 1–4 条） |
 | 快照写入 | 被动用 `append_turn`，主动用 `append_reply`；都只在写入 `daily_log` 时发生 |
 | 感知注入 | 注入 `PerceptionReader`（`PerceptionService` 实现），由 chat 只读 `recent_context_events` |
 | 感知 notes 生命周期 | 随写入回合并入；未写入回合不并入；主动轮不读 current |
@@ -290,5 +323,9 @@ chat 输出 dispatch
 - 上下文来自内存当日快照；不按轮配对；current 与历史用分隔串区分；全量线性重建，不做增量更新。
 - 主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`。
 - 解析器只输出 `Trigger{topic, reason}`；chat 不接收按 topic 的话术。
+- 一轮回复 1–4 条发言，`text` 是数组；解析层兼容旧的单字符串，提示词只教数组写法。
+- 句长按显示宽度计：东亚宽字符计 2，其余计 1，单句预算 80（中文约 40 字）。
+- `[角色][HH:MM:SS]` 由装配与渲染层拼装：用户历史行在上下文里带前缀，界面按 `created_at` 装配；`daily_log.content` 保持原文。
 - `daily_log` 只收有价值的 event；感知不写长期日志，只进 current 快照。
 - 主动轮固定 `allow_dispatch=False`，不允许派发/审批。
+- 草稿本（`自记笔记`）是短期便签，与 `daily_log` 这份长期记忆分开；它只能经派发子代理读写，写入走审批闸门，根目录为数据目录下的资源库。

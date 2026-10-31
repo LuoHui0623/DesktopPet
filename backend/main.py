@@ -31,15 +31,23 @@ from module.agent.prompt import (
     CapabilityDescription,
     PromptError,
     PromptTemplates,
+    default_resources,
     load_capabilities,
     load_templates,
     merge_capabilities,
 )
 from module.agent.repository import DbAgentRuns
-from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
+from module.agent.skills import (
+    SkillRegistry,
+    draft_note_skill,
+    memory_retrieve_skill,
+    memory_write_skill,
+)
 from module.agent.subagent import SubAgent
 from module.agent.tools.explore import make_explore_tools
+from module.agent.tools.file import make_file_tools
 from module.agent.tools.memory import make_memory_write_tools
+from module.agent.workspace import prepare_workspace
 from module.avatar.avatar_service import AvatarService
 from module.chat.activity import ChatActivity
 from module.chat.chat_service import ChatService
@@ -163,11 +171,20 @@ def serve(
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
+    skills.register(draft_note_skill())
+    resource_dir = settings.data_dir / "resources"
+    try:
+        prepare_workspace(resource_dir)
+    except OSError as exc:
+        logger.error("资源目录创建失败：%s", exc)
+        print(f"资源目录创建失败：{exc}", file=sys.stderr)
+        return 1
     subagent = SubAgent(
         llm_service,
         [
             *make_explore_tools(memory_reader, skills),
             *make_memory_write_tools(memory_writer),
+            *make_file_tools(resource_dir),
         ],
     )
     orchestrator = Orchestrator(
@@ -210,6 +227,7 @@ def serve(
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
         capabilities=merge_capabilities(capabilities, skills.summaries()),
+        resources=default_resources(resource_dir),
         orchestrator=orchestrator,
         approvals=approvals,
         perception=perception,

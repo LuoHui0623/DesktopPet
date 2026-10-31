@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, Field, TypeAdapter
 
 from api.schemas.approval import ApprovalItem
-from api.schemas.chat import SourceOut
+from api.schemas.chat import ReplyMessageOut, SourceOut
 
 EVENT_SCHEMA_NAME = "ServerEvent"
 
@@ -25,6 +25,7 @@ class ChatDoneEvent(BaseModel):
     message_id: str
     text: str
     sources: list[SourceOut] = Field(default_factory=list)
+    messages: list[ReplyMessageOut] = Field(default_factory=list)
 
 
 class ApprovalRequestEvent(BaseModel):
@@ -39,6 +40,7 @@ class ProactiveMessageEvent(BaseModel):
     text: str
     topic: str
     at: datetime
+    messages: list[ReplyMessageOut] = Field(default_factory=list)
 
 
 ServerEvent = Annotated[

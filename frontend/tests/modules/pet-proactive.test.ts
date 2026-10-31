@@ -130,3 +130,77 @@ describe("pet store: proactive messages", () => {
     fetchSpy.mockRestore();
   });
 });
+
+function proactiveTurn(id: string, at: string, texts: string[]) {
+  return {
+    type: "proactive.message" as const,
+    id,
+    text: texts.join("\n"),
+    topic: "app_in_use.code",
+    at,
+    messages: texts.map((text, index) => ({
+      message_id: `${id}_${index + 1}`,
+      text,
+      at,
+      sources: [],
+    })),
+  };
+}
+
+describe("pet store: several utterances in one proactive turn", () => {
+  it("queues every utterance and shows them one at a time", () => {
+    const { store, timers } = setup();
+    store
+      .getState()
+      .applyEvent(proactiveTurn("p1", "2026-10-29T10:00:07+08:00", ["第一句", "第二句"]));
+
+    expect(store.getState().proactiveMessages.map((message) => message.text)).toEqual([
+      "第一句",
+      "第二句",
+    ]);
+    expect(store.getState().proactiveMessages.map((message) => message.id)).toEqual([
+      "p1_1",
+      "p1_2",
+    ]);
+    expect(timers.pending.map((timer) => timer.ms)).toEqual([PROACTIVE_VISIBLE_MS]);
+
+    timers.fire();
+    expect(store.getState().proactiveMessages.map((message) => message.text)).toEqual(["第二句"]);
+    expect(timers.pending.map((timer) => timer.ms)).toEqual([PROACTIVE_VISIBLE_MS]);
+  });
+
+  it("keeps each utterance's own time", () => {
+    const { store } = setup();
+    store
+      .getState()
+      .applyEvent(proactiveTurn("p1", "2026-10-29T10:00:07+08:00", ["第一句", "第二句"]));
+    expect(store.getState().proactiveMessages.map((message) => message.at)).toEqual([
+      "2026-10-29T10:00:07+08:00",
+      "2026-10-29T10:00:07+08:00",
+    ]);
+  });
+
+  it("shows an event without messages as one bubble", () => {
+    const { store, timers } = setup();
+    store.getState().applyEvent(proactive("p1", "起来动动吧。"));
+    expect(store.getState().proactiveMessages).toEqual([
+      {
+        id: "p1",
+        text: "起来动动吧。",
+        topic: "app_in_use.code",
+        at: "2026-10-29T10:00:00+08:00",
+      },
+    ]);
+    expect(timers.pending).toHaveLength(1);
+  });
+
+  it("mutes the whole turn when ignored in the middle of it", () => {
+    const { store, timers } = setup();
+    store
+      .getState()
+      .applyEvent(proactiveTurn("p1", "2026-10-29T10:00:07+08:00", ["第一句", "第二句"]));
+    store.getState().ignoreProactive();
+    expect(store.getState().proactiveMessages).toEqual([]);
+    expect(timers.pending).toEqual([]);
+  });
+});

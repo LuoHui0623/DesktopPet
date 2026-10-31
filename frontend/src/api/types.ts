@@ -7,6 +7,14 @@ export interface MemorySourceRef {
   text: string;
 }
 
+/** 一轮回复中的单条发言；`at` 为带时区的生成时间，由服务端给出。 */
+export interface ReplyMessage {
+  message_id: string;
+  text: string;
+  at: string;
+  sources: MemorySourceRef[];
+}
+
 export interface ApprovalItem {
   approval_id: string;
   run_id: string;
@@ -29,15 +37,29 @@ export interface ApprovalAck {
 export type ServerEvent =
   | { type: "status"; state: PetState }
   | { type: "chat.chunk"; message_id: string; text: string }
-  | { type: "chat.done"; message_id: string; text: string; sources: MemorySourceRef[] }
+  | {
+      type: "chat.done";
+      message_id: string;
+      text: string;
+      sources: MemorySourceRef[];
+      messages?: ReplyMessage[];
+    }
   | { type: "approval.request"; plan_id: string; items: ApprovalItem[] }
-  | { type: "proactive.message"; id: string; text: string; topic: string; at: string };
+  | {
+      type: "proactive.message";
+      id: string;
+      text: string;
+      topic: string;
+      at: string;
+      messages?: ReplyMessage[];
+    };
 
 export interface ChatReplyResponse {
   message_id: string;
   text: string;
   recorded: boolean;
   sources: MemorySourceRef[];
+  messages?: ReplyMessage[];
 }
 
 export interface ChatHistoryItem {

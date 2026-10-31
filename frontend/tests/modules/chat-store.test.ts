@@ -214,3 +214,152 @@ describe("chat store: sources", () => {
     expect(store.getState().messages.map((message) => message.sources)).toEqual([[], []]);
   });
 });
+
+describe("chat store: several utterances in one turn", () => {
+  const tea = {
+    id: "2026-10-17",
+    kind: "每日对话",
+    date: "2026-10-17",
+    text: "昨天聊了茶",
+  };
+  const AT = "2026-10-29T10:00:07+08:00";
+  const items = [
+    { message_id: "m1a", text: "第一句。", at: AT, sources: [] },
+    { message_id: "m1b", text: "第二句！", at: AT, sources: [tea] },
+    { message_id: "m1c", text: "第三句。", at: AT, sources: [] },
+  ];
+
+  it("turns one pending reply into ordered assistant messages", () => {
+    const { store } = setup();
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "第一句。\n第二句！\n第三句。",
+      sources: [],
+      messages: items,
+    });
+    expect(store.getState().messages.map((message) => [message.role, message.text])).toEqual([
+      ["user", "你好"],
+      ["assistant", "第一句。"],
+      ["assistant", "第二句！"],
+      ["assistant", "第三句。"],
+    ]);
+    expect(
+      store
+        .getState()
+        .messages.slice(1)
+        .map((message) => message.messageId),
+    ).toEqual(["m1a", "m1b", "m1c"]);
+    expect(
+      store
+        .getState()
+        .messages.slice(1)
+        .map((message) => message.status),
+    ).toEqual(["done", "done", "done"]);
+  });
+
+  it("gives every message its own time and sources", () => {
+    const { store } = setup();
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "第一句。\n第二句！",
+      sources: [tea],
+      messages: items.slice(0, 2),
+    });
+    const [, first, second] = store.getState().messages;
+    expect(first?.at).toBe(AT);
+    expect(second?.at).toBe(AT);
+    expect(first?.sources).toEqual([]);
+    expect(second?.sources).toEqual([tea]);
+  });
+
+  it("uses the HTTP reply when the event arrives later", () => {
+    const { store, localId } = setup();
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "第一句。\n第二句！\n第三句。",
+      recorded: true,
+      sources: [],
+      messages: items,
+    });
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "第一句。\n第二句！\n第三句。",
+      sources: [],
+      messages: items,
+    });
+    expect(store.getState().messages.map((message) => message.text)).toEqual([
+      "你好",
+      "第一句。",
+      "第二句！",
+      "第三句。",
+    ]);
+    expect(store.getState().sending).toBe(false);
+    expect(store.getState().pendingLocalId).toBeNull();
+  });
+
+  it("does not duplicate the turn when the HTTP reply arrives after the event", () => {
+    const { store, localId } = setup();
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "第一句。\n第二句！",
+      sources: [],
+      messages: items.slice(0, 2),
+    });
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "第一句。\n第二句！",
+      recorded: true,
+      sources: [],
+      messages: items.slice(0, 2),
+    });
+    expect(store.getState().messages.map((message) => message.text)).toEqual([
+      "你好",
+      "第一句。",
+      "第二句！",
+    ]);
+    expect(store.getState().sending).toBe(false);
+  });
+
+  it("replaces the streamed text of the placeholder with the finished messages", () => {
+    const { store } = setup();
+    store.getState().applyEvent({ type: "chat.chunk", message_id: "m1", text: "第一" });
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "第一句。\n第二句！",
+      sources: [],
+      messages: items.slice(0, 2),
+    });
+    expect(store.getState().messages.map((message) => message.text)).toEqual([
+      "你好",
+      "第一句。",
+      "第二句！",
+    ]);
+  });
+
+  it("shows a reply without messages as one message", () => {
+    const { store, localId } = setup();
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "第一句。\n第二句！",
+      recorded: true,
+      sources: [],
+    });
+    expect(store.getState().messages.map((message) => message.text)).toEqual([
+      "你好",
+      "第一句。\n第二句！",
+    ]);
+    expect(store.getState().messages[1]?.at).toBeNull();
+  });
+
+  it("stamps the user message with the local submit time", () => {
+    const { store } = setup();
+    const at = store.getState().messages[0]?.at;
+    expect(typeof at).toBe("string");
+    expect(Number.isNaN(Date.parse(at as string))).toBe(false);
+  });
+});

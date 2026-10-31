@@ -14,6 +14,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from config.settings import ModelSettingsSource, load_service_settings
+from constants.speech import SENTENCE_MAX_WIDTH, visible_width
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.prompt import load_capabilities, load_templates
@@ -113,9 +114,20 @@ def main() -> int:
         started = time.monotonic()
         try:
             reply = chat.chat(ChatRequest(user_text=sample))
-            outcome = {"ok": True, "text": reply.text, "code": None}
+            outcome = {
+                "ok": True,
+                "text": reply.text,
+                "texts": [message.text for message in reply.messages],
+                "code": None,
+            }
         except ChatError as exc:
-            outcome = {"ok": False, "text": None, "code": exc.code, "message": str(exc)}
+            outcome = {
+                "ok": False,
+                "text": None,
+                "texts": None,
+                "code": exc.code,
+                "message": str(exc),
+            }
         elapsed = round(time.monotonic() - started, 2)
         last_raw = raws[-1] if raws else ""
         row = {
@@ -126,15 +138,21 @@ def main() -> int:
             "raw_last": last_raw,
             "type_first": last_raw.lstrip().startswith('{"type"'),
             "code_fence": "```" in last_raw,
-            "max_sentence_chars": max(
-                (len(s) for s in split_sentences(outcome["text"] or "")), default=0
+            "max_sentence_width": max(
+                (
+                    visible_width(sentence)
+                    for text in (outcome["texts"] or ())
+                    for sentence in split_sentences(text)
+                ),
+                default=0,
             ),
         }
         rows.append(row)
         status = "通过" if row["ok"] else f"失败({row['code']})"
         print(
             f"[{status}] 尝试 {row['attempts']} 次，{elapsed}s，type 在首位={row['type_first']}，"
-            f"代码块={row['code_fence']}，最长单句={row['max_sentence_chars']}：{sample}"
+            f"代码块={row['code_fence']}，最长单句宽度={row['max_sentence_width']}"
+            f"（上限 {SENTENCE_MAX_WIDTH}）：{sample}"
         )
 
     passed = sum(1 for row in rows if row["ok"])

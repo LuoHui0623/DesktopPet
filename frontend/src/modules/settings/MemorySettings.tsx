@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { DailyRecord, MemoriesResponse } from "../../api/types";
 import { describeRequestError } from "../../service/api-client";
 import { loadMemories, saveStructured, setTemporaryMode } from "../../service/memory.service";
+import { formatClock } from "../chat/clock-view";
 import { allDates, numberedLines } from "./memory-view";
 
 const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
@@ -240,7 +241,7 @@ export function MemorySettings() {
               style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 8, fontSize: 13 }}
             >
               <div style={{ color: "#666", marginBottom: 2 }}>
-                {record.created_at.slice(11, 16)} · {ROLE_LABELS[record.role] ?? record.role}
+                {formatClock(record.created_at)} · {ROLE_LABELS[record.role] ?? record.role}
               </div>
               <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                 {record.content}

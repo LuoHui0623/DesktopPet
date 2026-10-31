@@ -69,9 +69,16 @@
 | 判定集中 | 解析器集中判定，只输出 `Trigger{topic, reason}` | [OBSERVER.md](OBSERVER.md) §4.3 |
 | chat 职责 | ChatService 提供完整 chat 能力，不做主动编排 | [CHAT.md](CHAT.md) §1 |
 | 上下文来源 | 上下文来自当日会话快照；current 与历史用分隔串区分 | [CHAT.md](CHAT.md) §5 |
+| 连续发言 | 一轮回复 1–4 条，`text` 是数组；解析层兼容旧字符串，提示词只教数组 | [CHAT.md](CHAT.md) §6.1 |
+| 句长预算 | 单句按显示宽度 80 计（东亚宽字符 2、其余 1），中文约 40 字、英文约 80 字符 | [CHAT.md](CHAT.md) §6.2 |
+| 角色与时间戳 | 上下文只给用户历史加 `[master][HH:MM:SS]`；界面按 `created_at`/`at` 装配，不写正文 | [CHAT.md](CHAT.md) §5.2 |
+| 历史读取顺序 | 快照与按日读取按 `created_at, id` 升序；`GET /api/chat/history` 新到旧，同轮多条在该接口里为倒序 | [CHAT.md](CHAT.md) §7.1 |
+| 当日日期标记 | 系统提示词结尾追加 `=======YYYY/MM/DD=======`，不写库、不进快照 | [CHAT.md](CHAT.md) §5.2.1 |
 | 主动轮边界 | 主动轮不允许派发/审批（`allow_dispatch=False`） | [PROACTIVE.md](PROACTIVE.md) §10 |
 | 互动的注入与上报 | 互动以 `[master] <行为>` 注入当轮上下文、不写记忆；前端反应与上报分离 | [Arch.md](../Arch.md) §6.6 |
 | 右键菜单读模型 | 菜单结构、可用与勾选状态由后端读模型决定，桌面壳只构建原生菜单 | [Arch.md](../Arch.md) §6.7 |
 | 主动消息不做反馈 | 气泡忽略只在前端本会话生效，后端没有反馈接口与反馈表 | [PROACTIVE.md](PROACTIVE.md) §9 |
+| 宠物窗口命中与居中 | 点击/悬停按形象不透明像素判定；形象有色边界水平居中、纵向完整可见 | [Arch.md](../Arch.md) §6.1 与 `frontend/src/modules/pet/pet-alpha.ts` |
 | 子代理输出格式 | 每次回复只输出一个 JSON 对象，禁止 `tool_calls`/DSML 标记；解析失败先清洗再重试 | [CHAT.md](CHAT.md) §6.3 |
+| 草稿本（小本本） | 短期便签，与长期记忆分开；只有派发子代理能读写，写入走审批；资源库在数据目录下，启动自动建文件且不覆盖 | [CHAT.md](CHAT.md) §6.3 |
 | 模型调用落库 | 每次调用（含失败）把请求与回复正文一并写入 `llm_call`，超上限截断 | [LLM.md](LLM.md) §6 |

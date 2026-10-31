@@ -1,6 +1,6 @@
 # 桌面宠物 · 架构设计
 
-- 版本：v0.12（M4 进行中：感知采集/判定/调度、chat 内存快照、主动管线与主动气泡、形象包与状态联动动图、基础互动、右键菜单已实现）
+- 版本：v0.13（M4 进行中：感知采集/判定/调度、chat 内存快照、主动管线与主动气泡、形象包与状态联动动图、基础互动、右键菜单已实现；对话升级为多条连续发言、显示宽度句长、秒级时间戳与日期标记，宠物窗口按形象有色边界居中并按不透明像素判定命中）
 - 对应需求与技术选型：`桌面宠物PRD.md`（v0.7）
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD，行动计划见 `Task.md`。
 
@@ -107,7 +107,6 @@
 ├─ 桌面宠物PRD.md              # 需求、场景、技术选型
 ├─ .gitignore                 # Git 忽略规则
 ├─ .pre-commit-config.yaml    # 提交前钩子：ruff format / ruff check
-├─ 授权目录/                   # 授权目录：草稿本、表情包等资源所在，不入 Git，不由项目管理（见 PRD §7.9）
 ├─ frontend/                  # 前端（Tauri 2 + React）
 └─ backend/                   # 后端（Python + FastAPI）
 ```
@@ -152,8 +151,8 @@ frontend/
    │  └─ env.d.ts
    │
    ├─ modules/                # 【功能模块层】按功能划分的页面与组件
-   │  ├─ pet/                 # 悬浮窗：形象包渲染（加载失败回退内联 SVG）、状态标签、拖动、点击打开对话、互动反应（缩放/位移）、感知候选气泡、主动消息气泡（排队、自动消失、忽略）、右键原生菜单；use-interaction-config.ts 读取互动配置并在 settings-changed 后重新载入
-   │  ├─ chat/                # 对话窗口：标签页、多轮对话、流式展示、历史搜索、记忆来源、审批确认
+   │  ├─ pet/                 # 悬浮窗：形象包渲染（加载失败回退内联 SVG）、状态标签、拖动、点击打开对话、互动反应（缩放/位移）、感知候选气泡、主动消息气泡（排队、自动消失、忽略）、右键原生菜单；use-interaction-config.ts 读取互动配置并在 settings-changed 后重新载入；pet-alpha.ts / avatar-alpha.ts 从帧图 alpha 通道取有色边界，用 translateX 让轮廓水平居中，并按不透明像素判定点击与悬停命中（透明处不响应）
+   │  ├─ chat/                # 对话窗口：标签页、多轮对话（一轮可含多条发言）、流式展示、`[角色][HH:MM:SS]` 头行（clock-view.ts 统一格式化）、历史搜索、记忆来源、审批确认
    │  └─ settings/            # 设置窗口：模型（列表、可用性、切换、重载）、记忆（结构化记忆查看与编辑、每日对话查看、临时模式）、人设选择、感知、主动消息、形象、互动
    │     ├─ SettingsWindow.tsx     # 设置窗口装配：左侧 tab + 右侧面板，持有统一读模型
    │     ├─ use-settings-bundle.ts # 载入 GET /api/settings 与感知实时状态，保存后回填读模型；代次计数丢弃过期响应
@@ -171,7 +170,7 @@ frontend/
    │  │  └─ chat.store.ts     # 会话消息、流式片段、记忆来源
    │  ├─ api-client.ts        # 获取后端客户端（经 get_backend_info）、统一错误文案
    │  ├─ backend.service.ts   # 后端连接信息与健康检查
-   │  ├─ events.ts            # WebSocket 事件（chat.chunk / chat.done / pet.state / proactive.message …）→ store 的分发
+   │  ├─ events.ts            # WebSocket 事件（chat.chunk / chat.done / pet.state / proactive.message …）→ store 的分发；chat.done 与 proactive.message 都带 messages 数组
    │  ├─ tauri-events.ts      # Tauri 自定义事件名唯一出处（settings-changed、menu-action、perception-sample、perception-candidate）；名称只能含字母数字与 - / : _，与 Rust 侧常量由测试互相校验
    │  ├─ chat.service.ts      # 发送消息、搜索历史
    │  ├─ model.service.ts     # 模型列表、切换、重载
@@ -205,7 +204,7 @@ backend/
 │  ├─ path.py                # 目录常量：项目根、后端根、配置、数据（默认 backend/data）、日志、导出、资源库
 │  ├─ agent.py               # 子代理常量（最大步数等）
 │  ├─ memory.py              # 记忆常量：上下文预算
-│  └─ speech.py              # 句长上限（40 字符）
+│  └─ speech.py              # 发言上限：单轮最多 4 条（REPLY_MAX_ITEMS）、单句显示宽度 80（SENTENCE_MAX_WIDTH，中文约 40 字）与 visible_width()
 │
 ├─ resources/                # 【资源】代码随附的静态资源，入 Git
 │  ├─ skills/                # 技能说明书：每个能力一个 <file>.md，开头的 > 引用块即“何时使用”
@@ -242,9 +241,9 @@ backend/
 │
 ├─ module/                   # 【业务域】完整业务能力；跨域组装在 main.py
 │  ├─ chat/
-│  │  ├─ chat_service.py     # 对话用例：派发分支、组装上下文、调模型、句长校验、引用解析、写 daily_log、推送事件
-│  │  ├─ context.py          # 上下文组装：系统提示词 → 检索片段 → 引用规则 → 当日会话快照 → current 感知 → 本次输入
-│  │  ├─ transcript.py       # 当日原始对话快照：内存、日切清空、不落库、不从 daily_log 还原
+│  │  ├─ chat_service.py     # 对话用例：派发分支、组装上下文、调模型、多发言与句长校验、引用解析、写 daily_log、推送事件
+│  │  ├─ context.py          # 上下文组装：系统提示词（结尾带当日日期标记）→ 检索片段 → 引用规则 → 当日会话快照（用户行带 [master][HH:MM:SS]）→ current 感知 → 本次输入
+│  │  ├─ transcript.py       # 当日原始对话快照：内存、日切清空、不落库、不从 daily_log 还原；助手行按 {"type":"chat","text":[...]} 保存
 │  │  ├─ citations.py        # 引用标记 [引用 日期] 的解析与来源过滤（只保留本次注入的记忆片段）
 │  │  └─ activity.py         # 对话活跃计数：供感知解析器判断“对话进行中”
 │  ├─ llm/
@@ -274,6 +273,7 @@ backend/
 │  │  ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步
 │  │  ├─ approval.py         # 审批：草案 → 推送前端 → 等待确认/超时拒绝
 │  │  ├─ skills.py           # 能力注册表：登记能力名、说明书文件与工具清单，从 SKILL.md 解析说明
+│  │  ├─ workspace.py        # 启动准备：保证资源库目录与草稿本存在，已有内容不覆盖
 │  │  ├─ prompt.py           # 提示词构建与注入（角色卡、行动规则、能力名、发言规则）
 │  │  ├─ contracts.py        # 派发契约
 │  │  ├─ repository.py       # agent_run 持久化
@@ -282,7 +282,7 @@ backend/
 │  │     ├─ explore.py       # 探索工具：index 看清单、read 读内容，按 resource（skill / memory）路由
 │  │     ├─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
 │  │     ├─ memory.py        # 记忆写入工具：append 追加、replace 在多段行区间内正则替换
-│  │     └─ file.py          # 文件工具（草稿本读写），经 infra/files；尚未接入对话流程
+│  │     └─ file.py          # 文件工具（草稿本读写），经 infra/files；随「自记笔记」接入子代理
 │  ├─ interaction/
 │  │  ├─ interaction_service.py # 互动上报：按种类节流、内存队列暂存，下次用户对话时一次性取出
 │  │  ├─ config.py           # 互动配置（interaction.config）读写与校验：上报种类、悬停停留、上报间隔、反应时长；非法取值保持原值
@@ -337,6 +337,7 @@ backend/
 │  ├─ pet.db                 # SQLite：daily_log、llm_call、agent_run、app_setting 等
 │  ├─ avatars/               # 形象包：<pack_id>/manifest.json 与帧图，首次启动从 resources/avatars/default 复制
 │  ├─ memory/                # structured.md（结构化记忆，纯文本大纲）与 index.json（由代码生成）
+│  ├─ resources/             # 资源库：草稿本.md 与 表情包/，首次启动由 prepare_workspace 生成，已有内容不覆盖
 │  ├─ logs/                  # 后端日志
 │  └─ backend.lock           # 单实例锁
 │
@@ -488,6 +489,7 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | **sub agent 编排与 ReAct 循环** | `module/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
 | **记忆写入与记忆来源** | `module/chat/citations.py`（引用过滤）、`module/agent/skills.py`（能力登记） | 业务规则：写不写由主 agent 决定；只有本次注入上下文中的记忆可作为来源 |
 | **技能说明书与探索工具** | `resources/skills/*.md`（说明书）、`module/agent/skills.py`（登记与解析）、`module/agent/tools/explore.py`（`index` / `read`） | 业务规则：主 agent 只见能力名，说明书由子代理按需查阅 |
+| **草稿本（小本本）** | `module/agent/workspace.py`（启动准备）、`module/agent/tools/file.py`（`file_read` / `file_write` / `file_edit` / `file_clear`）、`resources/skills/draft_note.md`（说明书） | 业务规则：草稿本是短期便签，只由派发子代理读写，根目录为数据目录下的资源库 |
 | **Win32 感知采集**（空闲、前台、全屏、锁屏、白名单进程） | `frontend/src-tauri/src/perception.rs` | 桌面壳侧采集，变化时上报；后端不引入平台依赖 |
 | **天气 HTTP 客户端**（未实现） | `infra/weather/qweather.py` | 外部接口适配 |
 | **天气缓存策略、失败降级文案**（未实现） | `service/weather/` | 业务规则 |
@@ -532,20 +534,23 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
    ├─ module/chat/context          组装：系统提示词 → 检索片段 → 引用规则 → 当日会话快照 → current 感知 → 本次输入
    │     └─ module/chat/transcript 当日原始对话快照（内存，日切清空，全量送入，不裁剪）
    ├─ infra/llm                    调用对话模型（非流式），记录用量
-   ├─ 句长校验                      单句 ≤ 40 字符，超限重新生成一次
+   ├─ 输出校验                      type=chat 时 text 为 1–4 条发言（旧字符串归一化为一条）；逐句按显示宽度校验
+   ├─ 句长校验                      单句 ≤ 80 显示宽度（东亚宽字符计 2，其余计 1，中文约 40 字），超限重新生成一次
    ├─ module/chat/citations        去除 [引用 日期] 标记；来源只保留本次注入上下文中的记忆片段
-   ├─ module/memory/repository     写入 daily_log（经 infra/store；临时模式下不写）
-   └─ infra/events/bus             按句段推送 chat.chunk，完成后推送 chat.done（含 sources）
+   ├─ module/memory/repository     写入 daily_log（经 infra/store；临时模式下不写），多条发言写多行 me
+   └─ infra/events/bus             按句段推送 chat.chunk，完成后推送 chat.done（含 messages 与 sources）
 前端 api/ws.ts ─► service/events.ts ─► stores/chat.store.ts ─► modules/chat 渲染
 ```
 
 - 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
+- 多条发言：一轮回复由模型给出 1–4 条，`chat.done` 携带完整 `messages`，前端逐条入列并各自显示 `[角色][HH:MM:SS]` 头行；时间由后端按回复时刻采样，前端只做装配渲染，不写进正文。
+- 日期：系统提示词末尾追加一行 `=======YYYY/MM/DD=======`，让模型知道今天是哪天；快照本身只覆盖当天。
 - 检索：主 agent 可派发「记忆检索」能力读取历史记忆；日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.chat` 接受的检索片段仍由调用方提供。
 - 互动：自上次用户对话以来记录的行为由 `module/interaction` 在本次用户输入前取出，以 `[master] <行为>` 行进入上下文（§6.6），不写记忆。
 
 ### 6.2 主动消息
 
-解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=False))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动回复在 `daily_log` 中是一条普通 `me`，同时追加进当日会话快照；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 按时间排队，逐条显示气泡，到时自动消失；点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端。
+解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=False))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动回复在 `daily_log` 中是普通 `me` 行（多条发言即多行），同时追加进当日会话快照；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 的 `messages` 按顺序排队，逐条显示气泡，到时自动消失；点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端。
 
 ### 6.3 结构化记忆写入与检索
 
@@ -563,11 +568,15 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
        ├─ tools/explore：index、read 按 resource 路由（skill / memory）
        ├─ tools/memory：memory_append 追加到末尾、memory_replace 在多段行区间内正则替换（module/memory，经 infra/files 写 data/memory/structured.md）
        │    临时模式开启或命中敏感信息时由 MemoryWriter 拒绝，拒绝原因作为工具错误返回
+       ├─ tools/file：file_read / file_write / file_edit / file_clear，根目录为数据目录下的资源库，只接受库内相对路径
+       │    file_write 是整篇覆盖，追加要先 file_read 再写回；路径越界或含 .. 由 infra/files/access 拒绝
        └─ module/memory/index 重新生成记忆索引
   ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户
 ```
 
-拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入` 与 `记忆检索` 各一份 `SKILL.md`。写入后，用户可在设置页查看与编辑。
+拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。写入后，用户可在设置页查看与编辑。
+
+草稿本（`自记笔记`）是**短期便签**，与 `daily_log` 这份长期记忆分开：看草稿本用 `file_read`，写用 `file_write`（整篇覆盖）或 `file_edit`（按空行分段替换），清空用 `file_clear`。资源库与草稿本在后端启动时由 `module/agent/workspace.prepare_workspace()` 创建，已存在的文件内容不覆盖；文件工具实例按 `settings.data_dir / "resources"` 构造，因此 `PET_DATA_DIR` 换了资源库也跟着走。
 
 ### 6.3.1 记忆查看与检索
 
@@ -719,7 +728,7 @@ Tauri src/menu.rs
 | GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
 | GET / PUT | `/api/llm/active` | `get_active_llm` / `set_active_llm` | 当前对话模型与整理模型 |
 | POST | `/api/llm/reload` | `reload_llm_config` | 手动重载 `.env` 与 `llm.yaml` |
-| WS | `/ws` | — | 事件推送：`status`、`chat.chunk`、`chat.done`（含 sources）、`approval.request`、`proactive.message`；握手后立即下发一帧当前状态，见下文「连接初始快照」 |
+| WS | `/ws` | — | 事件推送：`status`、`chat.chunk`、`chat.done`（含 `messages` 与 sources）、`approval.request`、`proactive.message`（含 `messages`）；握手后立即下发一帧当前状态，见下文「连接初始快照」 |
 
 未实现的接口：`POST /api/settings/llm/test`（设置页的非模型部分）、`/api/capabilities/*`（M6）、`POST /api/imports`（M5）、`POST /api/emergency-stop`（M3）。主动消息不提供反馈接口。
 

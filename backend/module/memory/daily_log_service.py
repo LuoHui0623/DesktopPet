@@ -57,24 +57,42 @@ class DailyLogService:
     def set_temporary_mode(self, enabled: bool) -> None:
         self._settings.put(TEMPORARY_MODE_KEY, "true" if enabled else "false")
 
-    def record_turn(self, user_text: str, assistant_text: str) -> bool:
+    def record_turn(
+        self,
+        user_text: str,
+        assistant_text: str | Sequence[str],
+        *,
+        received_at: datetime | None = None,
+        replied_at: datetime | None = None,
+    ) -> bool:
         if self.temporary_mode():
             return False
-        now = self._clock(self._timezone)
+        received = received_at or self._clock(self._timezone)
+        replied = replied_at or self._clock(self._timezone)
         self._append(
             [
-                DailyLogEntry(day=now.date(), role="master", content=user_text, created_at=now),
-                DailyLogEntry(day=now.date(), role="me", content=assistant_text, created_at=now),
+                DailyLogEntry(
+                    day=received.date(), role="master", content=user_text, created_at=received
+                ),
+                *[
+                    DailyLogEntry(day=replied.date(), role="me", content=text, created_at=replied)
+                    for text in _utterances(assistant_text)
+                ],
             ]
         )
         return True
 
-    def record_reply(self, assistant_text: str) -> bool:
+    def record_reply(
+        self, assistant_text: str | Sequence[str], *, at: datetime | None = None
+    ) -> bool:
         if self.temporary_mode():
             return False
-        now = self._clock(self._timezone)
+        now = at or self._clock(self._timezone)
         self._append(
-            [DailyLogEntry(day=now.date(), role="me", content=assistant_text, created_at=now)]
+            [
+                DailyLogEntry(day=now.date(), role="me", content=text, created_at=now)
+                for text in _utterances(assistant_text)
+            ]
         )
         return True
 
@@ -120,6 +138,13 @@ class DailyLogService:
 
     def _append(self, entries: Sequence[DailyLogEntry]) -> None:
         self._store.append([to_record(entry) for entry in entries])
+
+
+def _utterances(assistant_text: str | Sequence[str]) -> tuple[str, ...]:
+    """兼容旧的单字符串入参，统一归一化为有序的发言列表。"""
+    if isinstance(assistant_text, str):
+        return (assistant_text,)
+    return tuple(assistant_text)
 
 
 def _iso_day(day: str) -> str:

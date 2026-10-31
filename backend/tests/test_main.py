@@ -203,6 +203,14 @@ def test_startup_creates_database(backend: subprocess.Popen):
     assert (TEST_DATA_DIR / "pet.db").exists()
 
 
+def test_startup_prepares_the_draft(backend: subprocess.Popen):
+    backend.stdout.readline()
+    draft = TEST_DATA_DIR / "resources" / "草稿本.md"
+    assert draft.is_file()
+    assert draft.read_text(encoding="utf-8").strip()
+    assert (TEST_DATA_DIR / "resources" / "表情包").is_dir()
+
+
 def test_unusable_data_dir_exits_with_error(tmp_path: Path):
     blocker = tmp_path / "not-a-dir"
     blocker.write_text("x", encoding="utf-8")

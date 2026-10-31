@@ -6,7 +6,7 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.persona import parse_persona
-from module.agent.prompt import load_templates
+from module.agent.prompt import ResourceItem, load_templates
 from module.chat import context as context_module
 from module.chat.context import (
     CURRENT_SEPARATOR,
@@ -32,7 +32,12 @@ def master(moment: datetime, text: str) -> ChatLine:
 
 
 def me(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=reply_message(text), is_reply=True)
+    return ChatLine(at=moment, message=reply_message([text]), is_reply=True)
+
+
+def expects(moment: datetime, text: str) -> str:
+    """用户历史行的渲染结果：带角色与秒级时间前缀。"""
+    return f"[master][{moment:%H:%M:%S}]{text}"
 
 
 def note(moment: datetime, text: str) -> ChatLine:
@@ -87,6 +92,15 @@ def parts(tmp_path: Path):
         "transcript": transcript,
         "builder": builder,
     }
+
+
+def test_resources_point_at_the_runtime_resource_dir(parts, tmp_path: Path):
+    resources = [ResourceItem("草稿本", (tmp_path / "resources" / "草稿本.md").as_posix())]
+    builder = ContextBuilder(
+        PERSONA, load_templates(), TZ, resources=resources, clock=parts["clock"]
+    )
+    text = builder.build("你好").messages[0].content
+    assert f"- 草稿本: {(tmp_path / 'resources' / '草稿本.md').as_posix()}" in text
 
 
 def test_persona_is_first_then_structured_then_input(parts):
@@ -160,12 +174,49 @@ def test_transcript_lines_follow_construction_order(parts):
         AIMessage,
     ]
     assert [message.content for message in messages[1:-1]] == [
-        "一",
-        '{"type": "chat", "text": "二"}',
-        "三",
-        '{"type": "chat", "text": "四"}',
+        expects(at(9), "一"),
+        '{"type": "chat", "text": ["二"]}',
+        expects(at(10), "三"),
+        '{"type": "chat", "text": ["四"]}',
         CURRENT_SEPARATOR,
     ]
+
+
+def test_user_history_carries_role_and_second_level_time(parts):
+    lines = (master(at(9, 5), "早"), me(at(9, 6), "早呀"))
+    messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("在吗").messages
+    assert messages[1].content == "[master][09:05:00]早"
+    # D-11：助手历史保持纯 JSON，不加角色时间前缀，继续教模型输出结构化格式
+    assert messages[2].content == '{"type": "chat", "text": ["早呀"]}'
+
+
+def test_several_utterances_keep_their_boundary_in_history(parts):
+    line = ChatLine(
+        at=at(9),
+        message=reply_message(["第一句。", "第二句！"]),
+        is_reply=True,
+    )
+    built = parts["builder"](transcript_=parts["transcript"](master(at(9), "你好"), line)).build(
+        "在吗"
+    )
+    contents = [message.content for message in built.messages[1:-1]]
+    assert contents[1] == '{"type": "chat", "text": ["第一句。", "第二句！"]}'
+
+
+def test_system_prompt_ends_with_the_day_marker(parts):
+    result = parts["builder"]().build("你好")
+    system = result.messages[0]
+    assert isinstance(system, SystemMessage)
+    assert system.content.endswith("=======2026/10/18=======")
+
+
+def test_day_marker_stays_last_after_structured_and_retrieved_blocks(parts):
+    parts["structured"].save("## 喜好\n喜欢美式咖啡")
+    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
+    text = parts["builder"]().build("你好", fragments).messages[0].content
+    assert text.rstrip().endswith("=======2026/10/18=======")
+    assert context_module.CITATION_RULE in text
+    assert text.index(context_module.CITATION_RULE) < text.index("=======2026/10/18=======")
 
 
 def test_appended_event_lines_stay_assistant_messages(parts):
@@ -234,8 +285,8 @@ def test_full_transcript_is_kept_without_trimming(parts):
         )
     )
     result = parts["builder"](transcript_=parts["transcript"](*lines)).build("现在")
-    assert any(message.content.startswith("第0轮") for message in result.messages)
-    assert any(message.content.startswith("第19轮") for message in result.messages)
+    assert any("第0轮" in message.content for message in result.messages)
+    assert any("第19轮" in message.content for message in result.messages)
     assert not any("已裁剪" in warning for warning in result.warnings)
 
 

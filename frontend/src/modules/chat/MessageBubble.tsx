@@ -1,4 +1,5 @@
 import type { ChatMessage } from "../../service/stores/chat.store";
+import { roleStamp } from "./clock-view";
 import { MemorySources } from "./MemorySources";
 
 export function MessageBubble({ message }: { message: ChatMessage }) {
@@ -10,6 +11,9 @@ export function MessageBubble({ message }: { message: ChatMessage }) {
   return (
     <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
       <div style={{ maxWidth: "80%", display: "grid", gap: 6 }}>
+        <div style={{ color: "#888", fontSize: 11, textAlign: isUser ? "right" : "left" }}>
+          {roleStamp(isUser ? "master" : "me", message.at)}
+        </div>
         <div
           role={isError ? "alert" : undefined}
           style={{

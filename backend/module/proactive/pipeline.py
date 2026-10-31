@@ -13,8 +13,8 @@ from module.chat.chat_service import (
     ChatRequest,
     ChatService,
     PetState,
+    ReplyMessage,
 )
-from module.chat.citations import CitedSource
 from service.perception.events import Trigger
 
 logger = logging.getLogger("pet")
@@ -28,7 +28,9 @@ class SentLedger(Protocol):
 
 
 class ProactivePublisher(Protocol):
-    def proactive_message(self, message_id: str, text: str, topic: str, at: datetime) -> None: ...
+    def proactive_message(
+        self, message_id: str, messages: Sequence[ReplyMessage], topic: str, at: datetime
+    ) -> None: ...
 
 
 class ProactiveEvents:
@@ -46,7 +48,7 @@ class ProactiveEvents:
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
         return None
 
-    def done(self, message_id: str, text: str, sources: Sequence[CitedSource]) -> None:
+    def done(self, message_id: str, messages: Sequence[ReplyMessage]) -> None:
         return None
 
 
@@ -89,7 +91,7 @@ class ProactivePipeline:
             at = self._now()
             self._record_sent(topic, at)
             try:
-                self._publisher.proactive_message(reply.message_id, reply.text, topic, at)
+                self._publisher.proactive_message(reply.message_id, reply.messages, topic, at)
             except Exception:
                 logger.exception("主动消息推送失败：%s", topic)
                 return ProactiveResult(False, topic, reply.message_id, "ws_failed")

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from module.memory.contracts import DailyLogView
@@ -16,11 +18,21 @@ class SourceOut(BaseModel):
     text: str
 
 
+class ReplyMessageOut(BaseModel):
+    """一轮回复里的一条发言。"""
+
+    message_id: str
+    text: str
+    at: datetime
+    sources: list[SourceOut] = Field(default_factory=list)
+
+
 class ChatReplyResponse(BaseModel):
     message_id: str
     text: str
     recorded: bool
     sources: list[SourceOut] = Field(default_factory=list)
+    messages: list[ReplyMessageOut] = Field(default_factory=list)
 
 
 class ChatHistoryResponse(BaseModel):

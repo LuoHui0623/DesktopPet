@@ -86,7 +86,8 @@ def test_sections_follow_fixed_order(templates):
 def test_action_rules_describe_the_chat_output_format(templates):
     text = build(templates).text
     rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
-    assert '{"type": "chat", "text": "要说给主人的话"}' in rules
+    assert '{"type": "chat", "text": ["要说给主人的话"]}' in rules
+    assert "1–4 项" in rules
     assert "type 必须是第一个字段" in rules
 
 
@@ -165,7 +166,7 @@ def test_empty_sections_use_placeholders(templates):
 
 def test_speaking_rules_come_from_constants(templates):
     text = build(templates).text
-    assert "单句不超过 40 字符" in text
+    assert "单句不超过 40 个汉字或 80 个英文字符" in text
     assert "人设提示约 20 字" in text
 
 

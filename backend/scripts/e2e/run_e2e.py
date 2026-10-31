@@ -5,7 +5,8 @@
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
 覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
 记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、临时模式、正常关闭（stdin 指令）、
-设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）。
+设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）、
+草稿本（启动生成 + 自记笔记派发后写入）。
 """
 
 import json
@@ -27,7 +28,13 @@ from websockets.sync.client import connect as ws_connect
 BACKEND_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from fake_llm import PROACTIVE_REPLY, FakeLlm  # noqa: E402
+from fake_llm import (  # noqa: E402
+    MULTI_REPLIES,
+    MULTI_TRIGGER,
+    PROACTIVE_REPLY,
+    PROACTIVE_TEXTS,
+    FakeLlm,
+)
 
 TOKEN = "e2e-token-" + os.urandom(12).hex()
 PASSED: list[str] = []
@@ -236,6 +243,12 @@ def last_chat_request(requests: list[dict]) -> dict:
     raise AssertionError("假模型未收到主对话请求")
 
 
+def newest_me_contents(items: list[dict], count: int) -> list[str]:
+    """按时间正序返回最近 count 条 me 记录；历史接口本身是新到旧。"""
+    newest = [item["content"] for item in items if item["role"] == "me"][:count]
+    return list(reversed(newest))
+
+
 def _is_main_chat(body: dict) -> bool:
     system = next(
         (str(m.get("content", "")) for m in body.get("messages", []) if m.get("role") == "system"),
@@ -283,6 +296,34 @@ def check_streaming_chat(api: Api, tap: EventTap, llm: FakeLlm) -> None:
         f"chat.chunk 应先于 chat.done：{kinds}",
     )
     step("对话：切换后的下一次对话使用新模型，流式片段拼接与回复一致，状态与推送顺序正确")
+
+
+def check_multi_messages(api: Api, tap: EventTap) -> None:
+    mark = len(tap.events)
+    reply = api.call("POST", "/api/chat", {"text": MULTI_TRIGGER})
+    check(reply["text"] == "\n".join(MULTI_REPLIES), f"多条回复拼接异常：{reply}")
+    check(
+        [item["text"] for item in reply["messages"]] == list(MULTI_REPLIES),
+        f"HTTP 响应应保留多条发言顺序：{reply}",
+    )
+    ids = {item["message_id"] for item in reply["messages"]}
+    check(len(ids) == len(MULTI_REPLIES), f"每条发言应有独立标识：{reply['messages']}")
+    check(
+        all(item["at"] == reply["messages"][0]["at"] for item in reply["messages"]),
+        f"同一轮各条发言共用回复时间：{reply['messages']}",
+    )
+    fresh = tap.wait_until_idle_after(mark)
+    done = [event for event in fresh if event["type"] == "chat.done"]
+    check(
+        len(done) == 1 and done[0]["messages"] == reply["messages"],
+        f"chat.done 的多条发言应与 HTTP 响应一致：{done}",
+    )
+    chunks = "".join(event["text"] for event in fresh if event["type"] == "chat.chunk")
+    check(chunks == reply["text"], f"多条发言的流式片段拼接异常：{chunks}")
+    history = api.call("GET", "/api/chat/history")["items"]
+    tails = newest_me_contents(history, len(MULTI_REPLIES))
+    check(tails == list(MULTI_REPLIES), f"当日记录应逐条保存发言：{tails}")
+    step("连续发言：一次回复的多条消息在响应、推送与当日记录中保持顺序与独立时间")
 
 
 def check_dispatch(api: Api, tap: EventTap, llm: FakeLlm) -> None:
@@ -363,6 +404,25 @@ def check_dispatched_write(api: Api, tap: EventTap) -> str:
     check("喜欢美式咖啡，不加糖" in structured, f"应写入结构化记忆：{structured!r}")
     step("记忆写入：主对话自行决定派发，子代理起草并请求审批，同意后追加进结构化记忆")
     return structured
+
+
+def check_draft_note(api: Api, tap: EventTap, data_dir: Path) -> None:
+    """草稿本由启动流程生成，派发「自记笔记」后子代理真的读写这个文件。"""
+    draft = data_dir / "resources" / "草稿本.md"
+    check(draft.is_file(), "启动时应生成草稿本")
+    mark = len(tap.events)
+    notice = api.call("POST", "/api/chat", {"text": "记一下：周五问主人要不要续费"})
+    check(notice["text"] == "记到草稿本了：周五问主人要不要续费", f"记笔记回复异常：{notice}")
+    fresh = tap.wait_until_idle_after(mark)
+    approvals = [event for event in fresh if event["type"] == "approval.request"]
+    check(len(approvals) == 1, f"记笔记应推送一次审批：{approvals}")
+    item = approvals[0]["items"][0]
+    check(item["capability"] == "自记笔记", f"审批项能力异常：{item}")
+    check(item["tools"] == ["file_read", "file_write"], f"审批项应带草案声明的工具：{item}")
+    text = draft.read_text(encoding="utf-8")
+    check(text.startswith("# 草稿本"), f"草稿本标题应保留：{text!r}")
+    check("周五问主人要不要续费" in text, f"应写进草稿本：{text!r}")
+    step("自记笔记：派发后子代理先读草稿本再整篇覆盖写入，旧内容与标题都还在")
 
 
 def check_manual_edit(api: Api, data_dir: Path) -> str:
@@ -612,6 +672,10 @@ def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None
     message = tap.wait_for("proactive.message", timeout=TICK_SECONDS * 3 + 10, after=before)
     check(message["topic"] == PROACTIVE_TOPIC, f"主动消息主题异常：{message}")
     check(message["text"] == PROACTIVE_REPLY, f"主动消息文本异常：{message}")
+    check(
+        [item["text"] for item in message["messages"]] == list(PROACTIVE_TEXTS),
+        f"主动消息应逐条推送：{message}",
+    )
     check(message["id"], "主动消息应带 id，供前端排队与忽略")
     request = last_chat_request(llm.requests)
     prompt = "\n".join(str(item.get("content", "")) for item in request["messages"])
@@ -620,10 +684,8 @@ def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None
         f"触发理由应进入本次输入：{prompt[-200:]}",
     )
     history = api.call("GET", "/api/chat/history")["items"]
-    check(
-        any(item["role"] == "me" and item["content"] == PROACTIVE_REPLY for item in history),
-        "主动消息应作为一条 me 记录写进当日对话",
-    )
+    me_items = newest_me_contents(history, len(PROACTIVE_TEXTS))
+    check(me_items == list(PROACTIVE_TEXTS), f"主动消息应逐条写进当日对话：{me_items}")
     ledger = api.call("GET", "/api/scheduler/ledger")
     check(ledger["total"] == 1, f"发送台账应记一次：{ledger}")
     check(
@@ -718,6 +780,7 @@ def run() -> Path:
         check_settings_defaults(api)
         with EventTap(port) as tap:
             check_streaming_chat(api, tap, llm)
+            check_multi_messages(api, tap)
             check_dispatch(api, tap, llm)
             check_invalid_output_regenerates(api, tap, llm)
             structured = check_dispatched_write(api, tap)
@@ -725,6 +788,7 @@ def run() -> Path:
             check_write_rejected(api, tap, structured)
             structured = check_manual_edit(api, data_dir)
             structured = check_memory_replace(api, tap)
+            check_draft_note(api, tap, data_dir)
             check_structured_in_prompt(api, tap, llm)
             check_temporary_mode(api, tap, structured)
             check_persona_switch(api, tap, llm, data_dir)

@@ -130,6 +130,26 @@ def test_send_chat_returns_final_reply_and_logs_turn(tmp_path: Path):
     assert [item["content"] for item in history["items"]] == ["你好呀。", "你好"]
 
 
+def test_send_chat_returns_the_ordered_messages_of_one_turn(tmp_path: Path):
+    client = make_client(tmp_path, [["第一句。", "第二句！", "第三句。"]])
+    body = client.post("/api/chat", headers=AUTH, json={"text": "你好"}).json()
+
+    assert [item["text"] for item in body["messages"]] == ["第一句。", "第二句！", "第三句。"]
+    assert [item["sources"] for item in body["messages"]] == [[], [], []]
+    assert body["text"] == "第一句。\n第二句！\n第三句。"
+    assert len({item["message_id"] for item in body["messages"]}) == 3
+    for item in body["messages"]:
+        assert item["at"]
+
+    history = client.get("/api/chat/history", headers=AUTH).json()
+    assert [item["content"] for item in history["items"]] == [
+        "第三句。",
+        "第二句！",
+        "第一句。",
+        "你好",
+    ]
+
+
 def test_chat_requires_token(tmp_path: Path):
     client = make_client(tmp_path, [])
     assert client.post("/api/chat", json={"text": "你好"}).status_code == 401
@@ -157,13 +177,34 @@ def test_websocket_receives_chunks_then_done_in_order(tmp_path: Path):
     assert types.index("chat.chunk") < done_index
     assert "".join(chunk["text"] for chunk in chunks) == "第一句。第二句！"
     assert all(chunk["message_id"] == message_id for chunk in chunks)
-    assert events[done_index] == {
-        "type": "chat.done",
-        "message_id": message_id,
-        "text": "第一句。第二句！",
-        "sources": [],
-    }
+    done = events[done_index]
+    assert done["message_id"] == message_id
+    assert done["text"] == "第一句。第二句！"
+    assert done["sources"] == []
+    assert [item["text"] for item in done["messages"]] == ["第一句。第二句！"]
+    assert done["messages"][0]["message_id"] and done["messages"][0]["at"]
     assert events[-1] == {"type": "status", "state": "idle"}
+
+
+def test_chat_done_event_carries_every_utterance_of_the_turn(tmp_path: Path):
+    client = make_client(tmp_path, [["第一句。", "第二句！"]])
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
+        message_id = response.json()["message_id"]
+
+        events = []
+        while True:
+            event = websocket.receive_json()
+            events.append(event)
+            if event["type"] == "status" and event["state"] == "idle":
+                break
+
+    done = next(event for event in events if event["type"] == "chat.done")
+    assert done["message_id"] == message_id
+    assert done["text"] == "第一句。\n第二句！"
+    assert [item["text"] for item in done["messages"]] == ["第一句。", "第二句！"]
+    assert done["messages"] == response.json()["messages"]
 
 
 def test_model_unavailable_maps_to_503(tmp_path: Path):

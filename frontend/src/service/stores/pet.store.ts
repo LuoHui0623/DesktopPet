@@ -67,11 +67,17 @@ export function createPetStore(options: PetStoreOptions = {}) {
         if (event.type !== "proactive.message") return;
         if (get().proactiveMuted) return;
         const showing = get().proactiveMessages.length > 0;
+        // 一次触发可带多条发言，按服务端顺序逐条排队，各自计时显示。
+        const incoming: ProactiveMessage[] = event.messages?.length
+          ? event.messages.map((message) => ({
+              id: message.message_id,
+              text: message.text,
+              topic: event.topic,
+              at: message.at,
+            }))
+          : [{ id: event.id, text: event.text, topic: event.topic, at: event.at }];
         set((state) => ({
-          proactiveMessages: [
-            ...state.proactiveMessages,
-            { id: event.id, text: event.text, topic: event.topic, at: event.at },
-          ],
+          proactiveMessages: [...state.proactiveMessages, ...incoming],
         }));
         if (!showing) startBubbleTimer();
       },

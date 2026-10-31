@@ -62,6 +62,7 @@ def test_events_arrive_in_publish_order():
             "message_id": "m1",
             "text": "你好呀",
             "sources": [],
+            "messages": [],
         }
 
 

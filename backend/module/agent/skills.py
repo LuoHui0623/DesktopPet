@@ -94,8 +94,10 @@ def parse_head_note(path: Path) -> str:
 
 MEMORY_WRITE_CAPABILITY = "记忆写入"
 MEMORY_RETRIEVE_CAPABILITY = "记忆检索"
+DRAFT_NOTE_CAPABILITY = "自记笔记"
 MEMORY_WRITE_TOOLS = ("index", "read", "memory_append", "memory_replace")
 MEMORY_RETRIEVE_TOOLS = ("index", "read")
+DRAFT_NOTE_TOOLS = ("file_read", "file_write", "file_edit", "file_clear")
 
 
 def memory_write_skill() -> SkillSpec:
@@ -104,3 +106,7 @@ def memory_write_skill() -> SkillSpec:
 
 def memory_retrieve_skill() -> SkillSpec:
     return SkillSpec(MEMORY_RETRIEVE_CAPABILITY, "memory_retrieve", MEMORY_RETRIEVE_TOOLS)
+
+
+def draft_note_skill() -> SkillSpec:
+    return SkillSpec(DRAFT_NOTE_CAPABILITY, "draft_note", DRAFT_NOTE_TOOLS)
