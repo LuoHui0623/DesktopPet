@@ -15,7 +15,7 @@ def make_draft(run_id: str = "run-1") -> ApprovalDraft:
         capability="记忆写入",
         task="记一下我喜欢猫",
         content="写入一条偏好记忆。",
-        tools=("memory_append",),
+        tools=("append",),
     )
 
 

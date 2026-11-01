@@ -6,14 +6,8 @@ from string import Template
 from typing import Literal
 
 from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListTheme, PersonaConfig
-from constants.path import (
-    CAPABILITIES_FILE,
-    DRAFT_PATH,
-    EMOJI_DIR,
-    PROMPTS_DIR,
-    RESOURCE_DIR,
-    ROOT_DIR,
-)
+from constants.files import RESOURCE_ORDER, RESOURCES
+from constants.path import CAPABILITIES_FILE, PROMPTS_DIR
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS, SENTENCE_MAX_WIDTH
 
 AgentRole = Literal["chat"]
@@ -48,7 +42,7 @@ class CapabilityDescription:
 @dataclass(frozen=True)
 class ResourceItem:
     label: str
-    path: str
+    resource_id: str
 
 
 @dataclass(frozen=True)
@@ -93,19 +87,8 @@ def merge_capabilities(
     return tuple(merged.values())
 
 
-def default_resources(resource_dir: Path = RESOURCE_DIR) -> tuple[ResourceItem, ...]:
-    return (
-        ResourceItem("草稿本", _display(resource_dir / DRAFT_PATH.name)),
-        ResourceItem("表情包", _display(resource_dir / EMOJI_DIR.name)),
-    )
-
-
-def _display(path: Path) -> str:
-    """仓库内的资源用相对路径展示，仓库外（自定义数据目录）用绝对路径。"""
-    try:
-        return path.resolve().relative_to(ROOT_DIR.resolve()).as_posix()
-    except ValueError:
-        return path.as_posix()
+def default_resources() -> tuple[ResourceItem, ...]:
+    return tuple(ResourceItem(RESOURCES[key].label, key) for key in RESOURCE_ORDER)
 
 
 def load_templates(directory: Path = PROMPTS_DIR) -> PromptTemplates:
@@ -174,7 +157,7 @@ def _render_capabilities(capabilities: Sequence[CapabilityDescription]) -> str:
 def _render_resources(resources: Sequence[ResourceItem]) -> str:
     if not resources:
         return NO_RESOURCES
-    return "\n".join(f"- {item.label}: {item.path}" for item in resources)
+    return "\n".join(f"- {item.label}: {item.resource_id}" for item in resources)
 
 
 def _build_chat(

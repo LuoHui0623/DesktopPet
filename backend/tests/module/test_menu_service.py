@@ -2,6 +2,7 @@ from module.avatar.contracts import AvatarCatalog, AvatarPack
 from module.menu.constants import (
     OPEN_CHAT,
     OPEN_SETTINGS,
+    OPEN_STATUS,
     QUIT,
     SWITCH_AVATAR,
     TOGGLE_PROACTIVE,
@@ -44,7 +45,7 @@ class FakeScheduler:
         )
 
 
-def test_builds_the_five_first_batch_items():
+def test_builds_the_first_batch_items():
     service = MenuService(
         FakeAvatars((pack("default", "默认形象"),), active="default"),
         FakeScheduler(enabled=True),
@@ -54,6 +55,7 @@ def test_builds_the_five_first_batch_items():
 
     assert [item.id for item in menu.items] == [
         OPEN_CHAT,
+        OPEN_STATUS,
         OPEN_SETTINGS,
         SWITCH_AVATAR,
         TOGGLE_PROACTIVE,
@@ -61,6 +63,7 @@ def test_builds_the_five_first_batch_items():
     ]
     assert [item.label for item in menu.items] == [
         "打开对话",
+        "状态",
         "设置",
         "切换形象",
         "暂停主动消息",

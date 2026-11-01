@@ -105,6 +105,28 @@ def test_models_are_keyed_by_name_and_keep_upstream_id(config_dir: Path):
     assert models["deepseek-flash-long"].id == "deepseek-flash"
 
 
+def test_models_expose_context_window_and_tokenizer_with_defaults(config_dir: Path):
+    model = load(config_dir).providers["deepseek"].models["deepseek-flash"]
+    assert model.context_window == 128000
+    assert model.tokenizer == "cl100k_base"
+
+
+def test_explicit_context_window_and_tokenizer_are_kept(config_dir: Path):
+    write_yaml(
+        config_dir,
+        LLM_YAML.replace(
+            "        max_tokens: 1024\n  opencode:",
+            "        max_tokens: 1024\n"
+            "        context_window: 64000\n"
+            "        tokenizer: o200k_base\n"
+            "  opencode:",
+            1,
+        ),
+    )
+    model = load(config_dir).providers["deepseek"].models["deepseek-flash"]
+    assert (model.context_window, model.tokenizer) == (64000, "o200k_base")
+
+
 def test_version_is_stable_for_same_input(config_dir: Path):
     assert load(config_dir).version == load(config_dir).version
 

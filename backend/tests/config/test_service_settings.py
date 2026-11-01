@@ -144,6 +144,26 @@ def test_token_is_not_in_repr(config_dir: Path):
     assert TOKEN not in settings.model_dump_json()
 
 
+def test_dev_mode_defaults_to_false(config_dir: Path):
+    assert load(config_dir).dev_mode is False
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_dev_mode_truthy_values(config_dir: Path, value: str):
+    assert load(config_dir, {"PET_DEV_MODE": value}).dev_mode is True
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no"])
+def test_dev_mode_falsey_values(config_dir: Path, value: str):
+    assert load(config_dir, {"PET_DEV_MODE": value}).dev_mode is False
+
+
+def test_invalid_dev_mode_value_is_rejected(config_dir: Path):
+    with pytest.raises(ServiceSettingsError) as exc:
+        load(config_dir, {"PET_DEV_MODE": "maybe"})
+    assert any("PET_DEV_MODE" in error for error in exc.value.errors)
+
+
 def test_log_batch_defaults(config_dir: Path):
     settings = load(config_dir)
     assert settings.log_queue_size == 20

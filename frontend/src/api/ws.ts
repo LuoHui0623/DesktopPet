@@ -10,6 +10,11 @@ const EVENT_TYPES = new Set([
   "chat.done",
   "approval.request",
   "proactive.message",
+  "usage.call.started",
+  "usage.call.finished",
+  "usage.turn.started",
+  "usage.turn.finished",
+  "usage.panel.snapshot",
 ]);
 const PET_STATES = new Set<PetState>(["idle", "thinking", "speaking", "executing", "sleeping"]);
 

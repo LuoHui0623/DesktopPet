@@ -120,6 +120,15 @@ def test_prompt_carries_the_main_agent_task(tmp_path: Path):
     assert "$task" not in system
 
 
+def test_prompt_requires_the_actual_result_content_in_output(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "好"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).run(SKILL, "查咖啡偏好", "run-1")
+    system = chat.calls[0][0].content
+    assert "查到的内容" in system
+    assert "不要只写" in system
+
+
 def test_invalid_reply_is_returned_as_observation_and_run_continues(tmp_path: Path):
     chat = ScriptedChat(["我想想……", '{"action": "finish", "output": "好了"}'])
     llm, _ = make_llm(tmp_path, chat)
@@ -283,6 +292,18 @@ def test_model_usage_is_linked_to_the_run(tmp_path: Path):
     finally:
         conn.close()
     assert tuple(row) == ("subagent", "run-42", 1)
+
+
+def test_turn_id_is_recorded_on_model_calls(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "好"}'])
+    llm, db_file = make_llm(tmp_path, chat)
+    make_agent(llm).run(SKILL, "任务", "run-42", turn_id="turn-7")
+    conn = connect(db_file)
+    try:
+        row = conn.execute("SELECT turn_id, run_id FROM llm_call").fetchone()
+    finally:
+        conn.close()
+    assert tuple(row) == ("turn-7", "run-42")
 
 
 def test_draft_returns_content_and_declared_tools(tmp_path: Path):

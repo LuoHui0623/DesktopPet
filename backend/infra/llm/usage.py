@@ -6,13 +6,13 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from langchain_core.runnables import RunnableConfig
 
-from constants.llm import LLM_CALL_TEXT_LIMIT, LLM_CALL_TRUNCATED_MARK
+from infra.llm.tokens import TokenCount, TokenCounter, create_counter
 
 logger = logging.getLogger("pet")
 
@@ -33,6 +33,28 @@ class UsageSample:
     prompt_hash: str | None = None
     prompt_text: str | None = None
     reply_text: str | None = None
+    turn_id: str | None = None
+    reply_raw: str | None = None
+
+
+@dataclass(frozen=True)
+class CallStart:
+    """调用发起时的快照：此时还没有回复，token 与耗时均未知。"""
+
+    provider: str
+    model: str
+    purpose: str | None
+    turn_id: str | None
+    run_id: str | None
+    prompt_hash: str | None
+    started_at: str
+    prompt_text: str | None
+
+
+class UsageObserver(Protocol):
+    def call_started(self, event: CallStart) -> None: ...
+
+    def call_finished(self, sample: UsageSample) -> None: ...
 
 
 UsageSink = Callable[[UsageSample], None]
@@ -43,6 +65,7 @@ class UsageScope:
     purpose: str
     run_id: str | None = None
     prompt_hash: str | None = None
+    turn_id: str | None = None
 
 
 _scope: ContextVar[UsageScope | None] = ContextVar("llm_call_scope", default=None)
@@ -53,8 +76,11 @@ def usage_scope(
     purpose: str,
     run_id: str | None = None,
     prompt_hash: str | None = None,
+    turn_id: str | None = None,
 ) -> Iterator[None]:
-    token = _scope.set(UsageScope(purpose=purpose, run_id=run_id, prompt_hash=prompt_hash))
+    token = _scope.set(
+        UsageScope(purpose=purpose, run_id=run_id, prompt_hash=prompt_hash, turn_id=turn_id)
+    )
     try:
         yield
     finally:
@@ -73,36 +99,58 @@ class TrackedChatModel:
         provider: str,
         model_name: str,
         sink: UsageSink,
+        context_window: int | None = None,
+        max_tokens: int | None = None,
+        tokenizer: str | None = None,
+        counter: TokenCounter | None = None,
+        observer: UsageObserver | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
         self._model_name = model_name
         self._sink = sink
+        self._observer = observer
+        self.context_window = context_window
+        self.max_tokens = max_tokens
+        self._counter = counter or create_counter(tokenizer or "estimate")
+
+    def count_tokens(self, messages: Any) -> TokenCount:
+        return self._counter.count(messages)
+
+    def set_observer(self, observer: UsageObserver | None) -> None:
+        self._observer = observer
 
     def invoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
         started_at = _now()
         started = time.perf_counter()
+        scope = _scope.get()
+        prompt = _prompt_text(input)
+        self._notify_started(scope, started_at, prompt)
         try:
             response = self._model.invoke(input, config, **kwargs)
         except Exception:
-            self._record(started_at, started, None, success=False, prompt=_prompt_text(input))
+            self._record(scope, started_at, started, None, success=False, prompt=prompt)
             raise
-        self._record(started_at, started, response, success=True, prompt=_prompt_text(input))
+        self._record(scope, started_at, started, response, success=True, prompt=prompt)
         return response
 
     async def ainvoke(self, input: Any, config: RunnableConfig | None = None, **kwargs: Any) -> Any:
         started_at = _now()
         started = time.perf_counter()
+        scope = _scope.get()
+        prompt = _prompt_text(input)
+        self._notify_started(scope, started_at, prompt)
         try:
             response = await self._model.ainvoke(input, config, **kwargs)
         except Exception:
-            self._record(started_at, started, None, success=False, prompt=_prompt_text(input))
+            self._record(scope, started_at, started, None, success=False, prompt=prompt)
             raise
-        self._record(started_at, started, response, success=True, prompt=_prompt_text(input))
+        self._record(scope, started_at, started, response, success=True, prompt=prompt)
         return response
 
     def _record(
         self,
+        scope: UsageScope | None,
         started_at: str,
         started: float,
         response: Any,
@@ -111,7 +159,6 @@ class TrackedChatModel:
         prompt: str | None,
     ) -> None:
         tokens_in, tokens_out, usage_raw = _usage(response)
-        scope = _scope.get()
         sample = UsageSample(
             provider=self._provider,
             model=self._model_name,
@@ -126,12 +173,40 @@ class TrackedChatModel:
             success=success,
             prompt_hash=scope.prompt_hash if scope else None,
             prompt_text=prompt,
-            reply_text=_clip(_content_text(getattr(response, "content", None))),
+            reply_text=_content_text(getattr(response, "content", None)),
+            turn_id=scope.turn_id if scope else None,
+            reply_raw=_raw_reply(getattr(response, "content", None)),
         )
         try:
             self._sink(sample)
         except Exception:
             logger.exception("LLM 用量记录写入失败")
+        if self._observer is not None:
+            try:
+                self._observer.call_finished(sample)
+            except Exception:
+                logger.exception("LLM 调用完成事件发布失败")
+
+    def _notify_started(
+        self, scope: UsageScope | None, started_at: str, prompt: str | None
+    ) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer.call_started(
+                CallStart(
+                    provider=self._provider,
+                    model=self._model_name,
+                    purpose=scope.purpose if scope else None,
+                    turn_id=scope.turn_id if scope else None,
+                    run_id=scope.run_id if scope else None,
+                    prompt_hash=scope.prompt_hash if scope else None,
+                    started_at=started_at,
+                    prompt_text=prompt,
+                )
+            )
+        except Exception:
+            logger.exception("LLM 调用开始事件发布失败")
 
 
 def _now() -> str:
@@ -153,7 +228,37 @@ def _token(value: Any) -> int | None:
 
 
 def _prompt_text(value: Any) -> str | None:
-    return _clip(_message_text(value))
+    """完整记录本次输入：只有系统提示加段落标记，历史与输入本身已带角色与时间前缀。"""
+    messages = _messages(value)
+    if not messages:
+        return _message_text(value)
+    blocks = []
+    for message in messages:
+        text = _content_text(message.content)
+        if not text:
+            continue
+        blocks.append(f"[system]\n{text}" if message.type == "system" else text)
+    return "\n\n".join(blocks) or None
+
+
+def _messages(value: Any) -> list[BaseMessage]:
+    if isinstance(value, BaseMessage):
+        return [value]
+    if isinstance(value, (list, tuple)) and value:
+        if all(isinstance(item, BaseMessage) for item in value):
+            return list(value)
+        return []
+    converter = getattr(value, "to_messages", None)
+    if callable(converter):
+        try:
+            converted = converter()
+        except Exception:
+            return []
+        if isinstance(converted, (list, tuple)) and all(
+            isinstance(item, BaseMessage) for item in converted
+        ):
+            return list(converted)
+    return []
 
 
 def _message_text(value: Any) -> str | None:
@@ -192,8 +297,10 @@ def _content_text(content: Any) -> str | None:
     return str(content)
 
 
-def _clip(text: str | None) -> str | None:
-    if text is None or len(text) <= LLM_CALL_TEXT_LIMIT:
-        return text
-    keep = LLM_CALL_TEXT_LIMIT - len(LLM_CALL_TRUNCATED_MARK)
-    return text[:keep] + LLM_CALL_TRUNCATED_MARK
+def _raw_reply(content: Any) -> str | None:
+    """原始响应：字符串原样保留，结构化内容整体序列化，不做文本归一化。"""
+    if content is None:
+        return None
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, ensure_ascii=False, default=str)

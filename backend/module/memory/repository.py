@@ -6,28 +6,50 @@ from infra.store.db import connect, transaction
 from module.memory.contracts import DailyLogRecord, DailyLogRow
 from service.store import insert_many
 
-COLUMNS = "id, date, role, content, created_at"
-INSERT_SQL = "INSERT INTO daily_log (date, role, content, created_at) VALUES (?, ?, ?, ?)"
+COLUMNS = "id, event_time, role, content, persona_id, created_at"
+INSERT_SQL = (
+    "INSERT INTO daily_log (event_time, role, content, persona_id, created_at) "
+    "VALUES (?, ?, ?, ?, ?)"
+)
+DAY = "substr(event_time, 1, 10)"
 
 
 def insert(conn: sqlite3.Connection, records: Sequence[DailyLogRecord]) -> None:
     insert_many(
         conn,
         INSERT_SQL,
-        [(record.date, record.role, record.content, record.created_at) for record in records],
+        [
+            (
+                record.event_time,
+                record.role,
+                record.content,
+                record.persona_id,
+                record.created_at,
+            )
+            for record in records
+        ],
     )
 
 
-def by_date(conn: sqlite3.Connection, date: str) -> list[DailyLogRow]:
-    rows = conn.execute(
-        f"SELECT {COLUMNS} FROM daily_log WHERE date = ? ORDER BY created_at, id",
-        (date,),
-    ).fetchall()
+def by_date(
+    conn: sqlite3.Connection, day: str, *, persona_id: str | None = None
+) -> list[DailyLogRow]:
+    if persona_id is None:
+        rows = conn.execute(
+            f"SELECT {COLUMNS} FROM daily_log WHERE {DAY} = ? ORDER BY created_at, id",
+            (day,),
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            f"SELECT {COLUMNS} FROM daily_log WHERE {DAY} = ? AND persona_id = ? "
+            "ORDER BY created_at, id",
+            (day, persona_id),
+        ).fetchall()
     return [_row(row) for row in rows]
 
 
 def dates(conn: sqlite3.Connection) -> list[str]:
-    rows = conn.execute("SELECT DISTINCT date FROM daily_log ORDER BY date").fetchall()
+    rows = conn.execute(f"SELECT DISTINCT {DAY} AS day FROM daily_log ORDER BY day").fetchall()
     return [row[0] for row in rows]
 
 
@@ -40,6 +62,7 @@ def search(
     newest_first: bool = False,
     limit: int | None = None,
     offset: int = 0,
+    persona_id: str | None = None,
 ) -> list[DailyLogRow]:
     clauses: list[str] = []
     params: list[str | int] = []
@@ -47,11 +70,14 @@ def search(
         clauses.append("content LIKE ? ESCAPE '\\'")
         params.append(_like_pattern(keyword))
     if date_from:
-        clauses.append("date >= ?")
+        clauses.append(f"{DAY} >= ?")
         params.append(date_from)
     if date_to:
-        clauses.append("date <= ?")
+        clauses.append(f"{DAY} <= ?")
         params.append(date_to)
+    if persona_id:
+        clauses.append("persona_id = ?")
+        params.append(persona_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     order = "DESC" if newest_first else "ASC"
     paging = ""
@@ -71,7 +97,14 @@ def _like_pattern(keyword: str) -> str:
 
 
 def _row(row: sqlite3.Row | tuple) -> DailyLogRow:
-    return DailyLogRow(id=row[0], date=row[1], role=row[2], content=row[3], created_at=row[4])
+    return DailyLogRow(
+        id=row[0],
+        event_time=row[1],
+        role=row[2],
+        content=row[3],
+        persona_id=row[4],
+        created_at=row[5],
+    )
 
 
 class DbDailyLog:
@@ -86,10 +119,10 @@ class DbDailyLog:
         finally:
             conn.close()
 
-    def by_date(self, date: str) -> list[DailyLogRow]:
+    def by_date(self, day: str, *, persona_id: str | None = None) -> list[DailyLogRow]:
         conn = connect(self._db_file)
         try:
-            return by_date(conn, date)
+            return by_date(conn, day, persona_id=persona_id)
         finally:
             conn.close()
 
@@ -109,6 +142,7 @@ class DbDailyLog:
         newest_first: bool = False,
         limit: int | None = None,
         offset: int = 0,
+        persona_id: str | None = None,
     ) -> list[DailyLogRow]:
         conn = connect(self._db_file)
         try:
@@ -120,6 +154,7 @@ class DbDailyLog:
                 newest_first=newest_first,
                 limit=limit,
                 offset=offset,
+                persona_id=persona_id,
             )
         finally:
             conn.close()

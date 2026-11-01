@@ -109,7 +109,8 @@ class ProactivePipeline:
                 return self._chat.chat(
                     ChatRequest(
                         trigger_reason=trigger.reason,
-                        allow_dispatch=False,
+                        allow_dispatch=True,
+                        read_only_dispatch=True,
                         events=self._events,
                     )
                 )

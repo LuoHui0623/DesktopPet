@@ -188,7 +188,9 @@ def test_avatar_switch_marks_the_menu_and_the_view(db_file: Path, avatars_dir: P
     # 形象包按目录名排序，勾选状态跟随 active
     assert [pack["id"] for pack in view["avatar"]["packs"]] == ["alt", "default"]
     assert [pack["active"] for pack in view["avatar"]["packs"]] == [True, False]
-    children = client.get("/api/menu", headers=AUTH).json()["items"][2]["children"]
+    items = client.get("/api/menu", headers=AUTH).json()["items"]
+    switch = next(item for item in items if item["id"] == "switch_avatar")
+    children = switch["children"]
     assert [item["id"] for item in children] == ["avatar:alt", "avatar:default"]
     assert [item["checked"] for item in children] == [True, False]
 

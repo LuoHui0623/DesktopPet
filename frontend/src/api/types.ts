@@ -34,6 +34,40 @@ export interface ApprovalAck {
   approved: boolean;
 }
 
+export interface UsageCall {
+  provider: string | null;
+  model: string | null;
+  purpose: string | null;
+  turn_id: string | null;
+  run_id: string | null;
+  prompt_hash: string | null;
+  started_at: string;
+  finished_at: string | null;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  usage_raw: string | null;
+  latency_ms: number | null;
+  success: boolean | null;
+  prompt_text: string | null;
+  reply_text: string | null;
+  reply_raw: string | null;
+}
+
+export type UsagePanelMode = "dev" | "prod";
+
+/** 状态窗口显示的当前轮；正式模式下正文与调用方信息已被后端清空。 */
+export interface UsagePanelTurn {
+  turn_id: string;
+  started_at: string;
+  finished_at: string | null;
+  finished: boolean;
+  tokens_in: number | null;
+  tokens_out: number | null;
+  tokens_complete: boolean;
+  model_time_ms: number;
+  calls: UsageCall[];
+}
+
 export type ServerEvent =
   | { type: "status"; state: PetState }
   | { type: "chat.chunk"; message_id: string; text: string }
@@ -52,6 +86,25 @@ export type ServerEvent =
       topic: string;
       at: string;
       messages?: ReplyMessage[];
+    }
+  | { type: "usage.call.started"; call: UsageCall }
+  | { type: "usage.call.finished"; call: UsageCall }
+  | { type: "usage.turn.started"; turn_id: string; at: string }
+  | {
+      type: "usage.turn.finished";
+      turn_id: string;
+      tokens_in: number | null;
+      tokens_out: number | null;
+      tokens_complete: boolean;
+      model_time_ms: number;
+      started_at: string | null;
+      finished_at: string | null;
+      calls: UsageCall[];
+    }
+  | {
+      type: "usage.panel.snapshot";
+      mode: UsagePanelMode;
+      turn: UsagePanelTurn | null;
     };
 
 export interface ChatReplyResponse {
@@ -64,7 +117,7 @@ export interface ChatReplyResponse {
 
 export interface ChatHistoryItem {
   id: number;
-  date: string;
+  event_time: string;
   role: string;
   content: string;
   created_at: string;
@@ -140,14 +193,13 @@ export interface ReloadResponse {
 
 export interface DailyRecord {
   id: number;
-  date: string;
+  event_time: string;
   role: string;
   content: string;
   created_at: string;
 }
 
 export interface MemoriesResponse {
-  temporary_mode: boolean;
   structured: string;
   daily_memory: Record<string, string[]>;
   daily_records: DailyRecord[] | null;
@@ -159,10 +211,6 @@ export type MemoriesQuery = {
 
 export interface StructuredMemoryUpdate {
   text: string;
-}
-
-export interface TemporaryModeResponse {
-  temporary_mode: boolean;
 }
 
 export interface PersonaItem {

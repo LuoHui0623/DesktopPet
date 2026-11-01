@@ -21,6 +21,8 @@ STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_REJECTED = "rejected"
 ERROR_REJECTED = "rejected"
+ERROR_READ_ONLY = "read_only_denied"
+READ_ONLY_REASON = "主动对话只允许查询，不能写入"
 CHECKPOINT_TAG = "[finished_plan]"
 VALID_PHASES = frozenset({PHASE_DRAFT, PHASE_EXECUTE})
 
@@ -60,6 +62,7 @@ class Checkpoint:
     error: str | None = None
     steps: tuple[dict[str, Any], ...] = ()
     status: str = ""
+    error_code: str | None = None
 
     def __post_init__(self) -> None:
         # 留空时按 ok 推导；rejected 这类终态由调用方显式给出
@@ -75,10 +78,21 @@ class _Item:
     draft: SubAgentDraft | None = None
     outcome: ApprovalOutcome | None = None
     done: Checkpoint | None = None
+    read_only: bool = False
 
 
 def read_only_tools(skill: Skill) -> tuple[str, ...]:
     return tuple(name for name in skill.tools if name in READ_ONLY_TOOLS)
+
+
+def _read_only_denial(skill: Skill) -> str | None:
+    """主动轮只接受全部工具都是只读的能力；写入型与混合能力整项拒绝。"""
+    blocked = [name for name in skill.tools if name not in READ_ONLY_TOOLS]
+    if blocked:
+        return f"{READ_ONLY_REASON}：能力「{skill.name}」包含非只读工具 {', '.join(blocked)}"
+    if not skill.tools:
+        return f"{READ_ONLY_REASON}：能力「{skill.name}」没有可用的只读工具"
+    return None
 
 
 def _declared_tools(skill: Skill, names: Sequence[str]) -> tuple[str, ...]:
@@ -178,21 +192,49 @@ class Orchestrator:
         self._timezone = timezone
         self._clock = clock
 
-    def dispatch(self, capability: str, task: str, *, gate: ApprovalGate) -> Checkpoint:
-        return self.run_plan([PlanStep(capability=capability, task=task)], gate=gate)[0]
+    def dispatch(
+        self,
+        capability: str,
+        task: str,
+        *,
+        gate: ApprovalGate,
+        read_only: bool = False,
+        turn_id: str | None = None,
+    ) -> Checkpoint:
+        return self.run_plan(
+            [PlanStep(capability=capability, task=task)],
+            gate=gate,
+            read_only=read_only,
+            turn_id=turn_id,
+        )[0]
 
     def run_plan(
-        self, plan: Sequence[PlanStep], *, gate: ApprovalGate, plan_id: str | None = None
+        self,
+        plan: Sequence[PlanStep],
+        *,
+        gate: ApprovalGate,
+        plan_id: str | None = None,
+        read_only: bool = False,
+        turn_id: str | None = None,
     ) -> list[Checkpoint]:
-        items = [self._open(step) for step in plan]
-        self._in_parallel(self._draft, [item for item in items if item.done is None])
+        items = [self._open(step, read_only=read_only, turn_id=turn_id) for step in plan]
+        if read_only:
+            self._reject_non_read_only(items)
+        self._in_parallel(
+            lambda item: self._draft(item, turn_id), [item for item in items if item.done is None]
+        )
         waiting = [item for item in items if item.done is None]
-        if waiting:
+        # 主动轮只读派发自动放行，不请求任何审批。
+        if waiting and not read_only:
             self._approve(plan_id or uuid4().hex, waiting, gate)
-        self._in_parallel(self._execute, [item for item in items if item.done is None])
+        self._in_parallel(
+            lambda item: self._execute(item, turn_id), [item for item in items if item.done is None]
+        )
         return [item.done or self._abort(item) for item in items]
 
-    def _open(self, step: PlanStep) -> _Item:
+    def _open(
+        self, step: PlanStep, *, read_only: bool = False, turn_id: str | None = None
+    ) -> _Item:
         run_id = uuid4().hex
         started = self._clock(self._timezone)
         self._runs.insert(
@@ -207,9 +249,15 @@ class Orchestrator:
                 error_code=None,
                 started_at=started.isoformat(timespec="milliseconds"),
                 finished_at=None,
+                turn_id=turn_id,
             )
         )
-        item = _Item(run_id=run_id, step=step, skill=self._skills.get(step.capability))
+        item = _Item(
+            run_id=run_id,
+            step=step,
+            skill=self._skills.get(step.capability),
+            read_only=read_only,
+        )
         if item.skill is None:
             item.done = self._close(
                 item,
@@ -222,13 +270,27 @@ class Orchestrator:
             )
         return item
 
-    def _draft(self, item: _Item) -> None:
+    def _reject_non_read_only(self, items: Sequence[_Item]) -> None:
+        for item in items:
+            if item.done is not None or item.skill is None:
+                continue
+            reason = _read_only_denial(item.skill)
+            if reason is None:
+                continue
+            item.done = self._close(
+                item,
+                SubAgentResult(False, None, ERROR_READ_ONLY, reason),
+                status=STATUS_REJECTED,
+            )
+
+    def _draft(self, item: _Item, turn_id: str | None) -> None:
         assert item.skill is not None
         draft = self._subagent.draft(
             item.skill,
             item.step.task,
             item.run_id,
             tools=read_only_tools(item.skill),
+            turn_id=turn_id,
         )
         if not draft.ok:
             item.done = self._close(
@@ -253,17 +315,20 @@ class Orchestrator:
                     item, _rejected(item, item.outcome.reason), status=STATUS_REJECTED
                 )
 
-    def _execute(self, item: _Item) -> None:
+    def _execute(self, item: _Item, turn_id: str | None) -> None:
         assert item.skill is not None
         draft = item.draft
         content = (draft.content or "") if draft is not None else ""
         tools = _declared_tools(item.skill, draft.tools if draft is not None else ())
+        if item.read_only:
+            tools = tuple(name for name in tools if name in READ_ONLY_TOOLS)
         result = self._subagent.run(
             item.skill,
             item.step.task,
             item.run_id,
             tools=tools,
             draft=content,
+            turn_id=turn_id,
         )
         steps = [*(draft.steps if draft is not None else []), *result.steps]
         item.done = self._close(item, result, steps=steps)
@@ -307,6 +372,7 @@ class Orchestrator:
             error=result.error,
             steps=tuple(recorded),
             status=final,
+            error_code=result.error_code,
         )
 
     @staticmethod
@@ -345,6 +411,6 @@ def _rejected(item: _Item, reason: str | None) -> SubAgentResult:
 def _checkpoint_text(capability: str, result: SubAgentResult) -> str:
     if result.ok:
         return f"执行：{capability}\n{result.output}"
-    if result.error_code == ERROR_REJECTED:
+    if result.error_code in (ERROR_REJECTED, ERROR_READ_ONLY):
         return f"执行：{capability}\n拒绝：{result.error}"
     return f"执行：{capability}\n失败：{result.error}"

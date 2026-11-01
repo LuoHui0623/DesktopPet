@@ -1,4 +1,5 @@
 OPEN_CHAT = "open_chat"
+OPEN_STATUS = "open_status"
 OPEN_SETTINGS = "open_settings"
 SWITCH_AVATAR = "switch_avatar"
 AVATAR_PREFIX = "avatar:"

@@ -95,9 +95,27 @@ def parse_head_note(path: Path) -> str:
 MEMORY_WRITE_CAPABILITY = "记忆写入"
 MEMORY_RETRIEVE_CAPABILITY = "记忆检索"
 DRAFT_NOTE_CAPABILITY = "自记笔记"
-MEMORY_WRITE_TOOLS = ("index", "read", "memory_append", "memory_replace")
-MEMORY_RETRIEVE_TOOLS = ("index", "read")
-DRAFT_NOTE_TOOLS = ("file_read", "file_write", "file_edit", "file_clear")
+MEMORY_WRITE_TOOLS = (
+    "index",
+    "read",
+    "grep",
+    "append",
+    "insert",
+    "edit",
+    "replace",
+    "delete",
+)
+MEMORY_RETRIEVE_TOOLS = ("index", "read", "grep")
+DRAFT_NOTE_TOOLS = (
+    "index",
+    "read",
+    "grep",
+    "append",
+    "insert",
+    "edit",
+    "replace",
+    "delete",
+)
 
 
 def memory_write_skill() -> SkillSpec:

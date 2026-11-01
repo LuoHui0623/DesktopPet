@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "status-window",
+  "description": "状态窗口：只读取后端连接信息；不开放文件系统、进程执行、窗口命令与网络插件",
+  "windows": ["status"],
+  "permissions": ["core:default", "allow-get-backend-info"]
+}

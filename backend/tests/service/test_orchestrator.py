@@ -64,6 +64,12 @@ def write_note(text: str) -> dict:
     return {"ok": True, "content": f"已记录：{text}"}
 
 
+@tool("read")
+def read_note(name: str) -> dict:
+    """读取便签。"""
+    return {"ok": True, "content": f"内容：{name}"}
+
+
 class Clock:
     def __init__(self) -> None:
         self.tick = 0
@@ -134,8 +140,10 @@ def setup(tmp_path: Path):
         )
         skills = SkillRegistry(skills_dir)
         skills.register(SkillSpec("写笔记", "note", ("write_note",)))
+        skills.register(SkillSpec("查笔记", "note", ("read",)))
+        skills.register(SkillSpec("混合笔记", "note", ("read", "write_note")))
         return Orchestrator(
-            SubAgent(llm, [write_note]),
+            SubAgent(llm, [write_note, read_note]),
             DbAgentRuns(db_file),
             skills,
             TZ,
@@ -220,7 +228,7 @@ def test_execute_only_sees_the_declared_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "run",
-        lambda skill, task, run_id, *, tools, draft: (
+        lambda skill, task, run_id, *, tools, draft, turn_id=None: (
             seen.update(tools=tools, draft=draft),
             SubAgentResult(True, "好", None, None, []),
         )[1],
@@ -236,7 +244,7 @@ def test_draft_only_sees_the_read_only_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "draft",
-        lambda skill, task, run_id, *, tools: (
+        lambda skill, task, run_id, *, tools, turn_id=None: (
             seen.update(tools=tools),
             SubAgentDraft(False, error_code="stop", error="停"),
         )[1],
@@ -280,6 +288,91 @@ def test_unknown_capability_still_writes_one_row(setup):
     stored = rows(setup["db_file"])
     assert len(stored) == 1
     assert (stored[0][3], stored[0][4]) == ("failed", "unknown_capability")
+
+
+def test_read_only_dispatch_auto_approves_without_requesting_approval(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"](
+        [
+            draft_reply("读一下", ["read"]),
+            '{"action": "tool", "tool": "read", "args": {"name": "咖啡"}}',
+            '{"action": "finish", "output": "查到：喜欢美式"}',
+        ]
+    )
+    checkpoint = orchestrator.dispatch("查笔记", "查咖啡偏好", gate=gate, read_only=True)
+    assert checkpoint.ok is True
+    assert checkpoint.output == "查到：喜欢美式"
+    assert gate.calls == []
+
+
+def test_read_only_dispatch_rejects_write_capabilities_before_drafting(setup, monkeypatch):
+    gate = FakeGate()
+    orchestrator = setup["build"]([])
+    started: list[str] = []
+    monkeypatch.setattr(
+        orchestrator._subagent, "draft", lambda *args, **kwargs: started.append("draft")
+    )
+    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate, read_only=True)
+    assert checkpoint.ok is False
+    assert checkpoint.status == "rejected"
+    assert checkpoint.error_code == "read_only_denied"
+    assert checkpoint.text.startswith("执行：写笔记\n拒绝：")
+    assert "只允许查询" in checkpoint.error
+    assert started == []
+    assert gate.calls == []
+    stored = rows(setup["db_file"])
+    assert (stored[0][3], stored[0][4]) == ("rejected", "read_only_denied")
+
+
+def test_read_only_dispatch_rejects_a_mixed_capability_entirely(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"]([])
+    checkpoint = orchestrator.dispatch("混合笔记", "读一下再写", gate=gate, read_only=True)
+    assert checkpoint.status == "rejected"
+    assert checkpoint.error_code == "read_only_denied"
+    assert gate.calls == []
+
+
+def test_read_only_plan_runs_read_items_and_rejects_write_items(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"](
+        [
+            draft_reply("读一下", ["read"]),
+            '{"action": "finish", "output": "查到：喜欢美式"}',
+        ]
+    )
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("查笔记", "查咖啡偏好"), PlanStep("写笔记", "记下牛奶")],
+        gate=gate,
+        read_only=True,
+    )
+    assert [checkpoint.status for checkpoint in checkpoints] == ["succeeded", "rejected"]
+    assert checkpoints[0].output == "查到：喜欢美式"
+    assert checkpoints[1].error_code == "read_only_denied"
+    assert gate.calls == []
+
+
+def test_read_only_execution_never_passes_write_tools_to_the_subagent(setup, monkeypatch):
+    seen: dict[str, tuple[str, ...]] = {}
+    orchestrator = setup["build"]([])
+    monkeypatch.setattr(
+        orchestrator._subagent,
+        "draft",
+        lambda *args, **kwargs: SubAgentDraft(
+            True, content="读一下", tools=("write_note",), steps=[]
+        ),
+    )
+    monkeypatch.setattr(
+        orchestrator._subagent,
+        "run",
+        lambda skill, task, run_id, *, tools, draft, turn_id=None: (
+            seen.update(tools=tools),
+            SubAgentResult(True, "好", None, None, []),
+        )[1],
+    )
+    checkpoint = orchestrator.dispatch("查笔记", "任务", gate=FakeGate(), read_only=True)
+    assert checkpoint.ok is True
+    assert seen["tools"] == ()
 
 
 class TaskEchoChat:
@@ -388,6 +481,25 @@ def test_model_usage_links_to_the_dispatched_run(setup):
 def test_parse_plan_accepts_json_array_in_fence():
     steps = parse_plan('```json\n[{"capability": "写笔记", "task": "记一下牛奶"}]\n```')
     assert steps == [PlanStep(capability="写笔记", task="记一下牛奶")]
+
+
+def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
+    orchestrator = setup["build"](
+        [
+            draft_reply("记下牛奶", ["write_note"]),
+            '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
+            '{"action": "finish", "output": "已记下牛奶"}',
+        ]
+    )
+    orchestrator.run_plan([PlanStep("写笔记", "记一下牛奶")], gate=GATE, turn_id="turn-7")
+    conn = connect(setup["db_file"])
+    try:
+        run_turns = [row[0] for row in conn.execute("SELECT turn_id FROM agent_run")]
+        call_turns = [row[0] for row in conn.execute("SELECT turn_id FROM llm_call")]
+    finally:
+        conn.close()
+    assert run_turns == ["turn-7"]
+    assert call_turns and set(call_turns) == {"turn-7"}
 
 
 @pytest.mark.parametrize(

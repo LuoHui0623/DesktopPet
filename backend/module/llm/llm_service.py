@@ -14,9 +14,11 @@ from config.settings import (
     ModelSettingsSource,
 )
 from infra.llm import ApiParadigm, ModelSpec, build_chat_model
-from infra.llm.usage import TrackedChatModel, UsageSink, discard_usage
+from infra.llm.tokens import TokenCounter, create_counter
+from infra.llm.usage import TrackedChatModel, UsageObserver, UsageSink, discard_usage
 
 Builder = Callable[[ModelSpec], BaseChatModel]
+CounterFactory = Callable[[str], TokenCounter]
 ACTIVE_KEY_PREFIX = "llm.active."
 
 
@@ -77,11 +79,15 @@ class LlmService:
         environ: Mapping[str, str] | None = None,
         usage_sink: UsageSink | None = None,
         active_store: ActiveModelStore | None = None,
+        counter_factory: CounterFactory | None = None,
+        usage_observer: UsageObserver | None = None,
     ) -> None:
         self._source = source
         self._builder = builder
         self._environ = environ
         self._usage_sink = usage_sink or discard_usage
+        self._usage_observer = usage_observer
+        self._counter_factory = counter_factory or create_counter
         self._active_store = active_store or MemoryActiveModelStore()
         self._lock = threading.RLock()
         self._settings: ModelSettings | None = None
@@ -183,9 +189,20 @@ class LlmService:
                     provider=provider.name,
                     model_name=model.id,
                     sink=self._usage_sink,
+                    context_window=model.context_window,
+                    max_tokens=model.max_tokens,
+                    tokenizer=model.tokenizer,
+                    counter=self._counter_factory(model.tokenizer),
+                    observer=self._usage_observer,
                 )
                 self._clients[key] = client
             return client
+
+    def set_usage_observer(self, observer: UsageObserver | None) -> None:
+        with self._lock:
+            self._usage_observer = observer
+            for client in self._clients.values():
+                client.set_observer(observer)
 
     @property
     def last_errors(self) -> list[str]:

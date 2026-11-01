@@ -131,6 +131,8 @@ providers:                      # 必需，映射
         roles: [chat, consolidate]   # 必需，非空，只能取 chat / consolidate
         temperature: 0.7        # 必需，0 到 2 之间的数字
         max_tokens: 1024        # 必需，大于 0 的整数
+        context_window: 128000  # 可选，大于 0 的整数，缺省 128000
+        tokenizer: cl100k_base  # 可选，tiktoken 编码名；写 estimate 表示本地估算，缺省 cl100k_base
 ```
 
 ### 6.2 校验规则
@@ -141,6 +143,7 @@ providers:                      # 必需，映射
 - 同一 provider 下 `name` 不得重复。`id` 可以与其他模型相同，例如同一上游模型配置两套参数，使用两个不同的 `name`。
 - `request_header` 的键必须匹配 `^[A-Za-z0-9-]+$`，值必须是非空字符串。
 - `request_header` 只能出现在 provider 层级，不能出现在模型层级。
+- `context_window` 必须大于 0，`tokenizer` 必须是非空字符串；未知的 tiktoken 编码不会让配置解析失败，而是在计数时退回本地估算，并在错误信息里标注「估算」。
 
 ### 6.3 `request_header`
 
@@ -215,7 +218,7 @@ opencode:
 |---|---|
 | `version` | 解析结果的哈希，内容变化时改变 |
 | `providers` | 启用的 provider：`name`、`display_name`、`base_url`、`api_key_env`（密钥环境变量名）、`request_header`、`models` |
-| `models` | 以 `name`（标签）为键。每个模型：`name`、`id`（上游模型标识）、`api`（`chat_completions` / `responses` / `messages`）、`roles`、`temperature`、`max_tokens` |
+| `models` | 以 `name`（标签）为键。每个模型：`name`、`id`（上游模型标识）、`api`（`chat_completions` / `responses` / `messages`）、`roles`、`temperature`、`max_tokens`、`context_window`、`tokenizer` |
 | `defaults` | 按能力（`chat`、`consolidate`）给出的默认 `provider` 与 `model` |
 | `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
 
@@ -238,6 +241,7 @@ opencode:
 | `PET_LOG_LEVEL` | `INFO` | `DEBUG`、`INFO`、`WARNING`、`ERROR` 之一，大小写不敏感 |
 | `PET_LOG_QUEUE_SIZE` | `20` | 日志入库的批次大小，1 到 10000 的整数；批次满即写入数据库 |
 | `PET_LOG_MAX_WAIT_SECONDS` | `30` | 日志入库的最长等待，0.1 到 3600 秒；自批次第一条记录起超过该时间即写入 |
+| `PET_DEV_MODE` | `0` | 状态窗口展示模式：`1/true/yes/on` 为开发模式，`0/false/no` 或留空为正式模式；其他值启动失败。只由 Tauri 调试构建注入，正式构建不设置 |
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。

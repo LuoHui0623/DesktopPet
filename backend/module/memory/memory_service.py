@@ -72,6 +72,48 @@ def checked_ranges(lines: Sequence[str], specs: Sequence[Sequence[int]]) -> list
     return ranges
 
 
+def expect_matches(
+    lines: Sequence[str],
+    ranges: Sequence[tuple[int, int]],
+    expect: str | Sequence[str] | None,
+) -> None:
+    """可选的冲突检测：调用方给出目标行原文，不一致时不写入。"""
+    if expect is None:
+        return
+    expected = [expect] if isinstance(expect, str) else list(expect)
+    if len(expected) != len(ranges):
+        raise MemoryWriteError(f"expect 需要提供 {len(ranges)} 段原文，实际 {len(expected)} 段")
+    for (start, end), current in zip(ranges, expected, strict=True):
+        actual = "\n".join(lines[start - 1 : end])
+        if actual != current:
+            raise MemoryWriteError(
+                f"第 {start}-{end} 行与 expect 不一致，文件可能已被修改；请先用 read 核对"
+            )
+
+
+def replace_ranges(
+    lines: Sequence[str],
+    ranges: Sequence[tuple[int, int]],
+    block: Sequence[str],
+) -> list[str]:
+    """按行区间原地替换，返回新行列表；区间不可重叠。"""
+    updated = list(lines)
+    offset = 0
+    for start, end in ranges:
+        position = start - 1 + offset
+        count = end - start + 1
+        updated[position : position + count] = block
+        offset += len(block) - count
+    return updated
+
+
+def delete_ranges(lines: Sequence[str], ranges: Sequence[tuple[int, int]]) -> list[str]:
+    updated = list(lines)
+    for start, end in reversed(ranges):
+        del updated[start - 1 : end]
+    return updated
+
+
 def section(lines: Sequence[str], specs: Sequence[Sequence[int]]) -> str:
     ranges = checked_ranges(lines, specs)
     return "\n".join(number_lines(lines[start - 1 : end], start) for start, end in ranges)
@@ -94,7 +136,7 @@ def _flatten_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def _compile_pattern(pattern: str) -> re.Pattern[str]:
+def compile_pattern(pattern: str) -> re.Pattern[str]:
     if not pattern.strip():
         raise MemoryWriteError("正则不能为空")
     try:
@@ -162,11 +204,55 @@ class StructuredMemoryDoc:
         self.save("\n".join([*lines, *block]))
         return start, start + len(block) - 1
 
+    def insert(self, line: int, content: str) -> tuple[int, int]:
+        block = _content_lines(content)
+        lines = self.lines()
+        if not 1 <= line <= len(lines) + 1:
+            raise MemoryWriteError(f"插入位置 {line} 超出范围：应为 1–{len(lines) + 1}")
+        updated = [*lines[: line - 1], *block, *lines[line - 1 :]]
+        self.save("\n".join(updated))
+        return line, line + len(block) - 1
+
+    def edit(
+        self,
+        specs: Sequence[Sequence[int]],
+        content: str,
+        expect: str | Sequence[str] | None = None,
+    ) -> tuple[int, int]:
+        block = _content_lines(content)
+        lines = self.lines()
+        try:
+            ranges = checked_ranges(lines, specs)
+        except MemoryReadError as exc:
+            raise MemoryWriteError(str(exc)) from exc
+        expect_matches(lines, ranges, expect)
+        updated = replace_ranges(lines, ranges, block)
+        self.save("\n".join(updated))
+        shift = sum(len(block) - (end - start + 1) for start, end in ranges[:-1])
+        start = ranges[0][0]
+        last = ranges[-1][0] + shift
+        return start, last + len(block) - 1
+
+    def delete(
+        self,
+        specs: Sequence[Sequence[int]],
+        expect: str | Sequence[str] | None = None,
+    ) -> None:
+        if not specs:
+            raise MemoryWriteError("删除内容需要提供行号位置")
+        lines = self.lines()
+        try:
+            ranges = checked_ranges(lines, specs)
+        except MemoryReadError as exc:
+            raise MemoryWriteError(str(exc)) from exc
+        expect_matches(lines, ranges, expect)
+        self.save("\n".join(delete_ranges(lines, ranges)))
+
     def replace_pattern(
         self, specs: Sequence[Sequence[int]], pattern: str, content: str
     ) -> tuple[int, int]:
         replacement = "\n".join(_content_lines(content))
-        regex = _compile_pattern(pattern)
+        regex = compile_pattern(pattern)
         lines = self.lines()
         try:
             ranges = checked_ranges(lines, specs)
@@ -265,28 +351,38 @@ class MemoryReader:
 
 
 class MemoryWriter:
-    def __init__(self, structured: StructuredMemoryDoc, daily: DailyLogService) -> None:
+    def __init__(self, structured: StructuredMemoryDoc) -> None:
         self._structured = structured
-        self._daily = daily
 
     def append(self, content: str) -> tuple[int, int]:
-        self._ensure_writable()
         self._ensure_not_sensitive(content)
         return self._structured.append(content)
+
+    def insert(self, line: int, content: str) -> tuple[int, int]:
+        self._ensure_not_sensitive(content)
+        return self._structured.insert(line, content)
+
+    def edit(
+        self,
+        lines: Sequence[Sequence[int]],
+        content: str,
+        expect: str | Sequence[str] | None = None,
+    ) -> tuple[int, int]:
+        self._ensure_not_sensitive(content)
+        return self._structured.edit(lines, content, expect)
+
+    def delete(
+        self,
+        lines: Sequence[Sequence[int]],
+        expect: str | Sequence[str] | None = None,
+    ) -> None:
+        self._structured.delete(lines, expect)
 
     def replace_pattern(
         self, lines: Sequence[Sequence[int]], pattern: str, content: str
     ) -> tuple[int, int]:
-        self._ensure_writable()
         self._ensure_not_sensitive(content)
         return self._structured.replace_pattern(lines, pattern, content)
-
-    def temporary_mode(self) -> bool:
-        return self._daily.temporary_mode()
-
-    def _ensure_writable(self) -> None:
-        if self._daily.temporary_mode():
-            raise MemoryWriteError("临时模式开启，本次不写入结构化记忆", code="temporary_mode")
 
     def _ensure_not_sensitive(self, text: str) -> None:
         reason = sensitive_reason(text)

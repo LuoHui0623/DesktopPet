@@ -47,6 +47,11 @@ async fn open_chat_window(app: AppHandle, history: Option<bool>) -> Result<(), S
 }
 
 #[tauri::command]
+async fn open_status_window(app: AppHandle) -> Result<(), String> {
+    window::open_status_window(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     window::open_settings_window(&app).map_err(|error| error.to_string())
 }
@@ -65,6 +70,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_backend_info,
             open_chat_window,
+            open_status_window,
             open_settings_window,
             perception::start_perception,
             perception::update_perception_config,
@@ -122,9 +128,19 @@ fn launch_backend() -> Result<Launched, String> {
         command: python_path(&backend_dir),
         args: vec!["main.py".to_string()],
         cwd: backend_dir,
-        env: Vec::new(),
+        env: backend_env(),
     };
     backend::launch(&spec, backend::STARTUP_TIMEOUT)
+}
+
+/// 开发构建（`npm run dev`）由受信任的桌面壳注入开发标记；正式包不设该变量。
+/// 状态窗口的完整正文展示边界因此不依赖前端自身判断。
+fn backend_env() -> Vec<(String, String)> {
+    if cfg!(debug_assertions) {
+        vec![("PET_DEV_MODE".to_string(), "1".to_string())]
+    } else {
+        Vec::new()
+    }
 }
 
 fn backend_dir() -> PathBuf {
@@ -190,6 +206,7 @@ mod tests {
 
     const CAPABILITY: &str = include_str!("../capabilities/default.json");
     const CHAT_CAPABILITY: &str = include_str!("../capabilities/chat.json");
+    const STATUS_CAPABILITY: &str = include_str!("../capabilities/status.json");
     const SETTINGS_CAPABILITY: &str = include_str!("../capabilities/settings.json");
     const CONFIG: &str = include_str!("../tauri.conf.json");
 
@@ -198,6 +215,7 @@ mod tests {
         "allow-get-backend-info",
         "allow-open-settings-window",
     ];
+    const STATUS_ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
     const SETTINGS_ALLOWED_PERMISSIONS: &[&str] = &["core:default", "allow-get-backend-info"];
 
     const ALLOWED_PERMISSIONS: &[&str] = &[
@@ -205,6 +223,7 @@ mod tests {
         "core:window:allow-start-dragging",
         "allow-get-backend-info",
         "allow-open-chat-window",
+        "allow-open-status-window",
         "allow-show-context-menu",
         "allow-exit-app",
         "allow-start-perception",
@@ -284,6 +303,11 @@ mod tests {
     }
 
     #[test]
+    fn status_window_only_gets_backend_info() {
+        assert_window_permissions(STATUS_CAPABILITY, "status", STATUS_ALLOWED_PERMISSIONS);
+    }
+
+    #[test]
     fn settings_window_only_gets_backend_info() {
         assert_window_permissions(SETTINGS_CAPABILITY, "settings", SETTINGS_ALLOWED_PERMISSIONS);
     }
@@ -309,7 +333,17 @@ mod tests {
 
         assert_async_command(|app| crate::open_chat_window(app, None));
         assert_async_command(|app| crate::open_chat_window(app, Some(true)));
+        assert_async_command(crate::open_status_window);
         assert_async_command(crate::open_settings_window);
+    }
+
+    /// 开发构建由桌面壳向后端注入 `PET_DEV_MODE`，正式构建不注入任何展示开关。
+    #[test]
+    fn dev_build_marks_the_backend_for_development_mode() {
+        #[cfg(debug_assertions)]
+        assert_eq!(crate::backend_env(), vec![("PET_DEV_MODE".to_string(), "1".to_string())]);
+        #[cfg(not(debug_assertions))]
+        assert!(crate::backend_env().is_empty());
     }
 
     #[test]

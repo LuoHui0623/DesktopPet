@@ -57,7 +57,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
     assert EXPECTED_TABLES <= tables(conn)
     assert not {"core_memory", "proactive_feedback"} & tables(conn)
 
@@ -77,6 +77,10 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
         (8, "drop_core_memory"),
         (9, "drop_proactive_feedback"),
         (10, "llm_call"),
+        (11, "daily_log_persona_assistant"),
+        (12, "usage_turn"),
+        (13, "llm_call_reply_raw"),
+        (14, "daily_log_event_time"),
     ]
 
 
@@ -216,6 +220,7 @@ def test_llm_call_has_agent_columns(conn: sqlite3.Connection):
         "prompt_hash",
         "prompt_text",
         "reply_text",
+        "reply_raw",
     } <= columns
 
 
@@ -233,6 +238,7 @@ def test_agent_run_columns(conn: sqlite3.Connection):
         "error_code",
         "started_at",
         "finished_at",
+        "turn_id",
     }
 
 
@@ -260,7 +266,7 @@ def test_agent_run_accepts_rejected_status(tmp_path: Path):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(insert, ("r2", "rejected"))
 
-        assert migrate(conn) == [7, 8, 9, 10]
+        assert migrate(conn) == [7, 8, 9, 10, 11, 12, 13, 14]
 
         conn.execute(insert, ("r2", "rejected"))
         rows = conn.execute("SELECT id, status, steps FROM agent_run ORDER BY id").fetchall()
@@ -290,7 +296,7 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
         )
         conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES ('1', 1)")
 
-        assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9, 10]
+        assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
         call = conn.execute(
             "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_call"
@@ -312,6 +318,10 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
             (8,),
             (9,),
             (10,),
+            (11,),
+            (12,),
+            (13,),
+            (14,),
         ]
     finally:
         conn.close()
@@ -320,7 +330,7 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
         assert migrate(conn) == []
     finally:
         conn.close()
@@ -342,7 +352,7 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
             "('2026-10-25', 'event', '切换人设', '2026-10-25T09:05:00+08:00')"
         )
 
-        assert migrate(conn) == [5, 6, 7, 8, 9, 10]
+        assert migrate(conn) == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
 
         rows = conn.execute("SELECT id, role, content FROM daily_log ORDER BY id").fetchall()
         assert [tuple(row) for row in rows] == [
@@ -352,9 +362,72 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
         ]
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO daily_log (date, role, content, created_at) "
-                "VALUES ('2026-10-25', 'user', 'x', 'x')"
+                "INSERT INTO daily_log (event_time, role, content, created_at) "
+                "VALUES ('2026-10-25T09:10:00+08:00', 'user', 'x', 'x')"
             )
+    finally:
+        conn.close()
+
+
+def _copy_migrations_through(tmp_path: Path, last: int) -> Path:
+    directory = tmp_path / f"migrations_{last}"
+    directory.mkdir()
+    for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+        version = int(path.name[:4])
+        if version <= last:
+            shutil.copy(path, directory / path.name)
+    return directory
+
+
+def test_daily_log_backfills_active_persona_and_accepts_assistant(tmp_path: Path):
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn, _copy_migrations_through(tmp_path, 10)) == list(range(1, 11))
+        conn.execute(
+            "INSERT INTO app_setting (key, value, updated_at) "
+            "VALUES ('persona.active', '小桌', '2026-10-25T09:00:00+08:00')"
+        )
+        conn.execute(
+            "INSERT INTO daily_log (date, role, content, created_at) VALUES "
+            "('2026-10-25', 'master', '你好', '2026-10-25T09:00:00+08:00'), "
+            '(\'2026-10-25\', \'event\', \'{"type":"session_boundary","persona":"小桌"}\', '
+            "'2026-10-25T09:01:00+08:00')"
+        )
+
+        assert migrate(conn) == [11, 12, 13, 14]
+
+        rows = conn.execute("SELECT role, persona_id FROM daily_log ORDER BY id").fetchall()
+        assert [tuple(row) for row in rows] == [("master", "小桌"), ("event", "小桌")]
+        conn.execute(
+            "INSERT INTO daily_log (event_time, role, content, persona_id, created_at) "
+            "VALUES ('2026-10-25T09:02:00+08:00', 'assistant', '查询结果', '小桌', "
+            "'2026-10-25T09:02:00+08:00')"
+        )
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(daily_log)")}
+        assert "idx_daily_log_persona_event_time" in indexes
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO daily_log (event_time, role, content, created_at) "
+                "VALUES ('2026-10-25T09:03:00+08:00', 'master', '缺少人设', "
+                "'2026-10-25T09:03:00+08:00')"
+            )
+    finally:
+        conn.close()
+
+
+def test_daily_log_backfill_defaults_to_the_default_persona(tmp_path: Path):
+    conn = connect(tmp_path / "pet.db")
+    try:
+        migrate(conn, _copy_migrations_through(tmp_path, 10))
+        conn.execute(
+            "INSERT INTO daily_log (date, role, content, created_at) "
+            "VALUES ('2026-10-25', 'me', '你好呀', '2026-10-25T09:00:00+08:00')"
+        )
+
+        assert migrate(conn) == [11, 12, 13, 14]
+
+        row = conn.execute("SELECT role, persona_id FROM daily_log").fetchone()
+        assert tuple(row) == ("me", "芙芙")
     finally:
         conn.close()
 
@@ -380,10 +453,32 @@ def test_session_boundary_text_becomes_structured_event(tmp_path: Path):
             "('2026-10-25', 'event', '其他旧事件', 'y')"
         )
 
-        assert migrate(conn) == [6, 7, 8, 9, 10]
+        assert migrate(conn) == [6, 7, 8, 9, 10, 11, 12, 13, 14]
 
         rows = conn.execute("SELECT content FROM daily_log ORDER BY id").fetchall()
         assert json.loads(rows[0][0]) == {"type": "session_boundary", "persona": "小桌"}
         assert rows[1][0] == "其他旧事件"
+    finally:
+        conn.close()
+
+
+def test_daily_log_event_time_replaces_date_and_backfills_from_created_at(tmp_path: Path):
+    conn = connect(tmp_path / "pet.db")
+    try:
+        migrate(conn, _copy_migrations_through(tmp_path, 13))
+        conn.execute(
+            "INSERT INTO daily_log (date, role, content, persona_id, created_at) "
+            "VALUES ('2026-10-25', 'master', '你好', '芙芙', '2026-10-25T09:00:00.000+08:00')"
+        )
+
+        assert migrate(conn) == [14]
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_log)")}
+        assert "event_time" in columns
+        assert "date" not in columns
+        row = conn.execute("SELECT event_time, created_at FROM daily_log").fetchone()
+        assert tuple(row) == ("2026-10-25T09:00:00.000+08:00", "2026-10-25T09:00:00.000+08:00")
+        indexes = {row[1] for row in conn.execute("PRAGMA index_list(daily_log)")}
+        assert indexes == {"idx_daily_log_event_time", "idx_daily_log_persona_event_time"}
     finally:
         conn.close()

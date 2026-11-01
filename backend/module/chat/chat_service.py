@@ -1,8 +1,9 @@
 import json
 import logging
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from hashlib import sha256
 from typing import Any, Literal, Protocol
 from uuid import uuid4
@@ -11,6 +12,7 @@ from zoneinfo import ZoneInfo
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
 from constants.speech import REPLY_MAX_ITEMS, SENTENCE_MAX_WIDTH, visible_width
+from infra.llm.tokens import TokenCountError
 from infra.llm.usage import TrackedChatModel, UsageSample, UsageSink, usage_scope
 from module.agent.approval import (
     ApprovalDraft,
@@ -21,6 +23,7 @@ from module.agent.approval import (
     AutoApprovalGate,
 )
 from module.agent.orchestrator import (
+    ERROR_REJECTED,
     STATUS_REJECTED,
     Checkpoint,
     Orchestrator,
@@ -35,7 +38,7 @@ from module.chat.citations import CitedSource, resolve_sources, split_citations
 from module.chat.context import AssembledContext, ContextBuilder, MemoryFragment, PerceptionReader
 from module.chat.transcript import ChatLine, ChatTranscript
 from module.interaction.contracts import InteractionReader
-from module.llm import LlmService, LlmUnavailableError
+from module.llm import LlmService, LlmUnavailableError, UsageService
 from module.memory.contracts import DailyLogView
 from module.memory.daily_events import encode_event, event_text
 from module.memory.daily_log_service import DailyLogService
@@ -46,6 +49,9 @@ logger = logging.getLogger("pet")
 
 SENTENCE_ENDS = frozenset("。！？!?…")
 NEWLINE = "\n"
+FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
+JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+TIMELINE_PREFIX = re.compile(r"^\[(?:master|me|assistant|system)\]\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
 # 英文缩写后的点不收句，其余英文句号按句末处理。
 ABBREVIATIONS = frozenset(
     {"mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "vs", "etc", "e.g", "i.e"}
@@ -53,6 +59,12 @@ ABBREVIATIONS = frozenset(
 MAX_ATTEMPTS = 2
 DEFAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
 UNSPECIFIED_CAPABILITY = "（未指定）"
+CONTEXT_OVERFLOW_MARKERS = (
+    "maximum context length",
+    "context length exceeded",
+    "context window",
+    "too many tokens",
+)
 CHECKPOINT_INTRO = (
     "派发已执行完毕，下面是本次的检查点，每行一个 JSON，只供本轮使用：\n"
     "{blocks}\n"
@@ -112,6 +124,7 @@ class ChatRequest:
     fragments: Sequence[MemoryFragment] = ()
     trigger_reason: str | None = None
     allow_dispatch: bool = True
+    read_only_dispatch: bool = False
     events: ChatEvents | None = None
 
 
@@ -260,11 +273,48 @@ def _reply_texts(value: Any) -> tuple[str, ...]:
     return tuple(texts)
 
 
+def _extract_json(content: str) -> str:
+    """模型偶尔把 JSON 包进代码块或夹在说明文字里，取最外层对象再交给 json 解析。"""
+    text = FENCE.sub("", content.strip()).strip()
+    match = JSON_OBJECT.search(text)
+    return match.group(0) if match else text
+
+
+def _plain_reply_texts(content: str) -> tuple[str, ...]:
+    """兜底解析模型直接说的人话：按空行分段，去掉它抄来的时间线前缀。"""
+    items: list[str] = []
+    current: list[str] = []
+
+    def flush() -> None:
+        if current:
+            items.append("\n".join(current))
+            current.clear()
+
+    for raw in _extract_json(content).splitlines():
+        if not raw.strip():
+            flush()
+            continue
+        line, prefixed = TIMELINE_PREFIX.subn("", raw)
+        if prefixed:
+            flush()
+        if line.strip():
+            current.append(line.strip())
+    flush()
+    if len(items) > REPLY_MAX_ITEMS:
+        items[REPLY_MAX_ITEMS - 1 :] = ["\n".join(items[REPLY_MAX_ITEMS - 1 :])]
+    return tuple(items)
+
+
 def parse_chat_output(content: str) -> ChatOutput:
     try:
-        data = json.loads(content)
+        data = json.loads(_extract_json(content))
     except ValueError as exc:
-        raise ModelOutputError("回复不是合法的 JSON") from exc
+        if "{" in content or "}" in content:
+            raise ModelOutputError("回复不是合法的 JSON") from exc
+        texts = _plain_reply_texts(content)
+        if not texts:
+            raise ModelOutputError("回复不是合法的 JSON") from exc
+        return ChatOutput(kind="chat", texts=_reply_texts(list(texts)))
     if not isinstance(data, dict) or not data:
         raise ModelOutputError("回复必须是 JSON 对象")
     if next(iter(data)) != "type":
@@ -286,7 +336,7 @@ def parse_chat_output(content: str) -> ChatOutput:
 
 def _attempted_capability(content: str) -> str:
     try:
-        data = json.loads(content)
+        data = json.loads(_extract_json(content))
     except ValueError:
         return UNSPECIFIED_CAPABILITY
     plan = data.get("plan") if isinstance(data, dict) else None
@@ -300,6 +350,11 @@ def _attempted_capability(content: str) -> str:
 
 def _prompt_digest(template_digest: str, persona_id: str, persona_version: int) -> str:
     return sha256(f"{template_digest}|{persona_id}|{persona_version}".encode()).hexdigest()
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return any(marker in text for marker in CONTEXT_OVERFLOW_MARKERS)
 
 
 class ChatService:
@@ -322,6 +377,7 @@ class ChatService:
         perception: PerceptionReader | None = None,
         activity: ChatActivity | None = None,
         interactions: InteractionReader | None = None,
+        usage: UsageService | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
@@ -339,7 +395,10 @@ class ChatService:
         self._perception = perception
         self._activity = activity
         self._interactions = interactions
-        self._transcript = ChatTranscript(self._timezone, clock=self._clock)
+        self._usage = usage
+        self._transcript = ChatTranscript(
+            self._timezone, clock=self._clock, loader=self._restore_lines
+        )
 
     @property
     def approvals(self) -> ApprovalRegistry | None:
@@ -357,13 +416,29 @@ class ChatService:
             return self._run(request)
 
     def _run(self, request: ChatRequest) -> ChatReply:
+        """一轮对话从开始到收尾共用一个 turn_id，模型失败也要汇总出结果。"""
         user_text = (request.user_text or "").strip() or None
         trigger_reason = (request.trigger_reason or "").strip() or None
         if user_text is None and trigger_reason is None:
             raise ChatError("empty_input", "消息不能为空")
         received_at = self._now() if user_text is not None else None
+        turn_id = self._begin_turn(received_at)
+        try:
+            return self._run_turn(request, user_text, trigger_reason, received_at, turn_id)
+        finally:
+            self._end_turn(turn_id)
+
+    def _run_turn(
+        self,
+        request: ChatRequest,
+        user_text: str | None,
+        trigger_reason: str | None,
+        received_at: datetime | None,
+        turn_id: str | None,
+    ) -> ChatReply:
         events = request.events or self._events
         snapshot = self._current_persona()
+        self._transcript.set_persona(snapshot.id)
         builder = ContextBuilder(
             snapshot.config,
             self._templates,
@@ -384,40 +459,59 @@ class ChatService:
         )
         messages = assembled.messages
         digest = _prompt_digest(assembled.template_digest, snapshot.id, snapshot.version)
+        # 先把主人这句落库，模型失败或配置缺失时也能在重启后看到它；
+        # 上下文已在此之前读取，因此这一句不会在自己的提示词里出现两次。
+        persisted = True
+        if user_text is not None:
+            persisted = self._daily_log.record_user(
+                user_text, at=received_at, persona_id=snapshot.id
+            )
         try:
             client = self._llm.client_for("chat")
         except LlmUnavailableError as exc:
-            self._record_unavailable(digest)
+            self._record_unavailable(digest, turn_id)
             raise ChatError("model_unavailable", str(exc)) from exc
 
         events.status("thinking")
         try:
-            output = self._generate(client, messages, digest, allow_dispatch=request.allow_dispatch)
+            output = self._generate(
+                client,
+                messages,
+                digest,
+                allow_dispatch=request.allow_dispatch,
+                turn_id=turn_id,
+            )
             if output.kind == "dispatch":
                 return self._reply_from_dispatch(
                     client,
                     messages,
                     digest,
                     output,
-                    user_text,
                     assembled,
                     events,
-                    received_at=received_at,
+                    persona_id=snapshot.id,
+                    persisted=persisted,
+                    read_only=request.read_only_dispatch,
+                    turn_id=turn_id,
                 )
             return self._finish_reply(
-                user_text, output.texts, assembled, events, received_at=received_at
+                output.texts,
+                assembled,
+                events,
+                persona_id=snapshot.id,
+                persisted=persisted,
             )
         finally:
             events.status("idle")
 
     def _finish_reply(
         self,
-        user_text: str | None,
         texts: Sequence[str],
         assembled: AssembledContext,
         events: ChatEvents,
         *,
-        received_at: datetime | None,
+        persona_id: str,
+        persisted: bool,
     ) -> ChatReply:
         replied_at = self._now()
         replies: list[str] = []
@@ -426,15 +520,10 @@ class ChatService:
             reply, cited = split_citations(text)
             replies.append(reply)
             citations.append(cited)
-        recorded = self._record(user_text, replies, received_at=received_at, replied_at=replied_at)
-        if recorded:
-            self._remember(
-                user_text,
-                replies,
-                assembled.notes,
-                received_at=received_at,
-                replied_at=replied_at,
-            )
+        recorded = persisted and self._daily_log.record_reply(
+            replies, at=replied_at, persona_id=persona_id
+        )
+        self._remember(assembled.notes)
         message_id = uuid4().hex
         messages = tuple(
             ReplyMessage(
@@ -457,20 +546,28 @@ class ChatService:
         messages: list[BaseMessage],
         digest: str,
         output: ChatOutput,
-        user_text: str | None,
         assembled: AssembledContext,
         events: ChatEvents,
         *,
-        received_at: datetime | None,
+        persona_id: str,
+        persisted: bool,
+        read_only: bool = False,
+        turn_id: str | None = None,
     ) -> ChatReply:
         if self._orchestrator is None:
             raise ChatError("invalid_output", "派发执行器未配置，只能输出 chat")
         events.status("executing")
         plan_id = uuid4().hex
+        gate = AutoApprovalGate() if read_only else self._gate(events)
         checkpoints = self._orchestrator.run_plan(
-            output.plan, gate=self._gate(events), plan_id=plan_id
+            output.plan,
+            gate=gate,
+            plan_id=plan_id,
+            read_only=read_only,
+            turn_id=turn_id,
         )
         self._record_rejections(checkpoints)
+        self._record_assistant_backfill(checkpoints, persona_id=persona_id)
         blocks = "\n".join(checkpoint_block(plan_id, item) for item in checkpoints)
         follow_up = [
             *messages,
@@ -489,42 +586,37 @@ class ChatService:
             HumanMessage(content=CHECKPOINT_INTRO.format(blocks=blocks)),
         ]
         events.status("thinking")
-        generated = self._generate(client, follow_up, digest, allow_dispatch=False)
+        generated = self._generate(client, follow_up, digest, allow_dispatch=False, turn_id=turn_id)
         return self._finish_reply(
-            user_text, generated.texts, assembled, events, received_at=received_at
+            generated.texts, assembled, events, persona_id=persona_id, persisted=persisted
         )
 
-    def _record(
-        self,
-        user_text: str | None,
-        replies: Sequence[str],
-        *,
-        received_at: datetime | None,
-        replied_at: datetime,
-    ) -> bool:
-        if user_text is None:
-            return self._daily_log.record_reply(replies, at=replied_at)
-        return self._daily_log.record_turn(
-            user_text, replies, received_at=received_at, replied_at=replied_at
-        )
-
-    def _remember(
-        self,
-        user_text: str | None,
-        replies: Sequence[str],
-        notes: Sequence[ChatLine],
-        *,
-        received_at: datetime | None,
-        replied_at: datetime,
-    ) -> None:
+    def _remember(self, notes: Sequence[ChatLine]) -> None:
         for note in notes:
-            self._transcript.add(note)
-        if user_text is None:
-            self._transcript.append_reply(replies, at=replied_at)
-        else:
-            self._transcript.append_turn(
-                user_text, replies, at_received=received_at, at_replied=replied_at
-            )
+            self._transcript.add_note(note)
+
+    def _restore_lines(self, day: date, persona_id: str) -> list[ChatLine]:
+        """把当天已落库的聊天行还原成带角色的时间线，事件与系统消息不进入上下文。"""
+        lines: list[ChatLine] = []
+        for entry in self._daily_log.restore_day(day.isoformat(), persona_id=persona_id):
+            if entry.role == "master":
+                lines.append(
+                    ChatLine(
+                        at=entry.created_at,
+                        message=HumanMessage(content=entry.content),
+                        role="master",
+                    )
+                )
+            else:
+                lines.append(
+                    ChatLine(
+                        at=entry.created_at,
+                        message=AIMessage(content=entry.content),
+                        is_reply=True,
+                        role=entry.role,
+                    )
+                )
+        return lines
 
     def _current_persona(self) -> PersonaSnapshot:
         try:
@@ -563,10 +655,12 @@ class ChatService:
         digest: str,
         *,
         allow_dispatch: bool = True,
+        turn_id: str | None = None,
     ) -> ChatOutput:
+        self._check_budget(client, messages)
         failure: ChatError | None = None
         for _ in range(MAX_ATTEMPTS):
-            content = self._invoke(client, messages, digest)
+            content = self._invoke(client, messages, digest, turn_id)
             try:
                 output = parse_chat_output(content)
             except DispatchRejectedError as exc:
@@ -598,9 +692,42 @@ class ChatService:
         assert failure is not None
         raise failure
 
+    def _check_budget(self, client: TrackedChatModel, messages: list[BaseMessage]) -> None:
+        window = client.context_window
+        max_tokens = client.max_tokens
+        if not window or max_tokens is None:
+            return
+        try:
+            counted = client.count_tokens(messages)
+        except TokenCountError as exc:
+            raise ChatError("token_count_failed", f"无法统计上下文 tokens：{exc}") from exc
+        if counted.tokens + max_tokens <= window:
+            return
+        label = "估算 " if counted.estimated else ""
+        raise ChatError(
+            "context_overflow",
+            f"上下文超出窗口：输入 {label}{counted.tokens} tokens + "
+            f"回复上限 {max_tokens} tokens，超过模型窗口 {window}",
+        )
+
+    def _record_assistant_backfill(
+        self, checkpoints: Sequence[Checkpoint], *, persona_id: str
+    ) -> None:
+        """每个子代理一条 assistant 行；存结果正文，不存检查点包装与通用提示。"""
+        texts: list[str] = []
+        for item in checkpoints:
+            body = ((item.output if item.ok else item.error) or "").strip()
+            if body:
+                texts.append(body)
+        if not texts:
+            return
+        self._daily_log.record_assistant(texts, at=self._now(), persona_id=persona_id)
+
     def _record_rejections(self, checkpoints: Sequence[Checkpoint]) -> None:
         for checkpoint in checkpoints:
             if checkpoint.status != STATUS_REJECTED:
+                continue
+            if checkpoint.error_code != ERROR_REJECTED:
                 continue
             try:
                 self._remember_event(
@@ -625,7 +752,7 @@ class ChatService:
         content = encode_event(event_type, **fields)
         if not self._daily_log.record_event(event_type, **fields):
             return
-        self._transcript.add(
+        self._transcript.add_note(
             ChatLine(
                 at=self._now(),
                 message=AIMessage(content=f"[事件] {event_text(content)}"),
@@ -636,15 +763,23 @@ class ChatService:
         clock = self._clock or (lambda zone: datetime.now(zone))
         return clock(self._timezone)
 
-    def _invoke(self, client: TrackedChatModel, messages: list[BaseMessage], digest: str) -> str:
-        with usage_scope("chat", prompt_hash=digest):
+    def _invoke(
+        self,
+        client: TrackedChatModel,
+        messages: list[BaseMessage],
+        digest: str,
+        turn_id: str | None,
+    ) -> str:
+        with usage_scope("chat", prompt_hash=digest, turn_id=turn_id):
             try:
                 response = client.invoke(messages)
             except Exception as exc:
+                if _is_context_overflow(exc):
+                    raise ChatError("context_overflow", f"模型报告上下文超限：{exc}") from exc
                 raise ChatError("model_failed", f"模型调用失败：{exc}") from exc
         return _text_of(response.content).strip()
 
-    def _record_unavailable(self, digest: str) -> None:
+    def _record_unavailable(self, digest: str, turn_id: str | None) -> None:
         active = self._llm.active_model("chat")
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
         record = UsageSample(
@@ -660,8 +795,23 @@ class ChatService:
             latency_ms=0,
             success=False,
             prompt_hash=digest,
+            turn_id=turn_id,
         )
         try:
             self._usage_sink(record)
         except Exception:
             logger.exception("LLM 用量记录写入失败")
+
+    def _begin_turn(self, received_at: datetime | None = None) -> str | None:
+        if self._usage is None:
+            return None
+        at = received_at or self._now()
+        return self._usage.start_turn(at.isoformat(timespec="milliseconds"))
+
+    def _end_turn(self, turn_id: str | None) -> None:
+        if turn_id is None or self._usage is None:
+            return
+        try:
+            self._usage.finish_turn(turn_id)
+        except Exception:
+            logger.exception("轮次用量汇总失败：%s", turn_id)

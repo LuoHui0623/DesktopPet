@@ -16,6 +16,13 @@ export function formatClock(value: string | null | undefined): string {
   return `${hour}:${minute}:${second}`;
 }
 
+/** 时间戳里的日期部分 `YYYY-MM-DD`，供历史面板按天展示。 */
+export function formatDay(value: string | null | undefined): string {
+  if (!value) return "";
+  const matched = /^\d{4}-\d{2}-\d{2}/.exec(value.trim());
+  return matched ? matched[0] : "";
+}
+
 /** 消息行首的 `[角色][HH:MM:SS]` 标记；没有可用时间时只给角色。 */
 export function roleStamp(role: string, value: string | null | undefined): string {
   const clock = formatClock(value);

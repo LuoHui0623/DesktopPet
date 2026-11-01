@@ -4,6 +4,7 @@ fn main() {
             tauri_build::AppManifest::new().commands(&[
                 "get_backend_info",
                 "open_chat_window",
+                "open_status_window",
                 "open_settings_window",
                 "show_context_menu",
                 "exit_app",

@@ -19,7 +19,6 @@ import {
   saveStructuredMemory,
   sendChat,
   setActiveLlm,
-  setMemoryTemporaryMode,
   submitApproval,
   updateSettingsAvatar,
   updateSettingsInteraction,
@@ -144,12 +143,6 @@ describe("endpoint functions match the API contract", () => {
       expectedPath: "/api/memories/structured",
     },
     {
-      operationId: "set_memory_temporary_mode",
-      run: (c) => setMemoryTemporaryMode(c, true),
-      template: "/api/memories/temporary-mode",
-      expectedPath: "/api/memories/temporary-mode",
-    },
-    {
       operationId: "submit_approval",
       run: (c) => submitApproval(c, { approval_id: "ap_1", approved: true }),
       template: "/api/agent/approvals",
@@ -271,11 +264,9 @@ describe("request bodies and queries", () => {
     expect(bodyOf(calls[0]?.init)).toEqual({ text: "## 主人信息\n- 喜欢拿铁" });
   });
 
-  it("sends the temporary mode flag as JSON", async () => {
-    const { client, calls } = recordingClient();
-    await setMemoryTemporaryMode(client, false);
-    expect(calls[0]?.init?.method).toBe("POST");
-    expect(bodyOf(calls[0]?.init)).toEqual({ enabled: false });
+  it("no longer exposes the temporary mode operation or its contract", () => {
+    const ids = contracts.operations.map((item) => item.operationId);
+    expect(ids).not.toContain("set_memory_temporary_mode");
   });
 
   it("sends the approval decision as JSON", async () => {

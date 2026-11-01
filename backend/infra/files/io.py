@@ -19,6 +19,13 @@ def write_text(path: Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def write_text_atomic(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(content, encoding="utf-8")
+    temporary.replace(path)
+
+
 def replace_paragraph(path: Path, index: int, content: str) -> None:
     lines = read_text(path).split("\n")
     spans = _paragraph_spans(lines)

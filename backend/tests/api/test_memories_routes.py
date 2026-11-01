@@ -22,8 +22,8 @@ AUTH = {"X-Pet-Token": TOKEN}
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def daily(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
-    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
+def daily(event_time: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(event_time=event_time, role=role, content=content, created_at=event_time)
 
 
 class Clock:
@@ -47,13 +47,12 @@ def client(tmp_path: Path):
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
     index.rebuild()
-    writer = MemoryWriter(structured, daily)
+    writer = MemoryWriter(structured)
     services = MemoryServices(structured=structured, writer=writer, daily=daily)
     app = create_app(TOKEN, memories=services)
     test_client = TestClient(app)
     test_client.index_file = index_file
     test_client.structured = structured
-    test_client.daily = daily
     test_client.db_file = db_file
     return test_client
 
@@ -65,26 +64,23 @@ def index_data(client) -> dict:
 def test_routes_require_token(client):
     assert client.get("/api/memories").status_code == 401
     assert client.put("/api/memories/structured", json={"text": "x"}).status_code == 401
-    assert client.post("/api/memories/temporary-mode", json={"enabled": True}).status_code == 401
 
 
 def test_list_returns_structured_text_and_daily_index(client):
     client.structured.save("## 喜好\n- 咖啡：美式，不加糖")
-    DbDailyLog(client.db_file).append(
-        [daily("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好")]
-    )
+    DbDailyLog(client.db_file).append([daily("2026-10-18T09:00:00+08:00", "master", "你好")])
     body = client.get("/api/memories", headers=AUTH).json()
     assert body["structured"] == "## 喜好\n- 咖啡：美式，不加糖\n"
     assert body["daily_memory"] == {"2026-10": ["2026-10-18"]}
-    assert body["temporary_mode"] is False
+    assert "temporary_mode" not in body
     assert body["daily_records"] is None
 
 
 def test_list_returns_day_records(client):
     DbDailyLog(client.db_file).append(
         [
-            daily("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好"),
-            daily("2026-10-18", "2026-10-18T09:00:00+08:00", "me", "你好呀"),
+            daily("2026-10-18T09:00:00+08:00", "master", "你好"),
+            daily("2026-10-18T09:00:00+08:00", "me", "你好呀"),
         ]
     )
     body = client.get("/api/memories?date=2026-10-18", headers=AUTH).json()
@@ -126,24 +122,16 @@ def test_put_structured_memory_requires_text_field(client):
     assert client.put("/api/memories/structured", headers=AUTH, json={"text": 1}).status_code == 422
 
 
-def test_put_structured_memory_works_in_temporary_mode(client):
-    client.daily.set_temporary_mode(True)
+def test_put_structured_memory_ignores_the_legacy_temporary_setting(client):
+    SettingsService(client.db_file).put("memory.temporary_mode", "true")
     response = client.put("/api/memories/structured", headers=AUTH, json={"text": "## 喜好"})
     assert response.status_code == 200
     assert response.json() == {"text": "## 喜好\n"}
 
 
-def test_temporary_mode_switch_takes_effect_immediately(client):
-    on = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": True})
-    assert on.json() == {"temporary_mode": True}
-    assert client.get("/api/memories", headers=AUTH).json()["temporary_mode"] is True
-    off = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": False})
-    assert off.json() == {"temporary_mode": False}
-
-
-def test_temporary_mode_request_is_validated(client):
-    response = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": "yes"})
-    assert response.status_code == 422
+def test_temporary_mode_endpoint_is_removed(client):
+    response = client.post("/api/memories/temporary-mode", headers=AUTH, json={"enabled": True})
+    assert response.status_code == 404
 
 
 def test_routes_report_unavailable_without_memory_services():
@@ -157,7 +145,4 @@ def test_openapi_lists_memory_operations(client):
     assert (
         spec["paths"]["/api/memories/structured"]["put"]["operationId"] == "save_structured_memory"
     )
-    assert (
-        spec["paths"]["/api/memories/temporary-mode"]["post"]["operationId"]
-        == "set_memory_temporary_mode"
-    )
+    assert "/api/memories/temporary-mode" not in spec["paths"]

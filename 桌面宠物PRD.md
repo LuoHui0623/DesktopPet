@@ -88,7 +88,7 @@
 - **模型**：provider 列表、模型预设、当前对话模型与整理模型可分别选择并立即生效。设置页只显示 provider 状态与密钥是否已设置，不显示密钥。配置可手动重载。
 - **感知**：各感知项开关；勿扰时段（默认 23:00–08:00）。
 - **天气**：城市（手动或定位）、定位权限状态。
-- **记忆**：结构化记忆的查看与编辑、日常对话按日期查看、临时模式开关。
+- **记忆**：结构化记忆的查看与编辑、日常对话按日期查看。
 - **能力**：已开启的扩展、执行日志。
 - **聊天记录**：导入入口与导入历史。
 - 开机自启、紧急停止快捷键。
@@ -119,6 +119,7 @@
   - **整理模型**：用于 sub agent 的记忆读写与聊天记录格式化，成本优先，可用更便宜的模型。
 - 切换后立即生效，不需重启。
 - 每次调用由各 client 记录：provider、模型、用途（purpose）、结构化 token 用量、开始与结束时间、耗时、是否失败；写入本地表 `llm_call`。token 不可得时记为空，不估算。
+- 独立状态窗口展示当前轮的每次调用与汇总（token、模型耗时、是否完整）；下一轮开始或关闭应用时清空，不删除数据库记录。开发模式显示完整输入、归一化输出与未解析原始响应（原始 JSON），正式模式只显示 token 与耗时。
 - API Key 不写入数据库，也不写入任何文件。`.env` 中只保存密钥对应的**系统环境变量名**，真正的密钥保存在系统环境变量中。
 - 模型预设（provider、模型、角色、温度）写在 `llm.yaml`，可入 Git；配置支持热更新，修改后无需重启。
 
@@ -292,7 +293,6 @@
 - 正则替换的三重约束：只能在给定行区间内命中；不允许匹配空字符串；区间内一次都没命中就报错、整篇不改，提示先用 `read` 确认原文。
 - 写入后告知用户“我记住了，位于第 X-Y 行”。
 - 敏感信息（证件号、银行卡、密码、健康细节）不写入，并告知原因。
-- 临时模式开启时不写入。
 - 系统从对话中自行推断的记忆不在本阶段范围（见 Task.md Q-5）。
 
 **编辑规则**
@@ -301,7 +301,7 @@
 
 ### 5.5 日常对话与 daily_memory
 
-- 每轮对话的用户消息与助手回复写入 `daily_log`（临时模式开启时不写）。
+- 每轮对话的用户消息与助手回复写入 `daily_log`。
 - 检查点每天 reset，即每天开启新 session；当天的完整对话保留在 `daily_log`。
 - 不做日终摘要，不做候选记忆抽取。“日整理”在本阶段仅指完整保留对话原文。
 - `daily_log` 原文的保留期限见 Task.md Q-3。
@@ -347,7 +347,6 @@
 - 查看：结构化记忆显示为带行号的只读文本；日常对话按日期查看。
 - 编辑：结构化记忆在设置页用文本框改全文并保存；日常对话只读。
 - 删除：直接在文本框里删掉对应行并保存。
-- 临时模式：开启后本次对话不写入 `daily_log`，也不写入结构化记忆。
 - 整理日志：查看每次 sub agent 的执行记录（`agent_run`）。
 
 ---
@@ -475,10 +474,10 @@ language_style:
 
 | 表 | 主要字段 | 说明 |
 |---|---|---|
-| `daily_log` | id, date, role, content, created_at | 日常对话原文（daily_memory 的存储），只读 |
-| `llm_call` | id, provider, model, purpose, run_id, tokens_in, tokens_out, usage_raw, prompt_hash, prompt_text, reply_text, started_at, finished_at, latency_ms, success | 每次模型调用的结构化记录（含请求与回复正文）；run_id 指向 `agent_run`，可为空 |
+| `daily_log` | id, event_time, role, content, persona_id, created_at | 日常对话原文（daily_memory 的存储），只读；event_time 为事件发生时刻，created_at 为入库时刻 |
+| `llm_call` | id, provider, model, purpose, run_id, turn_id, tokens_in, tokens_out, usage_raw, prompt_hash, prompt_text, reply_text, reply_raw, started_at, finished_at, latency_ms, success | 每次模型调用的结构化记录（含请求与归一化回复、未解析原始响应）；run_id 指向 `agent_run`，turn_id 关联对话轮次，均可为空 |
 | `agent_run` | id, session_id, capability, instruction, steps, output, status, error_code, started_at, finished_at | sub agent 每次派发的执行记录；steps 为简化后的行为路径（JSON），永久保留 |
-| `app_setting` | key, value, updated_at | 运行时设置，如设置页切换的当前对话模型与整理模型，临时模式状态 |
+| `app_setting` | key, value, updated_at | 运行时设置，如设置页切换的当前对话模型与整理模型 |
 | `log_record` | id, created_at, level, logger, message, exc_text | 运行日志入库（异步批量写入，见 Arch §9.6） |
 | `persona_version` | version, content, created_at | 角色卡历史版本（规范化后的内容） |
 | `behavior_event` | id, type, payload, occurred_at | 感知元数据，保留 30 天 |

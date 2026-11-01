@@ -2,17 +2,23 @@ from collections.abc import Callable, Sequence
 from datetime import date, datetime, tzinfo
 from typing import Protocol
 
-from module.memory.contracts import DailyLogEntry, DailyLogRecord, DailyLogRow, DailyLogView
+from constants.agent import DEFAULT_PERSONA_ID, PERSONA_ACTIVE_KEY
+from module.memory.contracts import (
+    CHAT_ROLES,
+    DailyLogEntry,
+    DailyLogRecord,
+    DailyLogRole,
+    DailyLogRow,
+    DailyLogView,
+)
 from module.memory.daily_events import encode_event
 from module.memory.project import from_row, to_record, to_view
-
-TEMPORARY_MODE_KEY = "memory.temporary_mode"
 
 
 class DailyLogStore(Protocol):
     def append(self, records: Sequence[DailyLogRecord]) -> None: ...
 
-    def by_date(self, date: str) -> list[DailyLogRow]: ...
+    def by_date(self, day: str, *, persona_id: str | None = None) -> list[DailyLogRow]: ...
 
     def dates(self) -> list[str]: ...
 
@@ -25,6 +31,7 @@ class DailyLogStore(Protocol):
         newest_first: bool = False,
         limit: int | None = None,
         offset: int = 0,
+        persona_id: str | None = None,
     ) -> list[DailyLogRow]: ...
 
 
@@ -51,11 +58,8 @@ class DailyLogService:
         self._timezone = timezone
         self._clock = clock
 
-    def temporary_mode(self) -> bool:
-        return self._settings.get(TEMPORARY_MODE_KEY) == "true"
-
-    def set_temporary_mode(self, enabled: bool) -> None:
-        self._settings.put(TEMPORARY_MODE_KEY, "true" if enabled else "false")
+    def active_persona(self) -> str:
+        return self._settings.get(PERSONA_ACTIVE_KEY) or DEFAULT_PERSONA_ID
 
     def record_turn(
         self,
@@ -64,44 +68,76 @@ class DailyLogService:
         *,
         received_at: datetime | None = None,
         replied_at: datetime | None = None,
+        persona_id: str | None = None,
     ) -> bool:
-        if self.temporary_mode():
-            return False
         received = received_at or self._clock(self._timezone)
         replied = replied_at or self._clock(self._timezone)
+        persona = self._persona(persona_id)
         self._append(
             [
                 DailyLogEntry(
-                    day=received.date(), role="master", content=user_text, created_at=received
+                    event_time=received,
+                    role="master",
+                    content=user_text,
+                    created_at=received,
+                    persona_id=persona,
                 ),
                 *[
-                    DailyLogEntry(day=replied.date(), role="me", content=text, created_at=replied)
+                    DailyLogEntry(
+                        event_time=replied,
+                        role="me",
+                        content=text,
+                        created_at=replied,
+                        persona_id=persona,
+                    )
                     for text in _utterances(assistant_text)
                 ],
             ]
         )
         return True
 
-    def record_reply(
-        self, assistant_text: str | Sequence[str], *, at: datetime | None = None
+    def record_user(
+        self, text: str, *, at: datetime | None = None, persona_id: str | None = None
     ) -> bool:
-        if self.temporary_mode():
-            return False
         now = at or self._clock(self._timezone)
+        return self._record_single("master", text, now, persona_id)
+
+    def record_reply(
+        self,
+        assistant_text: str | Sequence[str],
+        *,
+        at: datetime | None = None,
+        persona_id: str | None = None,
+    ) -> bool:
+        now = at or self._clock(self._timezone)
+        return self._record_many("me", assistant_text, now, persona_id)
+
+    def record_assistant(
+        self,
+        assistant_text: str | Sequence[str],
+        *,
+        at: datetime | None = None,
+        persona_id: str | None = None,
+    ) -> bool:
+        now = at or self._clock(self._timezone)
+        return self._record_many("assistant", assistant_text, now, persona_id)
+
+    def record_event(
+        self, event_type: str, *, persona_id: str | None = None, **fields: str
+    ) -> bool:
+        content = encode_event(event_type, **fields)
+        now = self._clock(self._timezone)
         self._append(
             [
-                DailyLogEntry(day=now.date(), role="me", content=text, created_at=now)
-                for text in _utterances(assistant_text)
+                DailyLogEntry(
+                    event_time=now,
+                    role="event",
+                    content=content,
+                    created_at=now,
+                    persona_id=self._persona(persona_id),
+                )
             ]
         )
-        return True
-
-    def record_event(self, event_type: str, **fields: str) -> bool:
-        content = encode_event(event_type, **fields)
-        if self.temporary_mode():
-            return False
-        now = self._clock(self._timezone)
-        self._append([DailyLogEntry(day=now.date(), role="event", content=content, created_at=now)])
         return True
 
     def record_session_boundary(self, persona: str) -> bool:
@@ -110,11 +146,18 @@ class DailyLogService:
     def dates(self) -> list[str]:
         return self._store.dates()
 
-    def read_day(self, day: str) -> list[DailyLogEntry]:
-        return [from_row(row) for row in self._store.by_date(_iso_day(day))]
+    def read_day(self, day: str, *, persona_id: str | None = None) -> list[DailyLogEntry]:
+        rows = self._store.by_date(_iso_day(day), persona_id=self._persona(persona_id))
+        return [from_row(row) for row in rows]
 
-    def day_views(self, day: str) -> list[DailyLogView]:
-        return [to_view(row) for row in self._store.by_date(_iso_day(day))]
+    def restore_day(self, day: str, *, persona_id: str | None = None) -> list[DailyLogEntry]:
+        """当天可恢复进上下文的聊天记录；事件与系统消息不恢复。"""
+        rows = self._store.by_date(_iso_day(day), persona_id=self._persona(persona_id))
+        return [from_row(row) for row in rows if row.role in CHAT_ROLES]
+
+    def day_views(self, day: str, *, persona_id: str | None = None) -> list[DailyLogView]:
+        rows = self._store.by_date(_iso_day(day), persona_id=self._persona(persona_id))
+        return [to_view(row) for row in rows]
 
     def search(
         self,
@@ -125,6 +168,7 @@ class DailyLogService:
         newest_first: bool = False,
         limit: int | None = None,
         offset: int = 0,
+        persona_id: str | None = None,
     ) -> list[DailyLogView]:
         rows = self._store.search(
             keyword or None,
@@ -133,8 +177,39 @@ class DailyLogService:
             newest_first=newest_first,
             limit=limit,
             offset=offset,
+            persona_id=persona_id,
         )
         return [to_view(row) for row in rows]
+
+    def _record_single(
+        self, role: DailyLogRole, text: str, at: datetime, persona_id: str | None
+    ) -> bool:
+        return self._record_many(role, (text,), at, persona_id)
+
+    def _record_many(
+        self,
+        role: DailyLogRole,
+        texts: str | Sequence[str],
+        at: datetime,
+        persona_id: str | None,
+    ) -> bool:
+        persona = self._persona(persona_id)
+        self._append(
+            [
+                DailyLogEntry(
+                    event_time=at,
+                    role=role,
+                    content=text,
+                    created_at=at,
+                    persona_id=persona,
+                )
+                for text in _utterances(texts)
+            ]
+        )
+        return True
+
+    def _persona(self, persona_id: str | None) -> str:
+        return persona_id or self.active_persona()
 
     def _append(self, entries: Sequence[DailyLogEntry]) -> None:
         self._store.append([to_record(entry) for entry in entries])

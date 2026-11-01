@@ -2,6 +2,7 @@ from module.menu.constants import (
     AVATAR_PREFIX,
     OPEN_CHAT,
     OPEN_SETTINGS,
+    OPEN_STATUS,
     QUIT,
     SWITCH_AVATAR,
     TOGGLE_PROACTIVE,
@@ -33,6 +34,7 @@ class MenuService:
         return Menu(
             items=(
                 MenuItem(id=OPEN_CHAT, label="打开对话", enabled=True, checked=None),
+                MenuItem(id=OPEN_STATUS, label="状态", enabled=True, checked=None),
                 MenuItem(id=OPEN_SETTINGS, label="设置", enabled=True, checked=None),
                 MenuItem(
                     id=SWITCH_AVATAR,

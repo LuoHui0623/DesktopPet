@@ -197,6 +197,17 @@ describe("event stream connection", () => {
     expect(parseServerEvent(JSON.stringify([]))).toBeNull();
   });
 
+  it("keeps usage panel events used by the status window", () => {
+    const snapshot = { type: "usage.panel.snapshot", mode: "prod", turn: null };
+    const started = {
+      type: "usage.turn.started",
+      turn_id: "t1",
+      at: "2026-11-01T10:00:00.000+08:00",
+    };
+    expect(parseServerEvent(JSON.stringify(snapshot))).toEqual(snapshot);
+    expect(parseServerEvent(JSON.stringify(started))).toEqual(started);
+  });
+
   it("keeps proactive messages", () => {
     const payload = {
       type: "proactive.message",

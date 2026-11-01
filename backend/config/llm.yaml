@@ -10,6 +10,10 @@
 #   chat_completions  OpenAI 兼容 chat/completions 接口
 #   responses         OpenAI Responses 接口
 #   messages          Anthropic messages 接口
+#
+# context_window 为模型上下文窗口（输入 + 回复），默认 128000。
+# tokenizer 为计数方式：tiktoken 编码名（如 cl100k_base / o200k_base），
+# 或 estimate 表示使用本地估算。估算值会在错误里明确标注。
 
 providers:
   deepseek:
@@ -20,13 +24,17 @@ providers:
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.5
-        max_tokens: 1024
+        max_tokens: 10000
+        context_window: 128000
+        tokenizer: estimate
       - name: deepseek-v4-pro
         id: deepseek-v4-pro
         api: chat_completions
         roles: [chat]
         temperature: 0.5
         max_tokens: 2048
+        context_window: 128000
+        tokenizer: estimate
 
   opencode:
     display_name: OpenCode Go
@@ -39,16 +47,22 @@ providers:
         api: chat_completions
         roles: [chat, consolidate]
         temperature: 0.7
-        max_tokens: 1024
+        max_tokens: 10000
+        context_window: 128000
+        tokenizer: estimate
       - name: gpt-5.6-luna
         id: gpt-5.6-luna
         api: responses
         roles: [chat]
         temperature: 0.7
-        max_tokens: 1024
+        max_tokens: 10000
+        context_window: 400000
+        tokenizer: o200k_base
       - name: claude-haiku-5-5
         id: claude-haiku-5-5
         api: messages
         roles: [chat, consolidate]
         temperature: 0.7
-        max_tokens: 1024
+        max_tokens: 10000
+        context_window: 200000
+        tokenizer: estimate

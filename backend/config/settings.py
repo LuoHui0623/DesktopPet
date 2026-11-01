@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, f
 from constants.path import CONFIG_DIR, DATA_DIR, PERSONAS_DIR, resolve_from_root
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
+TRUE_VALUES = ("1", "true", "yes", "on")
+FALSE_VALUES = ("0", "false", "no")
 # 勿扰、每日上限与最小间隔的唯一真源是 app_setting（设置页写入）；这三个 .env 键已废弃，
 # 启动时只在日志里提示一次，不再读取为配置、也不再迁移。
 DEPRECATED_SCHEDULER_KEYS = (
@@ -47,6 +49,8 @@ class ModelItem(BaseModel):
     roles: tuple[Role, ...]
     temperature: float
     max_tokens: int
+    context_window: int
+    tokenizer: str
 
 
 class ProviderSettings(BaseModel):
@@ -85,6 +89,8 @@ class _ModelYaml(BaseModel):
     roles: list[Role] = Field(min_length=1)
     temperature: float = Field(ge=0, le=2)
     max_tokens: int = Field(gt=0)
+    context_window: int = Field(default=128000, gt=0)
+    tokenizer: str = Field(default="cl100k_base", min_length=1)
 
     @field_validator("roles")
     @classmethod
@@ -277,6 +283,8 @@ def load_model_settings(
                 roles=tuple(model.roles),
                 temperature=model.temperature,
                 max_tokens=model.max_tokens,
+                context_window=model.context_window,
+                tokenizer=model.tokenizer,
             )
         providers[name] = ProviderSettings(
             name=name,
@@ -333,6 +341,7 @@ class ServiceSettings(BaseModel):
     log_level: str
     log_queue_size: int
     log_max_wait_seconds: float
+    dev_mode: bool
 
 
 def _float_value(
@@ -374,6 +383,19 @@ def _path_value(values: Mapping[str, str], key: str, default: Path) -> Path:
     return default if raw is None else resolve_from_root(raw)
 
 
+def _bool_value(values: Mapping[str, str], key: str, default: bool, errors: list[str]) -> bool:
+    raw = values.get(key)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in TRUE_VALUES:
+        return True
+    if normalized in FALSE_VALUES:
+        return False
+    errors.append(f"{key} 必须是 {' / '.join(TRUE_VALUES + FALSE_VALUES)} 之一，当前为 {raw!r}")
+    return default
+
+
 def load_service_settings(
     config_dir: Path = CONFIG_DIR,
     environ: Mapping[str, str] | None = None,
@@ -408,6 +430,7 @@ def load_service_settings(
     log_max_wait_seconds = _float_value(
         values, "PET_LOG_MAX_WAIT_SECONDS", 30.0, 0.1, 3600.0, errors
     )
+    dev_mode = _bool_value(values, "PET_DEV_MODE", False, errors)
 
     if errors:
         raise ServiceSettingsError(errors)
@@ -422,6 +445,7 @@ def load_service_settings(
         log_level=log_level,
         log_queue_size=log_queue_size,
         log_max_wait_seconds=log_max_wait_seconds,
+        dev_mode=dev_mode,
     )
 
 

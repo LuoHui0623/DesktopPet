@@ -1,14 +1,15 @@
 """本地假模型服务：提供 OpenAI 兼容的 chat/completions 接口，供端到端验证使用。
 
 回复规则固定：
-- 子代理起草“记忆写入”能力时，直接提交一份声明 memory_append 的草案。
-- 子代理执行“记忆写入”能力时，先调用 memory_append；收到观察后直接结束，观察里带失败原因
-  时就把原因当作结论如实回报。任务里带“改成”时改用 memory_replace：在行区间内正则替换。
+- 子代理起草“记忆写入”能力时，直接提交一份声明 append 的草案。
+- 子代理执行“记忆写入”能力时，先调用 append（资源 structured）；收到观察后直接结束，
+  观察里带失败原因时就把原因当作结论如实回报。任务里带“改成”时改用 replace：
+  在行区间内正则替换。
 - 子代理起草“记忆检索”能力时，提交一份声明 index 与 read 的草案；执行时按说明书走
-  ReAct：先 read（资源 skill）打开说明书，再 index（资源 memory）看清单，
-  再 read（资源 memory）按清单里的名字读结构化记忆，最后返回片段。
-- 子代理起草“自记笔记”能力时，提交一份声明 file_read 与 file_write 的草案；执行时先
-  file_read 读出草稿本，再 file_write 把新条目追加在旧内容后面（整篇覆盖但不丢旧内容）。
+  ReAct：先 read（资源 skill）打开说明书，再 index（资源 structured）看清单，
+  再 read（资源 structured）读结构化记忆，最后返回片段。
+- 子代理起草“自记笔记”能力时，提交一份声明 read 与 append 的草案；执行时先
+  read 读出草稿本，再 append 把新条目加到末尾。
 - 主对话中，用户说“请记住…”时返回只含一项「记忆写入」的合法 dispatch，模拟主 agent 自主
   决定写入记忆（写不写由主 agent 判断，不再靠关键词触发）。
 - 主对话中，用户说“检索测试”时返回只含一项「记忆检索」的合法 dispatch。
@@ -26,7 +27,6 @@ import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-INDEX_NAME = re.compile(r'"name":\s*"([^"]+)"')
 WRITE_CAPABILITY = "当前能力：记忆写入"
 RETRIEVE_CAPABILITY = "当前能力：记忆检索"
 DRAFT_MARK = "提交草案"
@@ -38,8 +38,7 @@ REPLACE_FINISH = "改好啦：只喝冰美式"
 NOTE_CAPABILITY = "当前能力：自记笔记"
 NOTE_TRIGGER = "记一下"
 NOTE_DRAFT = "先读草稿本，再把「周五问主人要不要续费」追加进去。"
-NOTE_DRAFT_TOOLS = ["file_read", "file_write"]
-NOTE_FILE = "草稿本.md"
+NOTE_DRAFT_TOOLS = ["read", "append"]
 NOTE_ENTRY = "周五问主人要不要续费"
 NOTE_FINISH = "记到草稿本了：周五问主人要不要续费"
 
@@ -186,33 +185,24 @@ def _retrieve_step(body: dict) -> str:
         )
     content = str(last.get("content") or "")
     if last.get("action") == "read" and content.startswith("#"):
-        return _tool_action("index", {"resource": "memory"})
+        return _tool_action("index", {"resource": "structured"})
     if last.get("action") == "index":
-        names = INDEX_NAME.findall(content)
-        if not names:
-            return json.dumps(
-                {"action": "finish", "output": "记忆里还没有相关内容。"}, ensure_ascii=False
-            )
-        return _tool_action("read", {"resource": "memory", "name": names[0]})
+        return _tool_action("read", {"resource": "structured"})
     return json.dumps({"action": "finish", "output": RETRIEVE_FINISH}, ensure_ascii=False)
 
 
 def _note_step(body: dict) -> str:
-    """按说明书走：先读草稿本现状，再整篇覆盖写入「旧内容 + 新条目」。"""
+    """按说明书走：先读草稿本现状，再用 append 追加新条目。"""
     seen = _observations(body)
     last = seen[-1] if seen else None
     if last is None:
-        return _tool_action("file_read", {"path": NOTE_FILE})
+        return _tool_action("read", {"resource": "draft"})
     if last.get("ok") is False:
         return json.dumps(
             {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
         )
     if last.get("action") == "read":
-        content = str(last.get("content") or "").rstrip()
-        return _tool_action(
-            "file_write",
-            {"path": NOTE_FILE, "content": f"{content}\n\n- {NOTE_ENTRY}\n"},
-        )
+        return _tool_action("append", {"resource": "draft", "content": f"- {NOTE_ENTRY}"})
     return json.dumps({"action": "finish", "output": NOTE_FINISH}, ensure_ascii=False)
 
 
@@ -228,9 +218,9 @@ def _reply_text(body: dict) -> str:
         elif RETRIEVE_CAPABILITY in system:
             tools, content = ["index", "read"], RETRIEVE_DRAFT
         elif REPLACE_MARK in system:
-            tools, content = ["memory_replace"], REPLACE_DRAFT
+            tools, content = ["replace"], REPLACE_DRAFT
         else:
-            tools, content = ["memory_append"], DRAFT_CONTENT
+            tools, content = ["append"], DRAFT_CONTENT
         return json.dumps(
             {"action": "draft", "content": content, "tools": tools}, ensure_ascii=False
         )
@@ -247,14 +237,19 @@ def _reply_text(body: dict) -> str:
             )
         if REPLACE_MARK in system:
             return _tool_action(
-                "memory_replace",
-                {"lines": [[1, 2]], "pattern": "热美式", "content": "冰美式"},
+                "replace",
+                {
+                    "resource": "structured",
+                    "lines": [[1, 2]],
+                    "pattern": "热美式",
+                    "content": "冰美式",
+                },
             )
         return json.dumps(
             {
                 "action": "tool",
-                "tool": "memory_append",
-                "args": {"content": "喜欢美式咖啡，不加糖"},
+                "tool": "append",
+                "args": {"resource": "structured", "content": "喜欢美式咖啡，不加糖"},
             },
             ensure_ascii=False,
         )

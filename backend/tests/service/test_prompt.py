@@ -33,8 +33,8 @@ CAPABILITIES = [
 ]
 
 RESOURCES = [
-    ResourceItem(label="草稿本", path="data/resources/草稿本.md"),
-    ResourceItem(label="表情包", path="data/resources/表情包"),
+    ResourceItem(label="草稿本", resource_id="draft"),
+    ResourceItem(label="结构化记忆", resource_id="structured"),
 ]
 
 
@@ -78,7 +78,6 @@ def test_sections_follow_fixed_order(templates):
         text.index("【可用能力】"),
         text.index("【可用资源】"),
         text.index("【发言规则】"),
-        text.index("【固定约束】"),
     ]
     assert positions == sorted(positions)
 
@@ -89,6 +88,16 @@ def test_action_rules_describe_the_chat_output_format(templates):
     assert '{"type": "chat", "text": ["要说给主人的话"]}' in rules
     assert "1–4 项" in rules
     assert "type 必须是第一个字段" in rules
+
+
+def test_action_rules_group_details_under_chat_and_dispatch(templates):
+    text = build(templates).text
+    rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
+    chat_at = rules.index("一、对话")
+    dispatch_at = rules.index("二、派发任务")
+    assert chat_at < dispatch_at
+    assert rules.index('"text"') < dispatch_at
+    assert dispatch_at < rules.index('"plan"')
 
 
 def test_capabilities_are_listed_inside_action_rules(templates):
@@ -149,13 +158,17 @@ def test_capabilities_are_listed_one_per_line(templates):
 
 def test_resources_are_listed_one_per_line(templates):
     text = build(templates).text
-    assert "- 草稿本: data/resources/草稿本.md\n- 表情包: data/resources/表情包" in text
+    assert "- 草稿本: draft\n- 结构化记忆: structured" in text
 
 
-def test_default_resources_point_into_resource_dir():
-    labels = [item.label for item in default_resources()]
-    assert labels == ["草稿本", "表情包"]
-    assert all(item.path.startswith("backend/data/resources/") for item in default_resources())
+def test_default_resources_are_registered_ids():
+    items = default_resources()
+    assert [(item.label, item.resource_id) for item in items] == [
+        ("草稿本", "draft"),
+        ("结构化记忆", "structured"),
+        ("永久记忆", "permanent"),
+        ("小世界", "world"),
+    ]
 
 
 def test_empty_sections_use_placeholders(templates):
@@ -168,11 +181,6 @@ def test_speaking_rules_come_from_constants(templates):
     text = build(templates).text
     assert "单句不超过 40 个汉字或 80 个英文字符" in text
     assert "人设提示约 20 字" in text
-
-
-def test_fixed_constraints_are_in_template(templates):
-    text = build(templates).text
-    assert "不编造记忆" in text
 
 
 def test_same_input_renders_same_prompt(templates):

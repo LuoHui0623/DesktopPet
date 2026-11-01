@@ -22,7 +22,7 @@ from module.settings.settings_service import SettingsService
 
 TZ = ZoneInfo("Asia/Shanghai")
 
-CLOCK_PREFIX = re.compile(r"^\[master\]\[\d{2}:\d{2}:\d{2}\]")
+CLOCK_PREFIX = re.compile(r"^\[(master|me|assistant)\]\[\d{2}:\d{2}:\d{2}\]")
 
 
 def without_clock(content: str) -> str:
@@ -120,19 +120,31 @@ def test_reply_uses_the_active_card(env):
     assert "你的名字是小桌" in system_text(env["model"].requests[1])
 
 
-def test_switch_keeps_recent_turns_and_marks_a_new_session(env):
+def test_switch_restores_only_the_new_persona_history_and_marks_a_new_session(env):
     ask(env["chat"], "第一句")
     env["personas"].activate("小桌")
     ask(env["chat"], "第二句")
     second = env["model"].requests[1]
     contents = [without_clock(message.content) for message in second[1:]]
-    assert contents[0] == "第一句"
+    assert "第一句" not in contents
     assert contents[-1] == "第二句"
     events = env["daily"].read_day(env["daily"].dates()[-1])
     assert [record.role for record in events if record.role == "event"] == ["event"]
     assert [event_text(record.content) for record in events if record.role == "event"] == [
         "切换人设为小桌，新会话开始"
     ]
+
+
+def test_switching_back_restores_the_previous_persona_day(env):
+    ask(env["chat"], "第一句")
+    env["personas"].activate("小桌")
+    ask(env["chat"], "第二句")
+    env["personas"].activate("芙芙")
+    ask(env["chat"], "第三句")
+    contents = [without_clock(message.content) for message in env["model"].requests[2][1:]]
+    assert "第一句" in contents
+    assert "第二句" not in contents
+    assert contents[-1] == "第三句"
 
 
 def test_event_rows_are_not_sent_to_the_model(env):

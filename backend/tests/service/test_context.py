@@ -15,7 +15,7 @@ from module.chat.context import (
     ContextBuilder,
     MemoryFragment,
 )
-from module.chat.transcript import ChatLine, ChatTranscript, reply_message
+from module.chat.transcript import ChatLine
 from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 from service.perception.events import PerceptionEvent, PerceptionEventKind
 
@@ -23,21 +23,35 @@ TZ = ZoneInfo("Asia/Shanghai")
 PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
 
 
-def at(hour: int, minute: int = 0, day: int = 18) -> datetime:
-    return datetime(2026, 10, day, hour, minute, tzinfo=TZ)
+def at(hour: int, minute: int = 0, day: int = 18, second: int = 0) -> datetime:
+    return datetime(2026, 10, day, hour, minute, second, tzinfo=TZ)
 
 
 def master(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=HumanMessage(content=text))
+    return ChatLine(at=moment, message=HumanMessage(content=text), role="master")
 
 
 def me(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=reply_message([text]), is_reply=True)
+    return ChatLine(at=moment, message=AIMessage(content=text), is_reply=True, role="me")
 
 
-def expects(moment: datetime, text: str) -> str:
-    """用户历史行的渲染结果：带角色与秒级时间前缀。"""
-    return f"[master][{moment:%H:%M:%S}]{text}"
+def assistant(moment: datetime, text: str) -> ChatLine:
+    return ChatLine(at=moment, message=AIMessage(content=text), is_reply=True, role="assistant")
+
+
+def expects(moment: datetime, role: str, text: str) -> str:
+    """历史行的渲染结果：带角色与秒级时间前缀。"""
+    return f"[{role}][{moment:%H:%M:%S}]{text}"
+
+
+class Reader:
+    """只返回固定行，避免上下文测试依赖 ChatTranscript 的日切逻辑。"""
+
+    def __init__(self, lines: list[ChatLine]) -> None:
+        self._lines = lines
+
+    def lines(self) -> tuple[ChatLine, ...]:
+        return tuple(self._lines)
 
 
 def note(moment: datetime, text: str) -> ChatLine:
@@ -69,13 +83,10 @@ def parts(tmp_path: Path):
     clock = Clock(at(21, 30))
     structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
 
-    def transcript(*lines: ChatLine) -> ChatTranscript:
-        item = ChatTranscript(TZ, clock=clock)
-        for line in lines:
-            item.add(line)
-        return item
+    def transcript(*lines: ChatLine) -> Reader:
+        return Reader(list(lines))
 
-    def builder(*, transcript_: ChatTranscript | None = None, perception=None) -> ContextBuilder:
+    def builder(*, transcript_: Reader | None = None, perception=None) -> ContextBuilder:
         return ContextBuilder(
             PERSONA,
             load_templates(),
@@ -94,13 +105,13 @@ def parts(tmp_path: Path):
     }
 
 
-def test_resources_point_at_the_runtime_resource_dir(parts, tmp_path: Path):
-    resources = [ResourceItem("草稿本", (tmp_path / "resources" / "草稿本.md").as_posix())]
+def test_resources_render_registered_ids(parts):
+    resources = [ResourceItem("草稿本", "draft")]
     builder = ContextBuilder(
         PERSONA, load_templates(), TZ, resources=resources, clock=parts["clock"]
     )
     text = builder.build("你好").messages[0].content
-    assert f"- 草稿本: {(tmp_path / 'resources' / '草稿本.md').as_posix()}" in text
+    assert "- 草稿本: draft" in text
 
 
 def test_persona_is_first_then_structured_then_input(parts):
@@ -187,10 +198,10 @@ def test_transcript_lines_follow_construction_order(parts):
         AIMessage,
     ]
     assert [message.content for message in messages[1:-1]] == [
-        expects(at(9), "一"),
-        '{"type": "chat", "text": ["二"]}',
-        expects(at(10), "三"),
-        '{"type": "chat", "text": ["四"]}',
+        expects(at(9), "master", "一"),
+        expects(at(9), "me", "二"),
+        expects(at(10), "master", "三"),
+        expects(at(10), "me", "四"),
         CURRENT_SEPARATOR,
     ]
 
@@ -199,21 +210,34 @@ def test_user_history_carries_role_and_second_level_time(parts):
     lines = (master(at(9, 5), "早"), me(at(9, 6), "早呀"))
     messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("在吗").messages
     assert messages[1].content == "[master][09:05:00]早"
-    # D-11：助手历史保持纯 JSON，不加角色时间前缀，继续教模型输出结构化格式
-    assert messages[2].content == '{"type": "chat", "text": ["早呀"]}'
+    assert messages[2].content == "[me][09:06:00]早呀"
 
 
-def test_several_utterances_keep_their_boundary_in_history(parts):
-    line = ChatLine(
-        at=at(9),
-        message=reply_message(["第一句。", "第二句！"]),
-        is_reply=True,
+def test_assistant_history_is_rendered_as_plain_text_with_its_own_role(parts):
+    lines = (
+        master(at(9), "查一下"),
+        assistant(at(9, second=1), "查到咖啡偏好"),
+        me(at(9, second=2), "记下啦"),
     )
-    built = parts["builder"](transcript_=parts["transcript"](master(at(9), "你好"), line)).build(
-        "在吗"
+    messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("在吗").messages
+    assert messages[1].content == "[master][09:00:00]查一下"
+    assert messages[2].content == "[assistant][09:00:01]查到咖啡偏好"
+    assert messages[3].content == "[me][09:00:02]记下啦"
+    assert all("type" not in message.content for message in messages[1:4])
+
+
+def test_several_utterances_are_restored_as_separate_history_lines(parts):
+    lines = (
+        master(at(9), "你好"),
+        me(at(9, second=1), "第一句。"),
+        me(at(9, second=2), "第二句！"),
     )
+    built = parts["builder"](transcript_=parts["transcript"](*lines)).build("在吗")
     contents = [message.content for message in built.messages[1:-1]]
-    assert contents[1] == '{"type": "chat", "text": ["第一句。", "第二句！"]}'
+    assert contents[1:3] == [
+        "[me][09:00:01]第一句。",
+        "[me][09:00:02]第二句！",
+    ]
 
 
 def test_system_prompt_ends_with_the_day_marker(parts):
@@ -263,10 +287,10 @@ def test_event_before_any_message_is_kept(parts):
 def test_standalone_me_and_consecutive_roles_are_kept(parts):
     lines = (
         me(at(9), "先开口"),
-        master(at(9, 1), "一"),
-        master(at(9, 2), "二"),
-        me(at(9, 3), "三"),
-        me(at(9, 4), "四"),
+        master(at(9, second=1), "一"),
+        master(at(9, second=2), "二"),
+        me(at(9, second=3), "三"),
+        me(at(9, second=4), "四"),
     )
     messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("你好").messages
     assert [type(message) for message in messages[1:-1]] == [
@@ -278,14 +302,6 @@ def test_standalone_me_and_consecutive_roles_are_kept(parts):
         AIMessage,
     ]
     assert messages[-2].content == CURRENT_SEPARATOR
-
-
-def test_new_day_clears_the_transcript(parts):
-    snapshot = parts["transcript"](master(at(23), "昨天的话"), me(at(23), "好"))
-    parts["clock"].moment = at(8, day=19)
-    assert snapshot.lines() == ()
-    messages = parts["builder"](transcript_=snapshot).build("早").messages
-    assert [message.content for message in messages[1:-1]] == []
 
 
 def test_full_transcript_is_kept_without_trimming(parts):

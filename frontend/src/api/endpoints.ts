@@ -26,7 +26,6 @@ import type {
   SchedulerLedger,
   SettingsView,
   StructuredMemoryUpdate,
-  TemporaryModeResponse,
 } from "./types";
 
 export interface HealthResponse {
@@ -121,15 +120,6 @@ export function updateSchedulerConfig(
   config: SchedulerConfig,
 ): Promise<SchedulerConfig> {
   return request<SchedulerConfig>(client, "PUT", "/api/scheduler/config", { body: config });
-}
-
-export function setMemoryTemporaryMode(
-  client: ApiClient,
-  enabled: boolean,
-): Promise<TemporaryModeResponse> {
-  return request<TemporaryModeResponse>(client, "POST", "/api/memories/temporary-mode", {
-    body: { enabled },
-  });
 }
 
 export function ingestPerception(

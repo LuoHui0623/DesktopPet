@@ -17,3 +17,5 @@ class UsageRecord:
     prompt_hash: str | None = None
     prompt_text: str | None = None
     reply_text: str | None = None
+    turn_id: str | None = None
+    reply_raw: str | None = None

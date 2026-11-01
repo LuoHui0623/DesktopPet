@@ -54,6 +54,7 @@ def test_returns_the_backend_defined_menu():
     assert response.json() == {
         "items": [
             leaf("open_chat", "打开对话"),
+            leaf("open_status", "状态"),
             leaf("open_settings", "设置"),
             {
                 "id": "switch_avatar",

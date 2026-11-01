@@ -29,8 +29,8 @@ AUTH = {"X-Pet-Token": TOKEN}
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def daily(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
-    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
+def daily(event_time: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(event_time=event_time, role=role, content=content, created_at=event_time)
 
 
 LLM_YAML = """
@@ -159,6 +159,7 @@ def test_websocket_receives_chunks_then_done_in_order(tmp_path: Path):
     client = make_client(tmp_path, ["第一句。第二句！"])
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
         response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
         message_id = response.json()["message_id"]
 
@@ -190,6 +191,7 @@ def test_chat_done_event_carries_every_utterance_of_the_turn(tmp_path: Path):
     client = make_client(tmp_path, [["第一句。", "第二句！"]])
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
         response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
         message_id = response.json()["message_id"]
 
@@ -222,7 +224,8 @@ def test_model_failure_maps_to_502(tmp_path: Path):
 
 
 def test_invalid_output_maps_to_502(tmp_path: Path):
-    client = make_client(tmp_path, [RawOutput("not json"), RawOutput("still not json")])
+    broken = '{"type": "chat", "text": '
+    client = make_client(tmp_path, [RawOutput(broken), RawOutput(broken)])
     response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
     assert response.status_code == 502
     assert response.json()["error"]["code"] == "invalid_output"
@@ -253,14 +256,14 @@ def test_empty_body_is_rejected_by_schema(tmp_path: Path):
 def history_client(tmp_path: Path):
     client = make_client(tmp_path, [])
     store = DbDailyLog(tmp_path / "pet.db")
-    store.append([daily("2026-10-24", "2026-10-24T09:00:00.000+08:00", "master", "喜欢咖啡")])
+    store.append([daily("2026-10-24T09:00:00.000+08:00", "master", "喜欢咖啡")])
     store.append(
         [
-            daily("2026-10-25", "2026-10-25T09:00:00.000+08:00", "master", "早安"),
-            daily("2026-10-25", "2026-10-25T09:00:00.000+08:00", "me", "早"),
+            daily("2026-10-25T09:00:00.000+08:00", "master", "早安"),
+            daily("2026-10-25T09:00:00.000+08:00", "me", "早"),
         ]
     )
-    store.append([daily("2026-10-25", "2026-10-25T10:00:00.000+08:00", "master", "喜欢茶")])
+    store.append([daily("2026-10-25T10:00:00.000+08:00", "master", "喜欢茶")])
     return client
 
 

@@ -90,6 +90,14 @@ def test_client_is_assembled_from_settings(config_dir: Path):
     assert spec.api.value == "chat_completions"
 
 
+def test_client_carries_the_context_budget_and_counter(config_dir: Path):
+    service = make_service(config_dir)
+    client = service.client_for("chat")
+    assert client.context_window == 128000
+    assert client.max_tokens == 1024
+    assert client.count_tokens([AIMessage(content="你好")]).tokens > 0
+
+
 def test_client_is_cached_per_version(config_dir: Path):
     builder = FakeBuilder()
     service = make_service(config_dir, builder)

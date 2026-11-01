@@ -1,10 +1,5 @@
-import { listMemories, saveStructuredMemory, setMemoryTemporaryMode } from "../api/endpoints";
-import type {
-  MemoriesQuery,
-  MemoriesResponse,
-  StructuredMemoryUpdate,
-  TemporaryModeResponse,
-} from "../api/types";
+import { listMemories, saveStructuredMemory } from "../api/endpoints";
+import type { MemoriesQuery, MemoriesResponse, StructuredMemoryUpdate } from "../api/types";
 import { getApiClient } from "./api-client";
 
 export function loadMemories(query: MemoriesQuery = {}): Promise<MemoriesResponse> {
@@ -13,8 +8,4 @@ export function loadMemories(query: MemoriesQuery = {}): Promise<MemoriesRespons
 
 export function saveStructured(text: string): Promise<StructuredMemoryUpdate> {
   return getApiClient().then((client) => saveStructuredMemory(client, text));
-}
-
-export function setTemporaryMode(enabled: boolean): Promise<TemporaryModeResponse> {
-  return getApiClient().then((client) => setMemoryTemporaryMode(client, enabled));
 }

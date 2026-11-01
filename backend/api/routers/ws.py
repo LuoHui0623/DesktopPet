@@ -19,6 +19,7 @@ async def events_socket(websocket: WebSocket) -> None:
     with bus.subscribe() as subscription:
         await websocket.accept(subprotocol=subprotocol)
         await websocket.send_json(publisher.last_status.model_dump(mode="json"))
+        await websocket.send_json(publisher.panel_snapshot.model_dump(mode="json"))
         await _pump(websocket, subscription)
 
 

@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from constants.path import ROOT_DIR
-from module.agent.prompt import default_resources
 from module.agent.workspace import DRAFT_TEMPLATE, prepare_workspace
 
 
@@ -27,15 +25,3 @@ def test_prepare_workspace_recreates_missing_draft(tmp_path: Path):
     draft.unlink()
     prepare_workspace(resource_dir)
     assert draft.read_text(encoding="utf-8") == DRAFT_TEMPLATE
-
-
-def test_resources_follow_the_given_resource_dir(tmp_path: Path):
-    items = default_resources(tmp_path / "resources")
-    assert [item.label for item in items] == ["草稿本", "表情包"]
-    assert items[0].path == (tmp_path / "resources" / "草稿本.md").as_posix()
-    assert items[1].path == (tmp_path / "resources" / "表情包").as_posix()
-
-
-def test_resources_inside_the_repo_are_relative(tmp_path: Path):
-    items = default_resources(ROOT_DIR / "backend" / "data" / "resources")
-    assert items[0].path == "backend/data/resources/草稿本.md"

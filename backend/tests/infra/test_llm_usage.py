@@ -6,8 +6,7 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from constants.llm import LLM_CALL_TEXT_LIMIT
-from infra.llm.usage import TrackedChatModel, UsageSample, usage_scope
+from infra.llm.usage import CallStart, TrackedChatModel, UsageSample, usage_scope
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.llm.repository import db_usage_sink
@@ -174,6 +173,31 @@ def test_prompt_and_reply_text_are_recorded():
     assert record.reply_text == "好的"
 
 
+def test_raw_reply_keeps_the_unparsed_json_string():
+    records: list[UsageSample] = []
+    raw = '{"type": "chat", "text": ["好的"]}'
+    tracked(FakeModel(AIMessage(content=raw)), records).invoke("你好")
+    assert records[0].reply_text == raw
+    assert records[0].reply_raw == raw
+
+
+def test_raw_reply_serializes_structured_content_without_flattening():
+    records: list[UsageSample] = []
+    blocks = [{"type": "text", "text": '{"type": "chat", "text": ["好的"]}'}]
+    tracked(FakeModel(AIMessage(content=blocks)), records).invoke("你好")
+    record = records[0]
+    assert record.reply_text == '{"type": "chat", "text": ["好的"]}'
+    assert json.loads(record.reply_raw or "") == blocks
+
+
+def test_failed_call_has_no_raw_reply():
+    records: list[UsageSample] = []
+    model = tracked(FakeModel(error=RuntimeError("boom")), records)
+    with pytest.raises(RuntimeError):
+        model.invoke("你好")
+    assert records[0].reply_raw is None
+
+
 def test_failed_call_still_records_prompt_text():
     records: list[UsageSample] = []
     model = tracked(FakeModel(error=RuntimeError("boom")), records)
@@ -184,15 +208,119 @@ def test_failed_call_still_records_prompt_text():
     assert record.reply_text is None
 
 
-def test_text_beyond_the_limit_is_truncated():
+def test_long_request_and_reply_are_recorded_in_full():
     records: list[UsageSample] = []
-    long_text = "啊" * (LLM_CALL_TEXT_LIMIT + 500)
+    long_text = "啊" * 20000
     tracked(FakeModel(AIMessage(content=long_text)), records).invoke(long_text)
     record = records[0]
-    assert len(record.prompt_text) <= LLM_CALL_TEXT_LIMIT
-    assert len(record.reply_text) <= LLM_CALL_TEXT_LIMIT
-    assert record.prompt_text.startswith("啊啊")
-    assert record.reply_text.endswith("已截断）")
+    assert record.prompt_text == long_text
+    assert record.reply_text == long_text
+
+
+def test_prompt_text_keeps_system_block_and_plain_bodies():
+    records: list[UsageSample] = []
+    model = tracked(FakeModel(ai_message()), records)
+    model.invoke(
+        [SystemMessage(content="你是助手"), HumanMessage(content="你好"), AIMessage(content="在的")]
+    )
+    assert records[0].prompt_text == "[system]\n你是助手\n\n你好\n\n在的"
+
+
+def test_turn_id_from_scope_is_recorded(tmp_path: Path):
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+
+    model = TrackedChatModel(
+        FakeModel(ai_message()), provider="deepseek", model_name="m", sink=db_usage_sink(db_file)
+    )
+    with usage_scope("chat", turn_id="turn-9"):
+        model.invoke("你好")
+
+    conn = connect(db_file)
+    try:
+        row = conn.execute("SELECT turn_id FROM llm_call").fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "turn-9"
+
+
+class RecordingObserver:
+    def __init__(self) -> None:
+        self.starts: list[CallStart] = []
+        self.finished: list[UsageSample] = []
+
+    def call_started(self, event: CallStart) -> None:
+        self.starts.append(event)
+
+    def call_finished(self, sample: UsageSample) -> None:
+        self.finished.append(sample)
+
+
+def test_observer_sees_start_before_the_call_and_finish_after():
+    observer = RecordingObserver()
+    records: list[UsageSample] = []
+    seen: list[int] = []
+
+    class CheckingModel(FakeModel):
+        def invoke(self, input, config=None, **kwargs):
+            seen.append(len(observer.starts))
+            return super().invoke(input, config, **kwargs)
+
+    model = TrackedChatModel(
+        CheckingModel(ai_message()),
+        provider="deepseek",
+        model_name="m",
+        sink=records.append,
+        observer=observer,
+    )
+    with usage_scope("chat", turn_id="t-1", run_id="r-1"):
+        model.invoke("你好")
+
+    assert seen == [1]
+    [start] = observer.starts
+    assert (start.provider, start.model, start.purpose) == ("deepseek", "m", "chat")
+    assert (start.turn_id, start.run_id) == ("t-1", "r-1")
+    assert start.prompt_text == "你好"
+    [finished] = observer.finished
+    assert finished.success is True
+    assert (finished.tokens_in, finished.tokens_out) == (3, 5)
+
+
+def test_failed_call_notifies_the_observer_and_reraises():
+    observer = RecordingObserver()
+    model = TrackedChatModel(
+        FakeModel(error=RuntimeError("boom")),
+        provider="deepseek",
+        model_name="m",
+        sink=lambda sample: None,
+        observer=observer,
+    )
+    with pytest.raises(RuntimeError):
+        model.invoke("你好")
+    assert len(observer.starts) == 1
+    [finished] = observer.finished
+    assert finished.success is False
+    assert (finished.tokens_in, finished.tokens_out) == (None, None)
+
+
+def test_broken_observer_does_not_break_the_call():
+    class BrokenObserver:
+        def call_started(self, event: CallStart) -> None:
+            raise OSError("bus closed")
+
+        def call_finished(self, sample: UsageSample) -> None:
+            raise OSError("bus closed")
+
+    model = TrackedChatModel(
+        FakeModel(ai_message()),
+        provider="p",
+        model_name="m",
+        sink=lambda sample: None,
+        observer=BrokenObserver(),
+    )
+    assert model.invoke("你好").content == "好的"
 
 
 def test_db_sink_writes_prompt_and_reply_text(tmp_path: Path):
@@ -208,11 +336,12 @@ def test_db_sink_writes_prompt_and_reply_text(tmp_path: Path):
 
     conn = connect(db_file)
     try:
-        row = conn.execute("SELECT prompt_text, reply_text FROM llm_call").fetchone()
+        row = conn.execute("SELECT prompt_text, reply_text, reply_raw FROM llm_call").fetchone()
     finally:
         conn.close()
     assert "你好" in row["prompt_text"]
     assert row["reply_text"] == "好的"
+    assert row["reply_raw"] == "好的"
 
 
 def test_prompt_hash_from_scope_is_recorded(tmp_path: Path):

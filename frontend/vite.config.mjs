@@ -19,6 +19,7 @@ export default defineConfig({
       input: {
         pet: `${projectRoot}src/app/entries/pet.html`,
         chat: `${projectRoot}src/app/entries/chat.html`,
+        status: `${projectRoot}src/app/entries/status.html`,
         settings: `${projectRoot}src/app/entries/settings.html`,
       },
     },

@@ -75,7 +75,8 @@ handle(trigger)
   2. 组装 ChatRequest：
        user_text=None
        trigger_reason=trigger.reason
-       allow_dispatch=False
+       allow_dispatch=True
+       read_only_dispatch=True
        events=proactive sink
   3. reply = chat.chat(request)
   4. ledger.record_sent(trigger.topic)
@@ -164,14 +165,23 @@ handle(trigger)
 2. 不实现 tick；时钟与解析器调用归观测运行时。
 3. 不按 topic 写话术、不建 per-topic hook。
 4. 不做反馈接口、不写反馈表、不要求用户对主动消息评分。
-5. 不做主动轮派发/审批（`allow_dispatch=False`，见 §10）。
+5. 不做主动轮写入型派发或审批；只读派发自动放行（见 §10）。
 6. 不新增 LLM 能力；主动轮复用 `chat` 能力。
 
-## 10. 待定
+## 10. 主动轮只读派发
+
+- 主动轮允许派发，但请求固定带 `read_only_dispatch=True`；只要能直接从当前上下文回答，仍可直接 `chat`，不强制每轮派发。
+- 能力是否可用由服务端按技能工具清单判定：只有全部工具都在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的能力可以执行，当前为「记忆检索」。
+- 写入型能力（「记忆写入」「自记笔记」）与任何混合能力在起草前整项拒绝，检查点状态为 `rejected`、错误码为 `read_only_denied`；执行阶段还会再次过滤工具，写入工具不会到达子代理。
+- 混合计划按项处理：只读项正常执行，写入项单独拒绝；只读项不因同批次的写入项而取消。
+- 主动轮不请求审批，也不会等待 `approval_request`。拒绝原因按每个子代理一条 `assistant` 正文落账，并随检查点回灌给主 agent；不写 `approval_rejected` 事件。
+- 最终仍只生成一次 `chat` 回复；再次派发按 `invalid_output` 处理。
+
+## 11. 待定
 
 | 项 | 建议 | 状态 |
 |---|---|---|
-| 主动轮是否允许派发 | 不允许；`allow_dispatch=False` | 已实现 |
+| 主动轮是否允许派发 | 允许只读能力；自动放行，写入整项拒绝 | 已实现 |
 | 重试次数 | 整轮 1 次 | 已实现 |
 | 台账与推送顺序 | 先台账后推送 | 已实现 |
 | 管线忙碌时排队还是丢弃 | 丢弃 | 已实现 |
@@ -182,11 +192,11 @@ handle(trigger)
 | 忽略语义 | 本会话静音，不落库、不调接口 | 已实现 |
 | 点击气泡落点 | 打开对话并定位历史页 | 已实现 |
 
-## 11. 已定口径与关联文档
+## 12. 已定口径与关联文档
 
 - 主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`，主动回复就是一条普通 `me` 行。
 - 解析器集中判定，只输出 `Trigger{topic, reason}`；管线只做编排。
 - ChatService 提供完整 chat 能力，主动管线调用同一入口。
 - 不做主动消息反馈；忽略只在前端本会话生效，后端没有反馈接口与反馈表。
-- 主动轮固定 `allow_dispatch=False`，不派发、不审批。
+- 主动轮允许只读派发：`read_only_dispatch=True`，只读能力自动放行，写入型与混合能力整项拒绝，不请求审批。
 - 关联：[CHAT.md](CHAT.md) §5.3 主动轮上下文、[OBSERVER.md](OBSERVER.md) §4.3 解析器输出。

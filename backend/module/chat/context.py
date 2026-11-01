@@ -60,9 +60,9 @@ def _flatten(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\n", " ")
 
 
-def _stamp(clock: str, text: str) -> str:
-    """给用户发言加角色与秒级时间前缀：`[master][HH:MM:SS]对话`。"""
-    return f"[{USER_ROLE}][{clock}]{text}"
+def _stamp(clock: str, text: str, role: str = USER_ROLE) -> str:
+    """给发言加角色与秒级时间前缀：`[role][HH:MM:SS]对话`。"""
+    return f"[{role}][{clock}]{text}"
 
 
 def _truncate_lines(lines: Sequence[str], budget: int) -> str:
@@ -180,11 +180,14 @@ class ContextBuilder:
         )
 
     def _render_line(self, line: ChatLine) -> BaseMessage:
-        """用户历史行带角色与秒级时间前缀；助手行保持纯 JSON，避免污染输出格式。"""
-        if not isinstance(line.message, HumanMessage):
+        """带角色的历史行统一渲染为 `[role][HH:MM:SS]文本`；会话备注保持原样。"""
+        if line.role is None:
             return line.message
         moment = line.at.astimezone(self._timezone)
-        return HumanMessage(content=_stamp(f"{moment:%H:%M:%S}", line.message.content))
+        text = _stamp(f"{moment:%H:%M:%S}", line.message.content, line.role)
+        if line.role == USER_ROLE:
+            return HumanMessage(content=text)
+        return AIMessage(content=text)
 
     def _structured_block(self, warnings: list[str]) -> str:
         if self._structured is None:

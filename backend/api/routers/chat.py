@@ -16,6 +16,8 @@ CHAT_ERROR_STATUS = {
     "sentence_too_long": 502,
     "invalid_output": 502,
     "persona_unavailable": 503,
+    "context_overflow": 413,
+    "token_count_failed": 503,
 }
 
 
@@ -31,9 +33,10 @@ def _service(request: Request) -> ChatService:
     operation_id="send_chat",
     response_model=ChatReplyResponse,
     responses={
+        413: {"description": "上下文超出模型窗口"},
         422: {"description": "消息为空"},
         502: {"description": "模型调用失败，或回复句长超限"},
-        503: {"description": "对话模型不可用"},
+        503: {"description": "对话模型不可用，或分词计数失败"},
     },
 )
 def send_chat(request: Request, body: ChatRequest) -> Response | ChatReplyResponse:

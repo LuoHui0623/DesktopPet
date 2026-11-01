@@ -4,7 +4,7 @@
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
 覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
-记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、临时模式、正常关闭（stdin 指令）、
+记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、正常关闭（stdin 指令）、
 设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）、
 草稿本（启动生成 + 自记笔记派发后写入）。
 """
@@ -386,7 +386,7 @@ def check_dispatched_write(api: Api, tap: EventTap) -> str:
     item = approvals[0]["items"][0]
     check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
     check(item["task"] == "请记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
-    check(item["tools"] == ["memory_append"], f"审批项应带草案声明的工具：{item}")
+    check(item["tools"] == ["append"], f"审批项应带草案声明的工具：{item}")
     check(item["content"], "审批项应带草案内容")
     decided = tap.wait_for_approvals(1)
     check(len(decided) == 1 and decided[0]["approved"] is True, f"审批应被接受：{decided}")
@@ -418,11 +418,11 @@ def check_draft_note(api: Api, tap: EventTap, data_dir: Path) -> None:
     check(len(approvals) == 1, f"记笔记应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
     check(item["capability"] == "自记笔记", f"审批项能力异常：{item}")
-    check(item["tools"] == ["file_read", "file_write"], f"审批项应带草案声明的工具：{item}")
+    check(item["tools"] == ["read", "append"], f"审批项应带草案声明的工具：{item}")
     text = draft.read_text(encoding="utf-8")
     check(text.startswith("# 草稿本"), f"草稿本标题应保留：{text!r}")
     check("周五问主人要不要续费" in text, f"应写进草稿本：{text!r}")
-    step("自记笔记：派发后子代理先读草稿本再整篇覆盖写入，旧内容与标题都还在")
+    step("自记笔记：派发后子代理先读草稿本，再用 append 追加新条目，旧内容与标题都还在")
 
 
 def check_manual_edit(api: Api, data_dir: Path) -> str:
@@ -452,7 +452,7 @@ def check_memory_replace(api: Api, tap: EventTap) -> str:
     check(len(approvals) == 1, f"改写应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
     check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
-    check(item["tools"] == ["memory_replace"], f"审批项应带改写工具：{item}")
+    check(item["tools"] == ["replace"], f"审批项应带改写工具：{item}")
     after = api.call("GET", "/api/memories")["structured"]
     check("只喝冰美式" in after, f"应写入替换后的内容：{after!r}")
     check("只喝热美式" not in after, f"被替换的原文应消失：{after!r}")
@@ -510,25 +510,6 @@ def check_structured_in_prompt(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     step("系统提示：结构化记忆全文注入主对话，未检索时不下发来源")
 
 
-def check_temporary_mode(api: Api, tap: EventTap, structured: str) -> None:
-    mark = len(tap.events)
-    api.call("POST", "/api/memories/temporary-mode", {"enabled": True})
-    history_before = api.call("GET", "/api/chat/history")["items"]
-    temp = api.call("POST", "/api/chat", {"text": "请记住，我喜欢茶"})
-    check(temp["text"] == "临时模式开启，本次不写入结构化记忆", f"临时模式回复异常：{temp}")
-    check(temp["recorded"] is False, "临时模式下不应写入每日对话")
-    tap.wait_until_idle_after(mark)
-    memories = api.call("GET", "/api/memories")
-    check(memories["temporary_mode"] is True, f"临时模式状态未生效：{memories['temporary_mode']}")
-    check(memories["structured"] == structured, "临时模式下不应修改记忆")
-    check(
-        api.call("GET", "/api/chat/history")["items"] == history_before,
-        "临时模式下不应新增每日对话记录",
-    )
-    api.call("POST", "/api/memories/temporary-mode", {"enabled": False})
-    step("临时模式：开启后不写入记忆与每日对话，关闭后恢复")
-
-
 def check_daily_records(api: Api) -> None:
     history = api.call("GET", "/api/chat/history")
     check(len(history["items"]) >= 6, f"每日对话记录不完整：{len(history['items'])} 条")
@@ -538,7 +519,7 @@ def check_daily_records(api: Api) -> None:
     records = api.call("GET", f"/api/memories?date={days[0]}")["daily_records"]
     check(len(records) >= 6, f"每日对话记录不完整：{len(records)} 条")
     check(
-        all(record["date"] == days[0] for record in records),
+        all(record["event_time"].startswith(days[0]) for record in records),
         f"记录日期应与查询一致：{records}",
     )
     check(
@@ -786,11 +767,10 @@ def run() -> Path:
             structured = check_dispatched_write(api, tap)
             check_memory_retrieve(api, tap)
             check_write_rejected(api, tap, structured)
-            structured = check_manual_edit(api, data_dir)
-            structured = check_memory_replace(api, tap)
+            check_manual_edit(api, data_dir)
+            check_memory_replace(api, tap)
             check_draft_note(api, tap, data_dir)
             check_structured_in_prompt(api, tap, llm)
-            check_temporary_mode(api, tap, structured)
             check_persona_switch(api, tap, llm, data_dir)
             check_perception_to_proactive(api, tap, llm)
         check_daily_records(api)

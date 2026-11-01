@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import Protocol
 
 from config.persona import PersonaCard, PersonaConfig, card_path, load_card, validate_persona_id
-from constants.agent import DEFAULT_PERSONA_ID
+from constants.agent import DEFAULT_PERSONA_ID, PERSONA_ACTIVE_KEY
 from module.persona.contracts import PersonaVersion
 
-ACTIVE_KEY = "persona.active"
+ACTIVE_KEY = PERSONA_ACTIVE_KEY
 NAME_FIELD = "名字"
 
 

@@ -5,7 +5,9 @@ from module.agent.skills import (
     DRAFT_NOTE_CAPABILITY,
     DRAFT_NOTE_TOOLS,
     MEMORY_RETRIEVE_CAPABILITY,
+    MEMORY_RETRIEVE_TOOLS,
     MEMORY_WRITE_CAPABILITY,
+    MEMORY_WRITE_TOOLS,
     Skill,
     SkillError,
     SkillRegistry,
@@ -110,26 +112,26 @@ def test_memory_write_skill_declares_write_tools():
     spec = memory_write_skill()
     assert spec.name == MEMORY_WRITE_CAPABILITY
     assert spec.file == "memory_write"
-    assert spec.tools == ("index", "read", "memory_append", "memory_replace")
+    assert spec.tools == MEMORY_WRITE_TOOLS
 
 
 def test_draft_note_skill_declares_file_tools():
     spec = draft_note_skill()
     assert spec.name == DRAFT_NOTE_CAPABILITY
     assert spec.file == "draft_note"
-    assert spec.tools == ("file_read", "file_write", "file_edit", "file_clear")
+    assert spec.tools == DRAFT_NOTE_TOOLS
 
 
 def test_draft_note_allows_reading_while_drafting():
     skill = Skill(DRAFT_NOTE_CAPABILITY, "便签", DRAFT_NOTE_TOOLS)
-    assert read_only_tools(skill) == ("file_read",)
+    assert read_only_tools(skill) == ("index", "read", "grep")
 
 
 def test_memory_retrieve_skill_is_read_only():
     spec = memory_retrieve_skill()
     assert spec.name == MEMORY_RETRIEVE_CAPABILITY
     assert spec.file == "memory_retrieve"
-    assert spec.tools == ("index", "read")
+    assert spec.tools == MEMORY_RETRIEVE_TOOLS
 
 
 def test_shipped_manuals_parse():

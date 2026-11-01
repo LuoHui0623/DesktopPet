@@ -410,9 +410,9 @@ def _run(api: Api, tap: EventTap, port: int) -> None:
     record(
         "形象互动设置",
         "GET /api/menu",
-        "返回五项菜单",
+        "返回六项菜单（含状态）",
         f"items={items}",
-        "通过" if len(items) >= 5 else "失败",
+        "通过" if len(items) >= 6 and "open_status" in items else "失败",
     )
     first = api.call("POST", "/api/interaction", {"kind": "click"}).json()
     second = api.call("POST", "/api/interaction", {"kind": "click"}).json()

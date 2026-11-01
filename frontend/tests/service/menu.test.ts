@@ -6,6 +6,7 @@ import {
   indexMenu,
   MENU_OPEN_CHAT,
   MENU_OPEN_SETTINGS,
+  MENU_OPEN_STATUS,
   MENU_QUIT,
   MENU_TOGGLE_PROACTIVE,
   type MenuDeps,
@@ -22,6 +23,9 @@ function fakeDeps(): { calls: string[]; deps: MenuDeps } {
     deps: {
       openChat: async () => {
         calls.push("chat");
+      },
+      openStatus: async () => {
+        calls.push("status");
       },
       openSettings: async () => {
         calls.push("settings");
@@ -58,13 +62,14 @@ describe("menu dispatch", () => {
     const { calls, deps } = fakeDeps();
 
     expect(await dispatchMenuAction(item(MENU_OPEN_CHAT), deps)).toBe(true);
+    expect(await dispatchMenuAction(item(MENU_OPEN_STATUS), deps)).toBe(true);
     expect(await dispatchMenuAction(item(MENU_OPEN_SETTINGS), deps)).toBe(true);
     expect(await dispatchMenuAction(item(MENU_TOGGLE_PROACTIVE, { checked: true }), deps)).toBe(
       true,
     );
     expect(await dispatchMenuAction(item(MENU_QUIT), deps)).toBe(true);
 
-    expect(calls).toEqual(["chat", "settings", "proactive", "exit"]);
+    expect(calls).toEqual(["chat", "status", "settings", "proactive", "exit"]);
   });
 
   it("activates the avatar selected by id prefix", async () => {

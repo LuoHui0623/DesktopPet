@@ -22,17 +22,14 @@ from infra.store.db import connect  # noqa: E402
 from infra.store.migrate import migrate  # noqa: E402
 from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill  # noqa: E402
 from module.agent.subagent import SubAgent  # noqa: E402
-from module.agent.tools.explore import make_explore_tools  # noqa: E402
-from module.agent.tools.memory import make_memory_write_tools  # noqa: E402
+from module.agent.tools.files import make_file_tools  # noqa: E402
+from module.files.resolver import ResourceResolver  # noqa: E402
+from module.files.service import FileService, ModelLimit  # noqa: E402
 from module.llm import LlmService  # noqa: E402
 from module.llm.repository import db_usage_sink  # noqa: E402
 from module.memory.daily_log_service import DailyLogService  # noqa: E402
 from module.memory.index import MemoryIndexService  # noqa: E402
-from module.memory.memory_service import (  # noqa: E402
-    MemoryReader,
-    MemoryWriter,
-    StructuredMemoryDoc,
-)
+from module.memory.memory_service import StructuredMemoryDoc  # noqa: E402
 from module.memory.repository import DbDailyLog  # noqa: E402
 from module.settings.settings_service import SettingsService  # noqa: E402
 
@@ -87,8 +84,6 @@ def build() -> tuple[SubAgent, _LoggingLlm, Path, Any]:
     index = MemoryIndexService(structured.lines, daily_log.dates, index_file)
     structured.add_listener(index.rebuild)
     index.rebuild()
-    writer = MemoryWriter(structured, daily_log)
-    reader = MemoryReader(index_file, structured, daily_log)
 
     llm = LlmService(
         ModelSettingsSource(),
@@ -96,13 +91,25 @@ def build() -> tuple[SubAgent, _LoggingLlm, Path, Any]:
         active_store=settings_service,
     )
     llm.start()
+    active = llm.active_model("consolidate")
+    if active is None:
+        raise SystemExit("未配置 consolidate 能力的模型")
+    configured = llm.current().providers[active.provider].models[active.model]
     logging_llm = _LoggingLlm(llm)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
+    service = FileService(
+        ResourceResolver(DATA_DIR),
+        structured,
+        daily_log,
+        skills,
+        timezone=timezone,
+        limit_provider=lambda: ModelLimit(configured.max_tokens, configured.tokenizer),
+    )
     subagent = SubAgent(
         logging_llm,  # type: ignore[arg-type]
-        [*make_explore_tools(reader, skills), *make_memory_write_tools(writer)],
+        make_file_tools(service),
     )
     skill = skills.get(memory_write_skill().name)
     assert skill is not None

@@ -6,8 +6,6 @@ import pytest
 
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill
-from module.agent.tools.explore import make_explore_tools
 from module.memory.contracts import DailyLogRecord, DailyLogRole
 from module.memory.daily_log_service import DailyLogService
 from module.memory.index import MemoryIndexService
@@ -25,8 +23,8 @@ from module.settings.settings_service import SettingsService
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def rec(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
-    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
+def rec(event_time: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(event_time=event_time, role=role, content=content, created_at=event_time)
 
 
 class Clock:
@@ -142,20 +140,18 @@ def test_reads_daily_turns_one_line_per_turn(parts):
     store = DbDailyLog(parts["db_file"])
     store.append(
         [
-            rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "喜欢美式咖啡"),
-            rec("2026-10-18", "2026-10-18T09:00:00+08:00", "me", "记住啦"),
+            rec("2026-10-18T09:00:00+08:00", "master", "喜欢美式咖啡"),
+            rec("2026-10-18T09:00:00+08:00", "me", "记住啦"),
         ]
     )
-    store.append([rec("2026-10-18", "2026-10-18T10:00:00+08:00", "master", "早安")])
+    store.append([rec("2026-10-18T10:00:00+08:00", "master", "早安")])
     text = parts["reader"].read("daily", "2026-10-18")
     assert text == "1: 用户：喜欢美式咖啡 / 宠物：记住啦\n2: 用户：早安"
     assert parts["reader"].read("daily", "2026-10-18", [[2]]) == "2: 用户：早安"
 
 
 def test_daily_range_out_of_bounds_is_reported(parts):
-    DbDailyLog(parts["db_file"]).append(
-        [rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "早")]
-    )
+    DbDailyLog(parts["db_file"]).append([rec("2026-10-18T09:00:00+08:00", "master", "早")])
     with pytest.raises(MemoryReadError, match="超出范围"):
         parts["reader"].read("daily", "2026-10-18", [[1, 3]])
 
@@ -170,60 +166,3 @@ def test_bad_date_and_unknown_kind_are_reported(parts):
         parts["reader"].read("daily", "2026-13-01")
     with pytest.raises(MemoryReadError, match="未知的记忆类型"):
         parts["reader"].read("secret", "x")
-
-
-@pytest.fixture
-def skills() -> SkillRegistry:
-    registry = SkillRegistry()
-    registry.register(memory_write_skill())
-    registry.register(memory_retrieve_skill())
-    return registry
-
-
-@pytest.fixture
-def tools(parts, skills):
-    return {tool.name: tool for tool in make_explore_tools(parts["reader"], skills)}
-
-
-def test_tools_return_structured_results(parts, tools):
-    parts["structured"].append("喜欢美式咖啡")
-    parts["index"].rebuild()
-    indexed = tools["index"].invoke({"resource": "memory"})
-    assert indexed["ok"] is True
-    assert indexed["action"] == "index"
-    assert "daily" in indexed["content"]
-    assert "structured" in indexed["content"]
-    read = tools["read"].invoke({"resource": "memory", "name": "structured"})
-    assert read == {
-        "ok": True,
-        "action": "read",
-        "content": read["content"],
-        "error": None,
-    }
-    assert read["content"] == "1: 喜欢美式咖啡"
-
-
-def test_tool_failures_return_readable_reasons(tools):
-    result = tools["read"].invoke({"resource": "memory", "name": "2026-10-01"})
-    assert result["ok"] is False
-    assert result["error"]
-    assert result["content"] is None
-
-
-def test_tool_range_error_is_returned_not_raised(parts, tools):
-    DbDailyLog(parts["db_file"]).append(
-        [rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "早")]
-    )
-    result = tools["read"].invoke({"resource": "memory", "name": "2026-10-18", "lines": [[1, 9]]})
-    assert result["ok"] is False
-    assert "超出范围" in result["error"]
-
-
-def test_tool_without_index_reports_missing_index(parts, skills):
-    reader = MemoryReader(
-        parts["index_file"].with_name("missing.json"), parts["structured"], parts["daily"]
-    )
-    tools = {tool.name: tool for tool in make_explore_tools(reader, skills)}
-    result = tools["index"].invoke({"resource": "memory"})
-    assert result["ok"] is False
-    assert "记忆索引不存在" in result["error"]

@@ -81,7 +81,8 @@ def test_success_generates_records_and_publishes_once():
     [request] = chat.requests
     assert request.user_text is None
     assert request.trigger_reason == "使用 code 已 3 分钟"
-    assert request.allow_dispatch is False
+    assert request.allow_dispatch is True
+    assert request.read_only_dispatch is True
     assert request.events is not None
     assert ledger.topics == [("app_in_use.code", AT)]
     assert publisher.messages == [("m1", ["今天也辛苦啦。"], "app_in_use.code", AT)]

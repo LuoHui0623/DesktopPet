@@ -16,8 +16,8 @@ from module.settings.settings_service import SettingsService
 TZ = ZoneInfo("Asia/Shanghai")
 
 
-def rec(day: str, created_at: str, role: DailyLogRole, content: str) -> DailyLogRecord:
-    return DailyLogRecord(date=day, role=role, content=content, created_at=created_at)
+def rec(event_time: str, role: DailyLogRole, content: str) -> DailyLogRecord:
+    return DailyLogRecord(event_time=event_time, role=role, content=content, created_at=event_time)
 
 
 @pytest.fixture
@@ -113,8 +113,8 @@ def test_external_file_removal_is_reflected_on_rebuild(stack):
 
 def test_daily_memory_dates_come_from_daily_log(stack):
     store = DbDailyLog(stack["db_file"])
-    store.append([rec("2026-10-25", "2026-10-25T09:00:00+08:00", "master", "早")])
-    store.append([rec("2026-10-18", "2026-10-18T09:00:00+08:00", "master", "你好")])
+    store.append([rec("2026-10-25T09:00:00+08:00", "master", "早")])
+    store.append([rec("2026-10-18T09:00:00+08:00", "master", "你好")])
     stack["index"].rebuild()
     assert read_index(stack["index_file"])["index"]["daily"] == {
         "2026-10": ["2026-10-18", "2026-10-25"]

@@ -122,6 +122,7 @@ def test_proactive_trigger_publishes_message_and_logs_a_plain_reply(tmp_path: Pa
 
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
         result = pipeline.handle(Trigger("app_in_use.code", "使用 code 已 3 分钟"))
         assert result.sent is True
         events = []
@@ -165,6 +166,7 @@ def test_proactive_trigger_carries_every_utterance_in_one_event(tmp_path: Path):
 
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
         result = pipeline.handle(Trigger("app_in_use.code", "使用 code 已 3 分钟"))
         assert result.sent is True
         while True:

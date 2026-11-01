@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 from typing import cast
 
 from module.memory.contracts import (
@@ -20,27 +20,30 @@ def _role(raw: str) -> DailyLogRole:
 
 def from_row(row: DailyLogRow) -> DailyLogEntry:
     return DailyLogEntry(
-        day=date.fromisoformat(row.date),
+        event_time=datetime.fromisoformat(row.event_time),
         role=_role(row.role),
         content=row.content,
         created_at=datetime.fromisoformat(row.created_at),
+        persona_id=row.persona_id,
     )
 
 
 def to_record(entry: DailyLogEntry) -> DailyLogRecord:
     return DailyLogRecord(
-        date=entry.day.isoformat(),
+        event_time=entry.event_time.isoformat(timespec="milliseconds"),
         role=entry.role,
         content=entry.content,
         created_at=entry.created_at.isoformat(timespec="milliseconds"),
+        persona_id=entry.persona_id,
     )
 
 
 def to_view(row: DailyLogRow) -> DailyLogView:
     return DailyLogView(
         id=row.id,
-        date=row.date,
+        event_time=row.event_time,
         role=_role(row.role),
         content=display_content(row.role, row.content),
+        persona_id=row.persona_id,
         created_at=row.created_at,
     )

@@ -44,20 +44,19 @@ from module.agent.skills import (
     memory_write_skill,
 )
 from module.agent.subagent import SubAgent
-from module.agent.tools.explore import make_explore_tools
-from module.agent.tools.file import make_file_tools
-from module.agent.tools.memory import make_memory_write_tools
+from module.agent.tools.files import make_file_tools
 from module.agent.workspace import prepare_workspace
 from module.avatar.avatar_service import AvatarService
 from module.chat.activity import ChatActivity
 from module.chat.chat_service import ChatService
+from module.files.resolver import ResourceResolver
+from module.files.service import FileService, ModelLimit
 from module.interaction.interaction_service import InteractionService
-from module.llm import LlmService
+from module.llm import DbUsageReader, LlmService, UsageService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
 from module.memory.index import MemoryIndexService
 from module.memory.memory_service import (
-    MemoryReader,
     MemoryWriter,
     StructuredMemoryDoc,
 )
@@ -91,6 +90,21 @@ def bind_socket(host: str, port: int) -> socket.socket:
         sock.close()
         raise
     return sock
+
+
+def subagent_limit(llm_service: LlmService) -> ModelLimit:
+    """永久记忆单次读取上限取子代理（consolidate）模型的 max_tokens。"""
+    active = llm_service.active_model("consolidate")
+    if active is None:
+        raise RuntimeError("未配置 consolidate 能力的模型，无法确定永久记忆读取上限")
+    settings = llm_service.current()
+    provider = settings.providers.get(active.provider)
+    if provider is None:
+        raise RuntimeError(f"未知的模型提供方：{active.provider}")
+    model = provider.models.get(active.model)
+    if model is None:
+        raise RuntimeError(f"未知的模型：{active.model}")
+    return ModelLimit(model.max_tokens, model.tokenizer)
 
 
 def serve(
@@ -141,6 +155,13 @@ def serve(
         print(f"记忆索引生成失败：{exc}", file=sys.stderr)
         return 1
     logger.info("记忆索引已生成")
+    resource_dir = settings.data_dir / "resources"
+    try:
+        prepare_workspace(resource_dir)
+    except OSError as exc:
+        logger.error("资源目录创建失败：%s", exc)
+        print(f"资源目录创建失败：{exc}", file=sys.stderr)
+        return 1
     db_log = attach_db_logging(
         settings.data_dir / "pet.db",
         queue_size=settings.log_queue_size,
@@ -161,8 +182,7 @@ def serve(
 
     shutdown = ShutdownController()
     event_bus = EventBus()
-    memory_writer = MemoryWriter(structured_memory, daily_log)
-    memory_reader = MemoryReader(index_file, structured_memory, daily_log)
+    memory_writer = MemoryWriter(structured_memory)
     memory_services = MemoryServices(
         structured=structured_memory,
         writer=memory_writer,
@@ -172,21 +192,15 @@ def serve(
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
     skills.register(draft_note_skill())
-    resource_dir = settings.data_dir / "resources"
-    try:
-        prepare_workspace(resource_dir)
-    except OSError as exc:
-        logger.error("资源目录创建失败：%s", exc)
-        print(f"资源目录创建失败：{exc}", file=sys.stderr)
-        return 1
-    subagent = SubAgent(
-        llm_service,
-        [
-            *make_explore_tools(memory_reader, skills),
-            *make_memory_write_tools(memory_writer),
-            *make_file_tools(resource_dir),
-        ],
+    file_service = FileService(
+        ResourceResolver(settings.data_dir),
+        structured_memory,
+        daily_log,
+        skills,
+        timezone=ZoneInfo(settings.timezone),
+        limit_provider=lambda: subagent_limit(llm_service),
     )
+    subagent = SubAgent(llm_service, make_file_tools(file_service))
     orchestrator = Orchestrator(
         subagent,
         DbAgentRuns(db_file),
@@ -209,7 +223,9 @@ def serve(
         logger.error("人设版本记录失败：%s", exc)
         print(f"人设版本记录失败：{exc}", file=sys.stderr)
         return 1
-    publisher = BusEventPublisher(event_bus)
+    publisher = BusEventPublisher(event_bus, dev_mode=settings.dev_mode)
+    llm_service.set_usage_observer(publisher)
+    usage_service = UsageService(DbUsageReader(db_file), publisher)
     avatars = AvatarService(
         settings.data_dir / "avatars",
         SettingsService(db_file),
@@ -227,12 +243,13 @@ def serve(
         structured=structured_memory,
         timezone=ZoneInfo(settings.timezone),
         capabilities=merge_capabilities(capabilities, skills.summaries()),
-        resources=default_resources(resource_dir),
+        resources=default_resources(),
         orchestrator=orchestrator,
         approvals=approvals,
         perception=perception,
         activity=chat_activity,
         interactions=interaction_service,
+        usage=usage_service,
     )
     proactive = ProactivePipeline(
         chat_service,

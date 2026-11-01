@@ -8,13 +8,14 @@ import {
 import type { MenuItem } from "../api/types";
 import { getApiClient } from "./api-client";
 import { MENU_ACTION_EVENT } from "./tauri-events";
-import { openChatWindow, openSettingsWindow } from "./window.service";
+import { openChatWindow, openSettingsWindow, openStatusWindow } from "./window.service";
 
 export { MENU_ACTION_EVENT };
 export const SHOW_CONTEXT_MENU_COMMAND = "show_context_menu";
 export const EXIT_APP_COMMAND = "exit_app";
 
 export const MENU_OPEN_CHAT = "open_chat";
+export const MENU_OPEN_STATUS = "open_status";
 export const MENU_OPEN_SETTINGS = "open_settings";
 export const MENU_TOGGLE_PROACTIVE = "toggle_proactive";
 export const MENU_QUIT = "quit";
@@ -22,6 +23,7 @@ export const AVATAR_MENU_PREFIX = "avatar:";
 
 export interface MenuDeps {
   openChat: () => Promise<void>;
+  openStatus: () => Promise<void>;
   openSettings: () => Promise<void>;
   exitApp: () => Promise<void>;
   toggleProactive: () => Promise<void>;
@@ -44,6 +46,10 @@ export function indexMenu(items: readonly MenuItem[]): Map<string, MenuItem> {
 export async function dispatchMenuAction(item: MenuItem, deps: MenuDeps): Promise<boolean> {
   if (item.id === MENU_OPEN_CHAT) {
     await deps.openChat();
+    return true;
+  }
+  if (item.id === MENU_OPEN_STATUS) {
+    await deps.openStatus();
     return true;
   }
   if (item.id === MENU_OPEN_SETTINGS) {
@@ -86,6 +92,9 @@ export function createMenuController(overrides: Partial<MenuDeps> = {}): MenuCon
   const deps: MenuDeps = {
     openChat: async () => {
       await openChatWindow();
+    },
+    openStatus: async () => {
+      await openStatusWindow();
     },
     openSettings: async () => {
       await openSettingsWindow();

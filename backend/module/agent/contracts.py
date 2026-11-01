@@ -13,3 +13,4 @@ class AgentRunRecord:
     error_code: str | None
     started_at: str
     finished_at: str | None
+    turn_id: str | None = None

@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -147,11 +147,12 @@ def test_reader_reports_missing_index(doc: StructuredMemoryDoc, tmp_path: Path):
 
 
 def record(role: DailyLogRole, content: str) -> DailyLogEntry:
+    moment = datetime(2026, 10, 18, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
     return DailyLogEntry(
-        day=date(2026, 10, 18),
+        event_time=moment,
         role=role,
         content=content,
-        created_at=datetime(2026, 10, 18, 9, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+        created_at=moment,
     )
 
 

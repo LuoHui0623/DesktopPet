@@ -14,18 +14,15 @@ from module.agent.prompt import load_templates
 from module.agent.repository import DbAgentRuns
 from module.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
 from module.agent.subagent import SubAgent
-from module.agent.tools.explore import make_explore_tools
-from module.agent.tools.memory import make_memory_write_tools
+from module.agent.tools.files import make_file_tools
 from module.chat.chat_service import ChatRequest, ChatService
+from module.files.resolver import ResourceResolver
+from module.files.service import FileService, ModelLimit
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
 from module.memory.index import MemoryIndexService
-from module.memory.memory_service import (
-    MemoryReader,
-    MemoryWriter,
-    StructuredMemoryDoc,
-)
+from module.memory.memory_service import StructuredMemoryDoc
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
 from module.persona.repository import DbPersonaVersions
@@ -81,8 +78,8 @@ def chat_reply(text: str) -> str:
 DRAFT = json.dumps(
     {
         "action": "draft",
-        "content": "用 memory_append 记下咖啡偏好",
-        "tools": ["memory_append"],
+        "content": "用 append 记下咖啡偏好",
+        "tools": ["append"],
     },
     ensure_ascii=False,
 )
@@ -90,7 +87,11 @@ DRAFT = json.dumps(
 
 def append(content: str) -> str:
     return json.dumps(
-        {"action": "tool", "tool": "memory_append", "args": {"content": content}},
+        {
+            "action": "tool",
+            "tool": "append",
+            "args": {"resource": "structured", "content": content},
+        },
         ensure_ascii=False,
     )
 
@@ -164,14 +165,17 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
     index.rebuild()
-    reader = MemoryReader(index_file, structured, daily)
-    writer = MemoryWriter(structured, daily)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
-    tools = [
-        *make_explore_tools(reader, skills),
-        *make_memory_write_tools(writer),
-    ]
+    service = FileService(
+        ResourceResolver(tmp_path),
+        structured,
+        daily,
+        skills,
+        timezone=TZ,
+        limit_provider=lambda: ModelLimit(10000, "estimate"),
+    )
+    tools = make_file_tools(service)
     orchestrator = Orchestrator(SubAgent(llm, tools), DbAgentRuns(db_file), skills, TZ)
     approvals = ApprovalRegistry()
     events.registry = approvals
@@ -236,10 +240,11 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
     assert "approval" in kinds
     assert "speaking" in kinds
     assert kinds[-1] == "idle"
-    assert logged_turns(env["db_file"]) == [
-        ("master", text),
-        ("me", "记住啦，美式不加糖～"),
-    ]
+    turns = logged_turns(env["db_file"])
+    assert [role for role, _ in turns] == ["master", "assistant", "me"]
+    assert turns[0] == ("master", text)
+    assert turns[1] == ("assistant", "已记下咖啡偏好")
+    assert turns[2] == ("me", "记住啦，美式不加糖～")
 
 
 def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
@@ -257,7 +262,7 @@ def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     ]
 
 
-def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
+def test_legacy_temporary_setting_does_not_block_the_dispatched_write(tmp_path: Path):
     events = RecordingEvents()
     text = "记住，我喜欢美式咖啡"
     env = build_chat(
@@ -266,18 +271,21 @@ def test_temporary_mode_blocks_the_dispatched_write(tmp_path: Path):
             dispatch(text),
             DRAFT,
             append("## 喜好\n咖啡：美式"),
-            finish("临时模式，没写入"),
-            chat_reply("临时模式下，这次先不记。"),
+            finish("已经写进记忆"),
+            chat_reply("记好啦。"),
         ],
         events,
     )
-    env["daily"].set_temporary_mode(True)
+    SettingsService(env["db_file"]).put("memory.temporary_mode", "true")
     result = ask(env["chat"], text)
-    assert result.text == "临时模式下，这次先不记。"
-    assert result.recorded is False
-    assert "咖啡：美式" not in env["structured"].text()
-    assert env["chat_model"].observed("临时模式开启，本次不写入结构化记忆")
-    assert logged_turns(env["db_file"]) == []
+    assert result.text == "记好啦。"
+    assert result.recorded is True
+    assert "咖啡：美式" in env["structured"].text()
+    assert logged_turns(env["db_file"]) == [
+        ("master", text),
+        ("assistant", "已经写进记忆"),
+        ("me", "记好啦。"),
+    ]
 
 
 def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):

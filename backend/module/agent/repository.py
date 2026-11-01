@@ -6,13 +6,13 @@ from module.agent.contracts import AgentRunRecord
 
 COLUMNS = (
     "id, session_id, capability, instruction, steps, output, status, error_code, "
-    "started_at, finished_at"
+    "started_at, finished_at, turn_id"
 )
 
 
 def insert(conn: sqlite3.Connection, record: AgentRunRecord) -> None:
     conn.execute(
-        f"INSERT INTO agent_run ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        f"INSERT INTO agent_run ({COLUMNS}) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             record.id,
             record.session_id,
@@ -24,6 +24,7 @@ def insert(conn: sqlite3.Connection, record: AgentRunRecord) -> None:
             record.error_code,
             record.started_at,
             record.finished_at,
+            record.turn_id,
         ),
     )
 

@@ -6,6 +6,8 @@ pub const PET_WINDOW_SIZE: (f64, f64) = (320.0, 360.0);
 pub const CHAT_WINDOW_LABEL: &str = "chat";
 pub const CHAT_PAGE: &str = "app/entries/chat.html";
 pub const CHAT_HISTORY_PAGE: &str = "app/entries/chat.html#history";
+pub const STATUS_WINDOW_LABEL: &str = "status";
+pub const STATUS_PAGE: &str = "app/entries/status.html";
 pub const SETTINGS_WINDOW_LABEL: &str = "settings";
 pub const SETTINGS_PAGE: &str = "app/entries/settings.html";
 
@@ -27,6 +29,10 @@ pub fn open_chat_window(app: &AppHandle, history: bool) -> tauri::Result<()> {
         CHAT_PAGE
     };
     open_or_focus(app, CHAT_WINDOW_LABEL, page, "对话", (420.0, 560.0))
+}
+
+pub fn open_status_window(app: &AppHandle) -> tauri::Result<()> {
+    open_or_focus(app, STATUS_WINDOW_LABEL, STATUS_PAGE, "状态", (480.0, 620.0))
 }
 
 pub fn open_settings_window(app: &AppHandle) -> tauri::Result<()> {

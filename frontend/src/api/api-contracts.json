@@ -355,6 +355,7 @@
         "200": {
           "$ref": "#/components/schemas/ChatReplyResponse"
         },
+        "413": null,
         "422": null,
         "502": null,
         "503": null
@@ -375,25 +376,6 @@
           "$ref": "#/components/schemas/ActiveLlmResponse"
         },
         "422": null
-      }
-    },
-    {
-      "operationId": "set_memory_temporary_mode",
-      "method": "POST",
-      "path": "/api/memories/temporary-mode",
-      "tags": [
-        "memories"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/TemporaryModeRequest"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/TemporaryModeResponse"
-        },
-        "422": {
-          "$ref": "#/components/schemas/HTTPValidationError"
-        }
       }
     },
     {
@@ -1014,18 +996,23 @@
             "title": "Created At",
             "type": "string"
           },
-          "date": {
-            "title": "Date",
+          "event_time": {
+            "title": "Event Time",
             "type": "string"
           },
           "id": {
             "title": "Id",
             "type": "integer"
           },
+          "persona_id": {
+            "title": "Persona Id",
+            "type": "string"
+          },
           "role": {
             "enum": [
               "master",
               "me",
+              "assistant",
               "system",
               "event"
             ],
@@ -1035,9 +1022,10 @@
         },
         "required": [
           "id",
-          "date",
+          "event_time",
           "role",
           "content",
+          "persona_id",
           "created_at"
         ],
         "title": "DailyLogView",
@@ -1274,14 +1262,9 @@
           "structured": {
             "title": "Structured",
             "type": "string"
-          },
-          "temporary_mode": {
-            "title": "Temporary Mode",
-            "type": "boolean"
           }
         },
         "required": [
-          "temporary_mode",
           "structured",
           "daily_memory"
         ],
@@ -1971,7 +1954,12 @@
             "chat.chunk": "#/components/schemas/ChatChunkEvent",
             "chat.done": "#/components/schemas/ChatDoneEvent",
             "proactive.message": "#/components/schemas/ProactiveMessageEvent",
-            "status": "#/components/schemas/StatusEvent"
+            "status": "#/components/schemas/StatusEvent",
+            "usage.call.finished": "#/components/schemas/UsageCallFinishedEvent",
+            "usage.call.started": "#/components/schemas/UsageCallStartedEvent",
+            "usage.panel.snapshot": "#/components/schemas/UsagePanelSnapshotEvent",
+            "usage.turn.finished": "#/components/schemas/UsageTurnFinishedEvent",
+            "usage.turn.started": "#/components/schemas/UsageTurnStartedEvent"
           },
           "propertyName": "type"
         },
@@ -1990,6 +1978,21 @@
           },
           {
             "$ref": "#/components/schemas/ProactiveMessageEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsageCallStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsageCallFinishedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsageTurnStartedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsageTurnFinishedEvent"
+          },
+          {
+            "$ref": "#/components/schemas/UsagePanelSnapshotEvent"
           }
         ]
       },
@@ -2086,31 +2089,453 @@
         "title": "StructuredMemoryUpdate",
         "type": "object"
       },
-      "TemporaryModeRequest": {
-        "additionalProperties": false,
+      "UsageCallFinishedEvent": {
         "properties": {
-          "enabled": {
-            "title": "Enabled",
-            "type": "boolean"
+          "call": {
+            "$ref": "#/components/schemas/UsageCallOut"
+          },
+          "type": {
+            "const": "usage.call.finished",
+            "default": "usage.call.finished",
+            "title": "Type",
+            "type": "string"
           }
         },
         "required": [
-          "enabled"
+          "call"
         ],
-        "title": "TemporaryModeRequest",
+        "title": "UsageCallFinishedEvent",
         "type": "object"
       },
-      "TemporaryModeResponse": {
+      "UsageCallOut": {
+        "description": "一次模型调用的明细；发起时尚无回复与 token，对应字段留空。\n\n正式模式下后端会清空 provider/model 与全部正文，只保留用途、token 与耗时。",
         "properties": {
-          "temporary_mode": {
-            "title": "Temporary Mode",
-            "type": "boolean"
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "latency_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Latency Ms"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "prompt_hash": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt Hash"
+          },
+          "prompt_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Prompt Text"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider"
+          },
+          "purpose": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Purpose"
+          },
+          "reply_raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply Raw"
+          },
+          "reply_text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reply Text"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Run Id"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "success": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Success"
+          },
+          "tokens_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens In"
+          },
+          "tokens_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens Out"
+          },
+          "turn_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Turn Id"
+          },
+          "usage_raw": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Usage Raw"
           }
         },
         "required": [
-          "temporary_mode"
+          "started_at"
         ],
-        "title": "TemporaryModeResponse",
+        "title": "UsageCallOut",
+        "type": "object"
+      },
+      "UsageCallStartedEvent": {
+        "properties": {
+          "call": {
+            "$ref": "#/components/schemas/UsageCallOut"
+          },
+          "type": {
+            "const": "usage.call.started",
+            "default": "usage.call.started",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "call"
+        ],
+        "title": "UsageCallStartedEvent",
+        "type": "object"
+      },
+      "UsagePanelSnapshotEvent": {
+        "properties": {
+          "mode": {
+            "enum": [
+              "dev",
+              "prod"
+            ],
+            "title": "Mode",
+            "type": "string"
+          },
+          "turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsagePanelTurnOut"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "type": {
+            "const": "usage.panel.snapshot",
+            "default": "usage.panel.snapshot",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "mode"
+        ],
+        "title": "UsagePanelSnapshotEvent",
+        "type": "object"
+      },
+      "UsagePanelTurnOut": {
+        "description": "状态窗口显示的当前轮：明细 + 汇总，已按模式脱敏。",
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/UsageCallOut"
+            },
+            "title": "Calls",
+            "type": "array"
+          },
+          "finished": {
+            "default": false,
+            "title": "Finished",
+            "type": "boolean"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "model_time_ms": {
+            "default": 0,
+            "title": "Model Time Ms",
+            "type": "integer"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "tokens_complete": {
+            "default": false,
+            "title": "Tokens Complete",
+            "type": "boolean"
+          },
+          "tokens_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens In"
+          },
+          "tokens_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens Out"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id",
+          "started_at"
+        ],
+        "title": "UsagePanelTurnOut",
+        "type": "object"
+      },
+      "UsageTurnFinishedEvent": {
+        "properties": {
+          "calls": {
+            "items": {
+              "$ref": "#/components/schemas/UsageCallOut"
+            },
+            "title": "Calls",
+            "type": "array"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Finished At"
+          },
+          "model_time_ms": {
+            "default": 0,
+            "title": "Model Time Ms",
+            "type": "integer"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Started At"
+          },
+          "tokens_complete": {
+            "default": false,
+            "title": "Tokens Complete",
+            "type": "boolean"
+          },
+          "tokens_in": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens In"
+          },
+          "tokens_out": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Tokens Out"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "usage.turn.finished",
+            "default": "usage.turn.finished",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id"
+        ],
+        "title": "UsageTurnFinishedEvent",
+        "type": "object"
+      },
+      "UsageTurnStartedEvent": {
+        "properties": {
+          "at": {
+            "title": "At",
+            "type": "string"
+          },
+          "turn_id": {
+            "title": "Turn Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "usage.turn.started",
+            "default": "usage.turn.started",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "turn_id",
+          "at"
+        ],
+        "title": "UsageTurnStartedEvent",
         "type": "object"
       },
       "ValidationError": {

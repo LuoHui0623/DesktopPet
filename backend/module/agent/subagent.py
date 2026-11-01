@@ -187,7 +187,13 @@ class SubAgent:
         self._digest = sha256((text + draft_text).encode("utf-8")).hexdigest()
 
     def draft(
-        self, skill: Skill, task: str, run_id: str, *, tools: Sequence[str] | None = None
+        self,
+        skill: Skill,
+        task: str,
+        run_id: str,
+        *,
+        tools: Sequence[str] | None = None,
+        turn_id: str | None = None,
     ) -> SubAgentDraft:
         names = skill.tools if tools is None else tuple(tools)
         picked, missing = self._pick(skill, names)
@@ -208,6 +214,7 @@ class SubAgent:
             client=client,
             messages=messages,
             run_id=run_id,
+            turn_id=turn_id,
             tools=picked,
             terminal="draft",
             phase=PHASE_DRAFT,
@@ -235,6 +242,7 @@ class SubAgent:
         *,
         tools: Sequence[str] | None = None,
         draft: str = "",
+        turn_id: str | None = None,
     ) -> SubAgentResult:
         names = skill.tools if tools is None else tuple(tools)
         picked, missing = self._pick(skill, names)
@@ -252,6 +260,7 @@ class SubAgent:
             client=client,
             messages=messages,
             run_id=run_id,
+            turn_id=turn_id,
             tools=picked,
             terminal="finish",
             phase=PHASE_EXECUTE,
@@ -270,6 +279,7 @@ class SubAgent:
         client: Any,
         messages: list[BaseMessage],
         run_id: str,
+        turn_id: str | None,
         tools: Sequence[BaseTool],
         terminal: str,
         phase: str,
@@ -281,7 +291,12 @@ class SubAgent:
         invalid = 0
         for number in range(1, self._max_steps + 1):
             try:
-                with usage_scope(SUBAGENT_PURPOSE, run_id=run_id, prompt_hash=self._digest):
+                with usage_scope(
+                    SUBAGENT_PURPOSE,
+                    run_id=run_id,
+                    prompt_hash=self._digest,
+                    turn_id=turn_id,
+                ):
                     response = client.invoke(messages)
             except Exception as exc:
                 logger.error(

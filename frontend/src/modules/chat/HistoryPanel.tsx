@@ -3,10 +3,15 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import { searchHistory } from "../../service/chat.service";
 import { describeRequestError } from "../../service/api-client";
 import type { ChatHistoryItem } from "../../api/types";
-import { formatClock } from "./clock-view";
+import { formatClock, formatDay } from "./clock-view";
 
 const PAGE_SIZE = 50;
-const ROLE_LABELS: Record<string, string> = { master: "我", me: "宠物", event: "会话" };
+const ROLE_LABELS: Record<string, string> = {
+  master: "我",
+  me: "宠物",
+  assistant: "子代理",
+  event: "会话",
+};
 
 export function HistoryPanel() {
   const [keyword, setKeyword] = useState("");
@@ -87,7 +92,8 @@ export function HistoryPanel() {
               style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 8, fontSize: 13 }}
             >
               <div style={{ color: "#666", marginBottom: 4 }}>
-                {item.date} {formatClock(item.created_at)} · {ROLE_LABELS[item.role] ?? item.role}
+                {formatDay(item.event_time)} {formatClock(item.created_at)} ·{" "}
+                {ROLE_LABELS[item.role] ?? item.role}
               </div>
               <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{item.content}</div>
             </li>

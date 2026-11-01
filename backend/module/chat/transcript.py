@@ -1,16 +1,12 @@
-import json
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
 from typing import Protocol
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import BaseMessage
 
-
-def reply_message(texts: Sequence[str]) -> AIMessage:
-    # 历史助手消息也按结构化输出格式呈现，避免模型模仿纯文本回复
-    return AIMessage(content=json.dumps({"type": "chat", "text": list(texts)}, ensure_ascii=False))
+from constants.agent import DEFAULT_PERSONA_ID
 
 
 @dataclass(frozen=True)
@@ -18,6 +14,7 @@ class ChatLine:
     at: datetime
     message: BaseMessage
     is_reply: bool = False
+    role: str | None = None
 
 
 class TranscriptReader(Protocol):
@@ -25,57 +22,47 @@ class TranscriptReader(Protocol):
 
 
 class ChatTranscript:
-    """当天原始对话的内存快照：日切清空，不落库，也不从 daily_log 还原。"""
+    """当天对话时间线：正文来自 daily_log，事件/感知备注只活在本次会话内存里。"""
 
     def __init__(
         self,
         timezone: tzinfo,
         clock: Callable[[tzinfo], datetime] | None = None,
+        loader: Callable[[date, str], Sequence[ChatLine]] | None = None,
+        persona_id: str = DEFAULT_PERSONA_ID,
     ) -> None:
         self._timezone = timezone
         self._clock = clock or (lambda zone: datetime.now(zone))
+        self._loader = loader
+        self._persona_id = persona_id
         self._lock = threading.Lock()
         self._day: date | None = None
-        self._lines: list[ChatLine] = []
+        self._notes: list[ChatLine] = []
+
+    def set_persona(self, persona_id: str) -> None:
+        with self._lock:
+            if persona_id == self._persona_id:
+                return
+            self._persona_id = persona_id
+            self._notes.clear()
 
     def lines(self) -> tuple[ChatLine, ...]:
         with self._lock:
             self._roll()
-            return tuple(self._lines)
+            assert self._day is not None
+            loaded = list(self._loader(self._day, self._persona_id)) if self._loader else []
+            merged = [*loaded, *self._notes]
+            merged.sort(key=lambda line: line.at)
+            return tuple(merged)
 
-    def add(self, line: ChatLine) -> None:
+    def add_note(self, line: ChatLine) -> None:
         with self._lock:
             self._roll()
-            self._lines.append(line)
-
-    def append_turn(
-        self,
-        user_text: str,
-        reply_texts: Sequence[str],
-        *,
-        at_received: datetime | None = None,
-        at_replied: datetime | None = None,
-    ) -> None:
-        received = at_received or self._clock(self._timezone)
-        replied = at_replied or self._clock(self._timezone)
-        with self._lock:
-            self._roll()
-            self._lines.append(ChatLine(at=received, message=HumanMessage(content=user_text)))
-            self._lines.append(
-                ChatLine(at=replied, message=reply_message(reply_texts), is_reply=True)
-            )
-
-    def append_reply(self, reply_texts: Sequence[str], *, at: datetime | None = None) -> None:
-        replied = at or self._clock(self._timezone)
-        with self._lock:
-            self._roll()
-            self._lines.append(
-                ChatLine(at=replied, message=reply_message(reply_texts), is_reply=True)
-            )
+            self._notes.append(line)
 
     def _roll(self) -> None:
         today = self._clock(self._timezone).date()
         if self._day == today:
             return
         self._day = today
-        self._lines.clear()
+        self._notes.clear()

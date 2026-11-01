@@ -33,10 +33,9 @@ def stack(tmp_path: Path):
     index = MemoryIndexService(structured.lines, daily.dates, index_file)
     structured.add_listener(index.rebuild)
     index.rebuild()
-    writer = MemoryWriter(structured, daily)
+    writer = MemoryWriter(structured)
     return {
         "structured": structured,
-        "daily": daily,
         "writer": writer,
         "index_file": index_file,
         "settings": settings,
@@ -102,20 +101,12 @@ def test_sensitive_reason_is_none_for_ordinary_text():
     assert sensitive_reason("我在 2026 年有 3 个会议") is None
 
 
-def test_temporary_mode_blocks_append_and_replace(stack):
+def test_legacy_temporary_setting_does_not_block_append_or_replace(stack):
+    stack["settings"].put("memory.temporary_mode", "true")
     start, _ = stack["writer"].append("咖啡偏好")
-    stack["daily"].set_temporary_mode(True)
-    with pytest.raises(MemoryWriteError, match="临时模式"):
-        stack["writer"].append("茶偏好")
-    with pytest.raises(MemoryWriteError, match="临时模式"):
-        stack["writer"].replace_pattern([[start]], "咖啡", "茶")
-    assert stack["structured"].lines() == ["咖啡偏好"]
-
-
-def test_temporary_mode_flag_is_read_from_daily_log(stack):
-    assert stack["writer"].temporary_mode() is False
-    stack["daily"].set_temporary_mode(True)
-    assert stack["writer"].temporary_mode() is True
+    replaced = stack["writer"].replace_pattern([[start]], "咖啡", "茶")
+    assert replaced == (start, start)
+    assert stack["structured"].lines() == ["茶偏好"]
 
 
 def test_writes_refresh_index(stack):

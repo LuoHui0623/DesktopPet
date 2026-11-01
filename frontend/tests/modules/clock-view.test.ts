@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatClock } from "../../src/modules/chat/clock-view";
+import { formatClock, formatDay } from "../../src/modules/chat/clock-view";
 
 describe("formatClock", () => {
   it("renders hours minutes and seconds of a timestamp with an offset", () => {
@@ -18,5 +18,17 @@ describe("formatClock", () => {
     expect(formatClock("")).toBe("");
     expect(formatClock("不是时间")).toBe("");
     expect(formatClock(null)).toBe("");
+  });
+});
+
+describe("formatDay", () => {
+  it("takes the calendar day from an event timestamp", () => {
+    expect(formatDay("2026-10-29T10:00:07+08:00")).toBe("2026-10-29");
+  });
+
+  it("returns an empty string when there is no usable date", () => {
+    expect(formatDay("")).toBe("");
+    expect(formatDay("不是时间")).toBe("");
+    expect(formatDay(undefined)).toBe("");
   });
 });
