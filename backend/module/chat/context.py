@@ -6,7 +6,7 @@ from typing import Protocol
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
 from config.persona import PersonaConfig
-from constants.memory import FRAGMENT_TOKEN_BUDGET, STRUCTURED_MEMORY_TOKEN_BUDGET
+from constants.memory import FRAGMENT_TOKEN_BUDGET
 from module.agent.prompt import (
     CapabilityDescription,
     PromptTemplates,
@@ -63,20 +63,6 @@ def _flatten(text: str) -> str:
 def _stamp(clock: str, text: str, role: str = USER_ROLE) -> str:
     """给发言加角色与秒级时间前缀：`[role][HH:MM:SS]对话`。"""
     return f"[{role}][{clock}]{text}"
-
-
-def _truncate_lines(lines: Sequence[str], budget: int) -> str:
-    kept: list[str] = []
-    used = 0
-    for line in lines:
-        size = len(line) + 1
-        if used + size > budget:
-            break
-        kept.append(line)
-        used += size
-    if not kept:
-        return ""
-    return "\n".join([*kept, "……（已截断）"])
 
 
 def render_fragment(fragment: MemoryFragment) -> str:
@@ -190,6 +176,7 @@ class ContextBuilder:
         return AIMessage(content=text)
 
     def _structured_block(self, warnings: list[str]) -> str:
+        """结构化记忆全文注入，不做预算裁剪：它是主人手写的大纲，删行会丢语义。"""
         if self._structured is None:
             return ""
         try:
@@ -197,13 +184,7 @@ class ContextBuilder:
         except (MemoryReadError, OSError):
             warnings.append("结构化记忆无法读取，已跳过")
             return ""
-        text = "\n".join(lines).strip()
-        if not text:
-            return ""
-        if len(text) > STRUCTURED_MEMORY_TOKEN_BUDGET:
-            warnings.append(f"结构化记忆超出预算：{len(text)} 字符，已截断")
-            return _truncate_lines(lines, STRUCTURED_MEMORY_TOKEN_BUDGET)
-        return text
+        return "\n".join(lines).strip()
 
     def _fit_fragments(
         self, fragments: Sequence[MemoryFragment]

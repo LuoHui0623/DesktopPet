@@ -209,7 +209,7 @@ backend/
 │  ├─ path.py                # 目录常量：项目根、后端根、配置、数据（默认 backend/data）、日志、导出、资源库
 │  ├─ agent.py               # 子代理常量（最大步数、草案阶段只读工具）
 │  ├─ files.py               # 受管资源注册表：ID、路径、动作权限与能否删除文件本体
-│  ├─ memory.py              # 记忆常量：上下文预算
+│  ├─ memory.py              # 记忆常量：检索片段的字符预算（FRAGMENT_TOKEN_BUDGET；结构化记忆不设预算）
 │  └─ speech.py              # 发言上限：单轮最多 4 条（REPLY_MAX_ITEMS）、单句显示宽度 80（SENTENCE_MAX_WIDTH，中文约 40 字）与 visible_width()
 │
 ├─ resources/                # 【资源】代码随附的静态资源，入 Git

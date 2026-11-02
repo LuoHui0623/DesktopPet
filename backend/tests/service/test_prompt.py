@@ -179,8 +179,15 @@ def test_empty_sections_use_placeholders(templates):
 
 def test_speaking_rules_come_from_constants(templates):
     text = build(templates).text
-    assert "单句不超过 40 个汉字或 80 个英文字符" in text
+    assert "每条发言不超过 40 个汉字或 80 个英文字符" in text
     assert "人设提示约 20 字" in text
+
+
+def test_speaking_rules_scope_the_limit_to_each_text_item(templates):
+    text = build(templates).text
+    rules = text[text.index("【发言规则】") : text.index("【约束】")]
+    assert "每一个 str" in rules
+    assert "整个 output" in rules
 
 
 def test_same_input_renders_same_prompt(templates):

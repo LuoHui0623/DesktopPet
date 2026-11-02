@@ -164,13 +164,14 @@ def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch
     assert any("结构化记忆无法读取" in warning for warning in result.warnings)
 
 
-def test_structured_over_budget_is_truncated_with_warning(parts, monkeypatch):
-    parts["structured"].save("## 喜好\n" + "字" * 400)
-    monkeypatch.setattr(context_module, "STRUCTURED_MEMORY_TOKEN_BUDGET", 20)
+def test_structured_memory_is_injected_in_full_without_truncation(parts):
+    body = "## 喜好\n" + "\n".join(f"- 第{index}条：" + "字" * 40 for index in range(50))
+    parts["structured"].save(body)
     result = parts["builder"]().build("你好")
     text = result.messages[0].content
-    assert "……（已截断）" in text
-    assert any("结构化记忆超出预算" in warning for warning in result.warnings)
+    assert body.strip() in text
+    assert "已截断" not in text
+    assert result.warnings == ()
 
 
 def test_retrieved_fragments_are_labelled(parts):

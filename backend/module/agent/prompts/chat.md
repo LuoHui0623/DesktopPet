@@ -25,8 +25,9 @@ $capabilities
 $resources
 
 【发言规则】
-- 单句不超过 $sentence_max_chars 个汉字或 $sentence_max_width 个英文字符（混合时按显示宽度折算：汉字与全角标点占 2，英文、数字与半角符号占 1）。
-- 长度按句计算，句号、问号、叹号、省略号都算一句的结尾。
+- 下面的长度上限只管 text 数组里解析出的每一条发言（每一个 str），不管整个 output 有多长：四条发言加起来多长都不算超限。
+- 每条发言不超过 $sentence_max_chars 个汉字或 $sentence_max_width 个英文字符（按显示宽度算，一个汉字占 2）。
+- 一条发言里出现句号、问号、叹号、省略号时按句拆开，拆出来的每一句都要单独满足上面的上限。
 - 人设提示约 $persona_hint_chars 字。
 
 【约束】

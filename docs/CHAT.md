@@ -37,10 +37,10 @@ ChatService 提供**完整的对话能力**：把一次输入组装成上下文�
 ```
 api/chat ─┐
 proactive ─┴─► chat ─► llm
-                ├─► memory（daily_log / 结构化记忆 / event）
-                ├─► persona
-                ├─► parser（current 事件，只读）
-                └─► agent（派发分支）
+          ├─► memory（daily_log / 结构化记忆 / event）
+          ├─► persona
+          ├─► parser（current 事件，只读）
+          └─► agent（派发分支）
 ```
 
 | 组件 | 落点 | 说明 |
@@ -119,7 +119,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 ### 5.1 输入顺序
 
 1. **系统提示词**：人设、行动规则、发言规则、能力名与资源 ID 清单；结尾追加当日日期标记（见 §5.2）。
-2. **结构化记忆全文**：超出预算截断并记 warning。
+2. **结构化记忆全文**：全文注入，不设预算、不截断（它是大纲，截断会丢语义）。
 3. **检索片段**：调用方提供；超出预算舍弃并记 warning；有片段时追加引用规则。
 4. **当日快照**：从 `daily_log` 恢复当前人设当天的 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；`master → Human`，`me` / `assistant → AI`，按时间排序；不做 master/me 成对要求。会话内的感知 notes 按时间混入，保持原样不带角色前缀。
 5. **current 感知**：解析器返回的 1–3 条，作为 AI notes 混入时间线；以上一次 `me` 或 `assistant` 回复为界插入 `======= current =======`，当天没有回复时全部视为 current，不插分隔串。
@@ -131,7 +131,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 - 日切清空的是会话 notes（事件、感知）；新的一天重新读取新日期的聊天行。
 - 切换人设时丢弃旧人设的会话 notes，并按新人设读取当天记录。
 - 允许连续同角色、允许以 `me` 开头、允许孤立 `me`。
-- 不按预算裁剪快照；只对结构化记忆和检索片段做预算。
+- 不按预算裁剪快照；只对检索片段做预算（`FRAGMENT_TOKEN_BUDGET`，按字符累加、整条舍弃），结构化记忆全文注入。
 - `event` 不进入上下文快照（历史里的事件行也不恢复）；会话内新产生的事件与感知以 notes 形式进入，且不写 `daily_log` 之外的任何位置。
 - 历史行一律渲染为纯文本 `[角色][HH:MM:SS]正文`：`master`、`me`、`assistant` 使用各自角色名。不再把助手历史包装成 `{"type": "chat", ...}` JSON，避免模型把历史当成待模仿的输出格式。
 - 一次发言一行：同一轮的多条 `me` 在 `daily_log` 中是多行，恢复后也是多条独立历史消息，不合并成一个数组。
@@ -198,6 +198,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 ### 6.2 句长与引用
 
 - 逐句校验，单句上限 80 显示宽度（`constants/speech.py` 的 `SENTENCE_MAX_WIDTH`）。
+- 上限的作用域是「每一条发言」而不是整个回复：先遍历 `text` 数组的每个元素，再把每条拆句逐句校验；四条发言加起来多长都不算超限。
 - 计量按 East Asian Width：`W`（宽）与 `F`（全角）字符计 2，其余（英文、数字、半角符号）计 1。因此中文约 40 字、英文约 80 字符，两种语言观感一致。
 - 分句按 `。！？!?…`、换行与英文句号切分；英文缩写（`Mr.`、`etc.`、`e.g.` 等）、小数点与句中点不收句。
 - 任一条发言中出现超限单句即重试 1 次；仍超限报 `sentence_too_long`。
