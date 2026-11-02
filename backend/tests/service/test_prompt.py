@@ -86,8 +86,8 @@ def test_action_rules_describe_the_chat_output_format(templates):
     text = build(templates).text
     rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
     assert '{"type": "chat", "text": ["要说给主人的话"]}' in rules
-    assert "1–4 项" in rules
-    assert "type 必须是第一个字段" in rules
+    assert "最多说四句话" in rules
+    assert '"type" 必须是第一个字段' in text
 
 
 def test_action_rules_group_details_under_chat_and_dispatch(templates):
