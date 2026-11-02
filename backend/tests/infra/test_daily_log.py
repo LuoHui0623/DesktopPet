@@ -104,3 +104,9 @@ def test_assistant_records_are_stored_and_read(log: DbDailyLog):
         ("assistant", "芙芙"),
         ("me", "芙芙"),
     ]
+
+
+def test_recollection_records_are_stored_and_read(log: DbDailyLog):
+    log.append([entry("2026-10-24T09:00:00.000+08:00", "回忆", "昨天聊了咖啡", "小桌")])
+    [record] = log.by_date("2026-10-24", persona_id="小桌")
+    assert (record.role, record.content, record.persona_id) == ("回忆", "昨天聊了咖啡", "小桌")

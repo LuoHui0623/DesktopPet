@@ -809,7 +809,7 @@ Tauri src/menu.rs
 | `DEFAULT_CHAT_MODEL` | 无 | 对话默认模型，`<name>` 或 `<provider>/<name>`（`name` 为 llm.yaml 中的模型标签） |
 | `DEFAULT_CONSOLIDATE_MODEL` | 无 | 整理默认模型，格式同上 |
 
-密钥不在此表中：每个 provider 的密钥从系统环境变量 `<PROVIDER>_API_KEY` 读取，见 §8.3.1。
+密钥不在此表中：每个 provider 的密钥从系统环境变量读取，变量名由 `.env` 的 `<PROVIDER>_API_KEY` 指定，缺省为 `<PROVIDER>_API_KEY`，见 §8.3.1。
 
 `.env.example` 中还列有以下变量，但对应功能尚未实现，当前无效果：`WEATHER_*`、`QWEATHER_*`（天气，本期不纳入）；`CAPABILITY_ALLOWED_*`（能力，M6）。
 
@@ -823,9 +823,9 @@ LLM 配置由 `.env` 与 `llm.yaml` 共同实现，两者分工如下：
 
 | 来源 | 提供什么 | 示例 |
 |---|---|---|
-| `.env` | 启用哪些 provider；每个 provider 的 base_url；每个能力的默认模型 `DEFAULT_<能力>_MODEL` | `LLM_PROVIDERS=deepseek,opencode`、`DEFAULT_CHAT_MODEL=deepseek-flash` |
+| `.env` | 启用哪些 provider；每个 provider 的 base_url；每个 provider 的密钥环境变量名 `<PROVIDER>_API_KEY`（值必须是变量名，用于间接引用）；每个能力的默认模型 `DEFAULT_<能力>_MODEL` | `LLM_PROVIDERS=deepseek,opencode`、`DEEPSEEK_API_KEY=PET_API_KEY`、`DEFAULT_CHAT_MODEL=deepseek-flash` |
 | `llm.yaml` | 每个 provider 的预设模型：标签 `name`（provider 内唯一）、上游标识 `id`、范式、可用角色、温度、最大 token | `deepseek.models[0].name: deepseek-flash` |
-| 系统环境变量 | 每个 provider 的密钥，变量名固定为 `<PROVIDER>_API_KEY` | `DEEPSEEK_API_KEY=sk-…` |
+| 系统环境变量 | 每个 provider 的实际密钥，变量名由 `.env` 解析得到，默认是 `<PROVIDER>_API_KEY` | `PET_API_KEY=sk-…` |
 | 运行时（数据库 `app_setting`） | 用户在设置页切换后的当前模型，优先级最高 | `llm.active.chat = deepseek/deepseek-flash` |
 
 #### 8.3.1 `.env` 写法
@@ -840,11 +840,11 @@ DEFAULT_CHAT_MODEL=deepseek-flash
 DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 ```
 
-- **密钥不在 `.env` 中出现**。每个 provider 的密钥从系统环境变量读取，变量名固定为 `<PROVIDER>_API_KEY`（大写）。例如 provider `deepseek` 读取 `DEEPSEEK_API_KEY`，provider `opencode` 读取 `OPENCODE_API_KEY`。
-- 密钥只存在系统环境变量中，不写入任何文件，也不写入数据库。
+- **密钥值不在 `.env` 中出现**。`.env` 中只允许写密钥所在的系统环境变量名：`<PROVIDER>_API_KEY=<ENV_VAR_NAME>` 表示该 provider 的密钥改从系统环境变量 `<ENV_VAR_NAME>` 读取。未写该键时默认读 `<PROVIDER>_API_KEY`（大写），例如 provider `deepseek` 默认读 `DEEPSEEK_API_KEY`。
+- 变量名必须匹配 `^[A-Z_][A-Z0-9_]*$`；写密钥本身（如 `DEEPSEEK_API_KEY=sk-…`）启动即报错，提示只能写系统环境变量名。值等于键名时等价于未写，仍取默认变量名。多个 provider 可指向同一变量，共享密钥。
+- 密钥只存在系统环境变量中，不写入任何文件，也不写入数据库。解析出的变量名记录在 `model_settings` 的 `api_key_env` 中，实际值在每次调用时从进程环境变量读取。
 - `DEFAULT_<能力>_MODEL` 的值为模型标签 `name`，可写为 `<provider>/<name>`。`.env` 不使用上游 `id`。能力目前有 `CHAT`（对话）与 `CONSOLIDATE`（整理）；后续新增能力（如摘要、主动文案）时同样新增对应变量。
 - provider 名只允许小写字母、数字、下划线；对应的环境变量前缀为大写（`-` 视为 `_`）。
-- `.env` 中若出现 `<PROVIDER>_API_KEY` 这类键，启动时报错，提示“密钥应放在系统环境变量中，不应写入 .env”。这是为了避免密钥误入文件。
 
 #### 8.3.2 `llm.yaml` 写法
 

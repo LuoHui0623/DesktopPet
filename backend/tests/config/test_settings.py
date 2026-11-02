@@ -155,6 +155,28 @@ def test_api_key_in_dotenv_is_error(config_dir: Path):
     assert any("DEEPSEEK_API_KEY" in error for error in exc.value.errors)
 
 
+def test_api_key_indirection_points_to_referenced_env_var(config_dir: Path):
+    write_env(config_dir, ENV + "\nDEEPSEEK_API_KEY=PET_API_KEY\n")
+    settings = load_model_settings(
+        config_dir, environ={"PET_API_KEY": "sk-pet", "OPENCODE_API_KEY": "sk-oc"}
+    )
+    assert settings.providers["deepseek"].api_key_env == "PET_API_KEY"
+    assert "sk-pet" not in settings.model_dump_json()
+    assert not any("DEEPSEEK_API_KEY" in warning for warning in settings.warnings)
+
+
+def test_api_key_self_reference_keeps_provider_key_env(config_dir: Path):
+    write_env(config_dir, ENV + "\nOPENCODE_API_KEY=OPENCODE_API_KEY\n")
+    assert load(config_dir).providers["opencode"].api_key_env == "OPENCODE_API_KEY"
+
+
+def test_missing_referenced_env_var_is_warning(config_dir: Path):
+    write_env(config_dir, ENV + "\nDEEPSEEK_API_KEY=PET_API_KEY\n")
+    settings = load_model_settings(config_dir, environ={"OPENCODE_API_KEY": "sk-oc"})
+    assert any("PET_API_KEY" in warning for warning in settings.warnings)
+    assert "deepseek" in settings.providers
+
+
 def test_system_environ_overrides_dotenv(config_dir: Path):
     settings = load(config_dir, DEFAULT_CHAT_MODEL="deepseek-v4.1-flash")
     assert settings.defaults["chat"].provider == "opencode"

@@ -43,7 +43,7 @@
 | `DEFAULT_<能力>_MODEL` | LLM | 默认模型，见 §5 |
 | `WEATHER_*`、`QWEATHER_*` | 天气 | 由天气模块校验 |
 | `CAPABILITY_*` | 受限能力 | 逗号分隔，绝对路径或域名 |
-| `<PROVIDER>_API_KEY` | **禁止** | 出现在 `.env` 中会导致启动失败，见 §4 |
+| `<PROVIDER>_API_KEY` | LLM | 只能写系统环境变量名作为间接引用，写密钥本身会启动失败，见 §4 |
 
 未识别的键（不属于以上任何一类）记录为警告，不报错。
 
@@ -67,16 +67,23 @@
 
 provider 名转为大写后作为前缀：
 
-| provider | `BASE_URL` 键 | 密钥环境变量 |
+| provider | `BASE_URL` 键 | 默认密钥环境变量 |
 |---|---|---|
 | `deepseek` | `DEEPSEEK_BASE_URL` | `DEEPSEEK_API_KEY` |
 | `opencode` | `OPENCODE_BASE_URL` | `OPENCODE_API_KEY` |
 
+“默认”指 `.env` 中未写 `<PROVIDER>_API_KEY` 时采用的变量名，可用间接引用改变，见 §4。
+
 ## 4. 密钥解析
 
-- 密钥**只从进程环境变量**读取，变量名为 `<PROVIDER>_API_KEY`（大写）。
-- `.env` 中不允许出现任何 `<PROVIDER>_API_KEY` 键。出现即启动失败，错误信息提示“密钥应放在系统环境变量中”。
-- 密钥环境变量缺失或为空时，该 provider 标记为**不可用**：启动不失败，调用时返回明确错误，并在 `GET /api/llm/providers` 中显示原因。
+- 密钥**只从进程环境变量**读取，不写入任何配置文件。
+- `.env` 中的 `<PROVIDER>_API_KEY` 是**间接引用**，其值必须是系统环境变量名，例如 `DEEPSEEK_API_KEY=PET_API_KEY` 表示 provider `deepseek` 的密钥改从系统环境变量 `PET_API_KEY` 读取。
+  - 未写该键时，使用默认变量名 `<PROVIDER>_API_KEY`。
+  - 值必须匹配 `^[A-Z_][A-Z0-9_]*$`（大写字母、数字、下划线）。写密钥本身（如 `DEEPSEEK_API_KEY=sk-xxx`）启动即失败，错误信息提示只能写系统环境变量名。
+  - 值等于键名（如 `OPENCODE_API_KEY=OPENCODE_API_KEY`）等价于未写，仍取默认变量名。
+- 解析出的环境变量名记录在 `model_settings` 的 `api_key_env` 中，实际取值始终在调用时从进程环境变量读取。
+- 密钥环境变量缺失或为空时，该 provider 标记为**不可用**：启动不失败，调用时返回明确错误，并在 `GET /api/llm/providers` 中显示原因。启动脚本的提示同样使用解析后的变量名。
+- 不同 provider 可以指向同一个系统环境变量，共享同一份密钥。
 - 密钥值不写入日志、不出现在任何接口响应中。
 - 密钥不参与配置版本号计算（见 §8）。
 
@@ -200,7 +207,8 @@ opencode:
 
 | 配置 | 结果 |
 |---|---|
-| `.env` 中写 `DEEPSEEK_API_KEY=sk-xxx` | 启动失败：密钥应放在系统环境变量中 |
+| `.env` 中写 `DEEPSEEK_API_KEY=sk-xxx` | 启动失败：只能写系统环境变量名，不能写密钥 |
+| `.env` 中写 `DEEPSEEK_API_KEY=PET_API_KEY`，系统环境变量无 `PET_API_KEY` | 启动成功，该 provider 标记为不可用，提示缺少 `PET_API_KEY` |
 | `LLM_PROVIDERS=deepseek,unknown`，`unknown` 不在 `llm.yaml` 中 | 启动失败：provider `unknown` 未在 llm.yaml 中定义 |
 | 启用的 provider 缺少 `OPENCODE_BASE_URL` | 启动失败：缺少 `OPENCODE_BASE_URL` |
 | `DEFAULT_CHAT_MODEL=glm-5.3-flash`，但该模型只在 opencode 中 | 解析为 `opencode/glm-5.3-flash`，若 opencode 已启用则通过 |
@@ -270,4 +278,4 @@ opencode:
 - 编码填充型主题的扩展字段按字段名排序输出。
 - 所有错误一次性报告，格式为 `persona.yaml <主题>...`。
 - `to_normalized_json()` 输出按键排序、非 ASCII 原样保留的 JSON，用于角色卡版本记录。内容变化（包括解析方式的调整）会追加一条新的 `persona_version`。
-- 提示词渲染在 `module/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，填入 `persona.md` 的 `$persona` 占位符，作为 system prompt 的前部分。
+- 提示词渲染在 `module/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，代入 `【人设】` 主题正文的 `$persona_section` 占位符，作为 system prompt 的前部分。

@@ -6,7 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.persona import parse_persona
-from module.agent.prompt import ResourceItem, load_templates
+from module.agent.chat_system_prompt import SEPARATOR_WIDTH
+from module.agent.prompt import ResourceItem, SystemPrompt, load_templates
 from module.chat import context as context_module
 from module.chat.context import (
     CURRENT_SEPARATOR,
@@ -14,6 +15,7 @@ from module.chat.context import (
     PROACTIVE_TRIGGER,
     ContextBuilder,
     MemoryFragment,
+    day_marker,
 )
 from module.chat.transcript import ChatLine
 from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
@@ -42,6 +44,13 @@ def assistant(moment: datetime, text: str) -> ChatLine:
 def expects(moment: datetime, role: str, text: str) -> str:
     """历史行的渲染结果：带角色与秒级时间前缀。"""
     return f"[{role}][{moment:%H:%M:%S}]{text}"
+
+
+def day_line(text: str, day: str = "2026/10/18") -> str:
+    """抽出系统提示词里的日期分隔线；断言全文只有一行带日期。"""
+    lines = [line for line in text.splitlines() if day in line]
+    assert len(lines) == 1, lines
+    return lines[0]
 
 
 class Reader:
@@ -134,7 +143,7 @@ def test_day_marker_and_input_follow_the_received_time(parts):
     received = datetime(2026, 10, 17, 23, 59, 58, tzinfo=TZ)
     result = parts["builder"]().build("还没睡", received_at=received)
     assert result.messages[-1] == HumanMessage(content="[master][23:59:58]还没睡")
-    assert result.messages[0].content.endswith("=======2026/10/17=======")
+    assert len(day_line(result.messages[0].content, "2026/10/17")) == SEPARATOR_WIDTH
 
 
 def test_proactive_build_appends_trigger_block_and_skips_perception(parts):
@@ -241,20 +250,70 @@ def test_several_utterances_are_restored_as_separate_history_lines(parts):
     ]
 
 
-def test_system_prompt_ends_with_the_day_marker(parts):
-    result = parts["builder"]().build("你好")
-    system = result.messages[0]
-    assert isinstance(system, SystemMessage)
-    assert system.content.endswith("=======2026/10/18=======")
-
-
-def test_day_marker_stays_last_after_structured_and_retrieved_blocks(parts):
+def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
+    """段落顺序：基础系统提示词 → 日期分隔符 → 结构化记忆 → 检索片段 → 引用规则。"""
     parts["structured"].save("## 喜好\n喜欢美式咖啡")
     fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
     text = parts["builder"]().build("你好", fragments).messages[0].content
-    assert text.rstrip().endswith("=======2026/10/18=======")
-    assert context_module.CITATION_RULE in text
-    assert text.index(context_module.CITATION_RULE) < text.index("=======2026/10/18=======")
+    order = [
+        "【人设】",
+        "2026/10/18",
+        "【结构化记忆】",
+        "【检索到的记忆】",
+        context_module.CITATION_RULE,
+    ]
+    positions = [text.index(token) for token in order]
+    assert positions == sorted(positions)
+    assert text.rstrip().endswith(context_module.CITATION_RULE)
+
+
+def test_day_marker_appears_exactly_once(parts):
+    parts["structured"].save("## 喜好\n喜欢美式咖啡")
+    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
+    result = parts["builder"]().build("你好", fragments)
+    assert result.messages[0].content.count("2026/10/18") == 1
+    carriers = [
+        index for index, message in enumerate(result.messages) if "2026/10/18" in message.content
+    ]
+    assert carriers == [0]
+
+
+def test_separators_share_the_same_width(parts):
+    """日期分隔线与 current 分隔线同宽（30），宽度口径统一（D5）。"""
+    text = parts["builder"]().build("你好").messages[0].content
+    assert len(day_line(text)) == SEPARATOR_WIDTH
+    assert len(CURRENT_SEPARATOR) == SEPARATOR_WIDTH
+
+
+def test_current_separator_has_no_date_text(parts):
+    """两条分隔线同宽但语义独立：日期分隔线带日期，current 不带。"""
+    separator = day_line(parts["builder"]().build("你好").messages[0].content)
+    assert "2026/10/18" in separator
+    assert "current" in CURRENT_SEPARATOR
+    assert not any(char.isdigit() for char in CURRENT_SEPARATOR)
+    assert CURRENT_SEPARATOR != separator
+
+
+def test_empty_memory_inputs_add_no_blank_sections(parts):
+    """空结构化记忆 + 无片段：只留基础提示词与日期分隔线，不留空主题或多余空行。"""
+    text = parts["builder"]().build("你好").messages[0].content
+    assert text.endswith(day_marker(at(0)))
+    assert "\n\n\n" not in text
+    assert "【结构化记忆】" not in text
+    assert "【检索到的记忆】" not in text
+    assert context_module.CITATION_RULE not in text
+
+
+def test_base_prompt_built_by_the_service_is_used_as_is(parts):
+    """chat 服务先构建系统提示词，构建器只负责拼接，不重复渲染人设。"""
+    base = SystemPrompt(text="【人设】\n外部构建的基础提示词", template_digest="digest-service")
+    builder = ContextBuilder(PERSONA, load_templates(), TZ, base_prompt=base, clock=parts["clock"])
+    assembled = builder.build("你好")
+    text = assembled.messages[0].content
+    assert text.startswith(base.text)
+    assert text.count("【人设】") == 1
+    assert assembled.template_digest == "digest-service"
+    assert text.endswith(day_marker(at(21, 30)))
 
 
 def test_appended_event_lines_stay_assistant_messages(parts):

@@ -209,6 +209,33 @@ def test_present_provider_keys_not_warned(tmp_path, monkeypatch, capsys):
     assert "DEEPSEEK_API_KEY" not in capsys.readouterr().out
 
 
+def test_indirect_provider_key_warns_referenced_env_name(tmp_path, monkeypatch, capsys):
+    module = _load(tmp_path, monkeypatch)
+    module.ENV_FILE.write_text(
+        "LLM_PROVIDERS=deepseek\nDEEPSEEK_API_KEY=PET_API_KEY\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("PET_API_KEY", raising=False)
+
+    module._warn_missing_provider_keys()
+
+    out = capsys.readouterr().out
+    assert "PET_API_KEY" in out
+    assert "DEEPSEEK_API_KEY" not in out
+
+
+def test_indirect_provider_key_present_not_warned(tmp_path, monkeypatch, capsys):
+    module = _load(tmp_path, monkeypatch)
+    module.ENV_FILE.write_text(
+        "LLM_PROVIDERS=deepseek\nDEEPSEEK_API_KEY=PET_API_KEY\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("PET_API_KEY", "sk-pet")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    module._warn_missing_provider_keys()
+
+    assert capsys.readouterr().out == ""
+
+
 def test_main_bootstraps_before_launch(tmp_path, monkeypatch):
     module = _load(tmp_path, monkeypatch)
     events = []

@@ -9,7 +9,7 @@ import os
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -23,10 +23,13 @@ from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
 from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.recollection_service import Recollection
 from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
+from module.persona.persona_service import PersonaService, PersonaUnavailableError
 from module.persona.repository import DbPersonaVersions
 from module.settings.settings_service import SettingsService
+
+SEEDED_RECALL = "昨天主人提到想学做菜，我答应帮他找几个简单的家常菜谱。"
 
 SAMPLES = [
     "你好",
@@ -45,27 +48,48 @@ SAMPLES = [
 
 
 class RecordingClient:
-    def __init__(self, inner, raws: list[str]) -> None:
+    def __init__(self, inner, raws: list[str], systems: list[str]) -> None:
         self._inner = inner
         self._raws = raws
+        self._systems = systems
 
     def invoke(self, messages, *args, **kwargs):
+        if messages:
+            first = getattr(messages[0], "content", None)
+            if isinstance(first, str):
+                self._systems.append(first)
         response = self._inner.invoke(messages, *args, **kwargs)
         content = response.content
         self._raws.append(content if isinstance(content, str) else str(content))
         return response
 
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
 
 class RecordingLlm:
-    def __init__(self, inner, raws: list[str]) -> None:
+    def __init__(self, inner, raws: list[str], systems: list[str]) -> None:
         self._inner = inner
         self._raws = raws
+        self._systems = systems
 
     def client_for(self, capability: str, *args, **kwargs):
-        return RecordingClient(self._inner.client_for(capability, *args, **kwargs), self._raws)
+        return RecordingClient(
+            self._inner.client_for(capability, *args, **kwargs), self._raws, self._systems
+        )
 
     def __getattr__(self, name: str):
         return getattr(self._inner, name)
+
+
+class SeededRecollection:
+    """冒烟专用：直接承认指定日期已有回忆，不派发子代理。"""
+
+    def __init__(self, day: str) -> None:
+        self._day = day
+
+    def ensure(self, day, *, persona=None, turn_id=None) -> Recollection:
+        return Recollection(self._day, "", ok=True)
 
 
 def main() -> int:
@@ -97,8 +121,16 @@ def main() -> int:
         settings.personas_dir, SettingsService(db_file), DbPersonaVersions(db_file)
     )
     raws: list[str] = []
+    systems: list[str] = []
+    try:
+        live = personas.current()
+    except PersonaUnavailableError as exc:
+        print(f"人设不可用：{exc}")
+        return 1
+    yesterday = (datetime.now(timezone) - timedelta(days=1)).date().isoformat()
+    daily.record_recollection(yesterday, SEEDED_RECALL, persona_id=live.id)
     chat = ChatService(
-        RecordingLlm(llm, raws),
+        RecordingLlm(llm, raws, systems),
         daily,
         personas,
         load_templates(),
@@ -106,6 +138,7 @@ def main() -> int:
         structured=StructuredMemoryDoc(settings.data_dir / "memory" / "structured.md"),
         timezone=timezone,
         capabilities=load_capabilities(),
+        recollection=SeededRecollection(yesterday),
     )
 
     rows = []
@@ -156,8 +189,14 @@ def main() -> int:
         )
 
     passed = sum(1 for row in rows if row["ok"])
+    recalled = sum("【昨天的回忆】" in text for text in systems)
+    carried = sum(SEEDED_RECALL in text for text in systems)
     print(
-        f"\n合计 {len(rows)} 条：通过 {passed}，失败 {len(rows) - passed}；"
+        f"\n昨天回忆注入：系统提示词出现【昨天的回忆】{recalled} 次，"
+        f"带回忆正文 {carried} 次（{yesterday}）"
+    )
+    print(
+        f"合计 {len(rows)} 条：通过 {passed}，失败 {len(rows) - passed}；"
         f"重试 {sum(row['attempts'] > 1 for row in rows)} 条；"
         f"代码块 {sum(row['code_fence'] for row in rows)} 条；"
         f"type 不在首位 {sum(not row['type_first'] for row in rows)} 条"
@@ -166,7 +205,15 @@ def main() -> int:
     report = data_dir / f"verify-chat-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     report.write_text(
         json.dumps(
-            {"model": f"{active.provider}/{active.model}", "rows": rows},
+            {
+                "model": f"{active.provider}/{active.model}",
+                "recollection": {
+                    "day": yesterday,
+                    "sections": recalled,
+                    "bodies": carried,
+                },
+                "rows": rows,
+            },
             ensure_ascii=False,
             indent=2,
         ),

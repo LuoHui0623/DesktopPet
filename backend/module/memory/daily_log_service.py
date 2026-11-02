@@ -1,10 +1,12 @@
 from collections.abc import Callable, Sequence
 from datetime import date, datetime, tzinfo
+from sqlite3 import IntegrityError
 from typing import Protocol
 
 from constants.agent import DEFAULT_PERSONA_ID, PERSONA_ACTIVE_KEY
 from module.memory.contracts import (
     CHAT_ROLES,
+    RECOLLECTION_ROLE,
     DailyLogEntry,
     DailyLogRecord,
     DailyLogRole,
@@ -143,6 +145,44 @@ class DailyLogService:
     def record_session_boundary(self, persona: str) -> bool:
         return self.record_event("session_boundary", persona=persona)
 
+    def record_recollection(
+        self, day: str, content: str, *, persona_id: str | None = None
+    ) -> DailyLogEntry | None:
+        """写下当天的回忆；同一人设同一天只保留第一条，重复调用返回既有记录。"""
+        persona = self._persona(persona_id)
+        iso = _iso_day(day)
+        existing = self.read_recollection(iso, persona_id=persona)
+        if existing is not None:
+            return existing
+
+        now = self._clock(self._timezone)
+        entry = DailyLogEntry(
+            event_time=_moment_of(iso, now),
+            role=RECOLLECTION_ROLE,
+            content=content,
+            created_at=now,
+            persona_id=persona,
+        )
+        try:
+            self._append([entry])
+        except IntegrityError:
+            # 并发下唯一索引兜底：读回先落库的那一条。
+            winner = self.read_recollection(iso, persona_id=persona)
+            if winner is None:
+                raise
+            return winner
+        return entry
+
+    def read_recollection(self, day: str, *, persona_id: str | None = None) -> DailyLogEntry | None:
+        rows = self._store.by_date(_iso_day(day), persona_id=self._persona(persona_id))
+        for row in rows:
+            if row.role == RECOLLECTION_ROLE:
+                return from_row(row)
+        return None
+
+    def has_recollection(self, day: str, *, persona_id: str | None = None) -> bool:
+        return self.read_recollection(day, persona_id=persona_id) is not None
+
     def dates(self) -> list[str]:
         return self._store.dates()
 
@@ -224,3 +264,8 @@ def _utterances(assistant_text: str | Sequence[str]) -> tuple[str, ...]:
 
 def _iso_day(day: str) -> str:
     return date.fromisoformat(day).isoformat()
+
+
+def _moment_of(day: str, now: datetime) -> datetime:
+    """回忆挂在所属日期上，时刻沿用生成时刻，便于按日排序又保留生成信息。"""
+    return datetime.combine(date.fromisoformat(day), now.timetz())

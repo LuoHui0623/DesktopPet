@@ -211,3 +211,46 @@ def test_new_records_follow_the_switched_persona(db_file: Path):
     assert service.active_persona() == "小桌"
     assert [r.content for r in service.read_day("2026-10-25")] == ["小桌在"]
     assert [r.content for r in service.read_day("2026-10-25", persona_id="芙芙")] == ["芙芙在"]
+
+
+def test_recollection_is_written_once_per_persona_and_day(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    first = service.record_recollection("2026-10-24", "昨天聊了咖啡")
+    assert first is not None
+    assert first.role == "回忆"
+    assert first.content == "昨天聊了咖啡"
+    assert service.has_recollection("2026-10-24") is True
+
+    again = service.record_recollection("2026-10-24", "重复生成")
+    assert again is not None
+    assert again.content == "昨天聊了咖啡"
+    assert service.read_recollection("2026-10-24").content == "昨天聊了咖啡"
+
+
+def test_recollection_is_read_per_persona_and_day(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    service.record_recollection("2026-10-24", "芙芙的回忆", persona_id="芙芙")
+    service.record_recollection("2026-10-24", "小桌的回忆", persona_id="小桌")
+
+    assert service.read_recollection("2026-10-24", persona_id="芙芙").content == "芙芙的回忆"
+    assert service.read_recollection("2026-10-24", persona_id="小桌").content == "小桌的回忆"
+    assert service.read_recollection("2026-10-23", persona_id="芙芙") is None
+
+
+def test_recollection_keeps_the_generation_moment_hours(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    record = service.record_recollection("2026-10-24", "昨天聊了咖啡")
+    assert record.event_time.date().isoformat() == "2026-10-24"
+    assert record.created_at == datetime(2026, 10, 25, 9, 0, tzinfo=TZ)
+
+
+def test_recollection_is_hidden_from_the_chat_timeline(db_file: Path):
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    service.record_user("第一句", persona_id="芙芙")
+    service.record_recollection("2026-10-25", "当天总结")
+    service.record_reply("第二句", persona_id="芙芙")
+
+    assert [(r.role, r.content) for r in service.restore_day("2026-10-25", persona_id="芙芙")] == [
+        ("master", "第一句"),
+        ("me", "第二句"),
+    ]

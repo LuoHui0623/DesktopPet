@@ -7,10 +7,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 
 from config.persona import PersonaConfig
 from constants.memory import FRAGMENT_TOKEN_BUDGET
+from module.agent.chat_system_prompt import SEPARATOR_WIDTH
 from module.agent.prompt import (
     CapabilityDescription,
     PromptTemplates,
     ResourceItem,
+    SystemPrompt,
     build_system_prompt,
 )
 from module.chat.transcript import ChatLine, TranscriptReader
@@ -20,8 +22,15 @@ from service.perception.events import PerceptionEvent
 
 KIND_STRUCTURED = "结构化记忆"
 KIND_DAILY = "每日对话"
-CURRENT_SEPARATOR = "======= current ======="
-DAY_MARKER = "======={day}======="
+# 两条分隔线同宽，让界面上下的分节视觉一致（D5）。
+CURRENT_SEPARATOR = "current".center(SEPARATOR_WIDTH, "=")
+
+
+def day_marker(moment: datetime) -> str:
+    """日期分隔线：先格式化再居中，保证宽度与 current 分隔线一致。"""
+    return f"{moment:%Y/%m/%d}".center(SEPARATOR_WIDTH, "=")
+
+
 USER_ROLE = "master"
 CITATION_RULE = (
     "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
@@ -70,6 +79,17 @@ def render_fragment(fragment: MemoryFragment) -> str:
     return f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
 
 
+def _drop_recorded_input(timeline: list[ChatLine], user_text: str | None) -> list[ChatLine]:
+    """本次输入已先落库再拼上下文，这里丢掉时间线里的那一份，避免同一句出现两次。"""
+    if not user_text:
+        return timeline
+    for index in range(len(timeline) - 1, -1, -1):
+        line = timeline[index]
+        if line.role == USER_ROLE and line.message.content == user_text:
+            return [*timeline[:index], *timeline[index + 1 :]]
+    return timeline
+
+
 class ContextBuilder:
     def __init__(
         self,
@@ -83,6 +103,9 @@ class ContextBuilder:
         resources: Sequence[ResourceItem] | None = None,
         perception: PerceptionReader | None = None,
         transcript: TranscriptReader | None = None,
+        base_prompt: SystemPrompt | None = None,
+        recollection: str | None = None,
+        skip_recorded_input: bool = False,
     ) -> None:
         self._persona = persona
         self._templates = templates
@@ -93,6 +116,12 @@ class ContextBuilder:
         self._resources = resources
         self._perception = perception
         self._transcript = transcript
+        # chat 服务可先构建系统提示词再交给构建器，避免在此处重复渲染人设与占位符。
+        self._base_prompt = base_prompt
+        # 回忆正文由 chat 服务等出来再交进来，注入位置固定在日期分隔线之后。
+        self._recollection = recollection
+        # 本次输入先落库再拼上下文时，时间线里的那一份要丢掉。
+        self._skip_recorded_input = skip_recorded_input
 
     def build(
         self,
@@ -103,7 +132,7 @@ class ContextBuilder:
         interaction_lines: Sequence[str] = (),
         received_at: datetime | None = None,
     ) -> AssembledContext:
-        prompt = build_system_prompt(
+        prompt = self._base_prompt or build_system_prompt(
             "chat",
             self._persona,
             self._templates,
@@ -111,9 +140,15 @@ class ContextBuilder:
             resources=self._resources,
         )
         warnings: list[str] = []
+        moment = (received_at or self._clock(self._timezone)).astimezone(self._timezone)
+
+        # 日期分隔符紧跟基础提示词：全局只出现这一次，之前是注入段落。
+        system_text = prompt.text + "\n\n" + day_marker(moment)
+
+        if self._recollection:
+            system_text += f"\n\n【昨天的回忆】\n{self._recollection}"
 
         structured_block = self._structured_block(warnings)
-        system_text = prompt.text
         if structured_block:
             system_text += f"\n\n【结构化记忆】\n{structured_block}"
 
@@ -128,10 +163,9 @@ class ContextBuilder:
         if injected:
             system_text += f"\n\n{CITATION_RULE}"
 
-        moment = (received_at or self._clock(self._timezone)).astimezone(self._timezone)
-        system_text += "\n\n" + DAY_MARKER.format(day=f"{moment:%Y/%m/%d}")
-
         timeline, notes = self._timeline(moment=moment, include_perception=user_text is not None)
+        if self._skip_recorded_input:
+            timeline = _drop_recorded_input(timeline, user_text)
         boundary = (
             max(
                 (index for index, line in enumerate(timeline) if line.is_reply),

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import shutil
 import subprocess
@@ -117,15 +118,27 @@ def _ensure_frontend_deps() -> None:
     _run([npm, "install"], FRONTEND_DIR, "安装前端依赖")
 
 
+def _provider_key_env(provider: str) -> str:
+    """`.env` 的 `<PROVIDER>_API_KEY` 可以只写系统环境变量名，指向真正存放密钥的变量。"""
+    name = f"{provider}_API_KEY"
+    declared = _env_value(name)
+    if re.fullmatch(r"[A-Z_][A-Z0-9_]*", declared):
+        return declared
+    return name
+
+
 def _warn_missing_provider_keys() -> None:
     """模型密钥只从系统环境变量读取，缺失时提前提醒，免得启动后才发现调不通。"""
     missing: list[str] = []
     for name in _env_value("LLM_PROVIDERS").split(","):
         provider = name.strip().upper()
-        if provider and not os.environ.get(f"{provider}_API_KEY") and provider not in missing:
-            missing.append(provider)
+        if not provider:
+            continue
+        key_env = _provider_key_env(provider)
+        if not os.environ.get(key_env) and key_env not in missing:
+            missing.append(key_env)
     if missing:
-        keys = "、".join(f"{provider}_API_KEY" for provider in missing)
+        keys = "、".join(missing)
         _say(f"提示：未设置系统环境变量 {keys}，模型调用会失败（设置后需重开终端）")
 
 

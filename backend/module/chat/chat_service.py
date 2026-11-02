@@ -32,7 +32,12 @@ from module.agent.orchestrator import (
     checkpoint_block,
     parse_plan_data,
 )
-from module.agent.prompt import CapabilityDescription, PromptTemplates, ResourceItem
+from module.agent.prompt import (
+    CapabilityDescription,
+    PromptTemplates,
+    ResourceItem,
+    build_system_prompt,
+)
 from module.chat.activity import ChatActivity
 from module.chat.citations import CitedSource, resolve_sources, split_citations
 from module.chat.context import AssembledContext, ContextBuilder, MemoryFragment, PerceptionReader
@@ -43,6 +48,7 @@ from module.memory.contracts import DailyLogView
 from module.memory.daily_events import encode_event, event_text
 from module.memory.daily_log_service import DailyLogService
 from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.recollection_service import RecollectionService
 from module.persona.persona_service import PersonaService, PersonaSnapshot, PersonaUnavailableError
 
 logger = logging.getLogger("pet")
@@ -378,6 +384,7 @@ class ChatService:
         activity: ChatActivity | None = None,
         interactions: InteractionReader | None = None,
         usage: UsageService | None = None,
+        recollection: RecollectionService | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
@@ -396,6 +403,7 @@ class ChatService:
         self._activity = activity
         self._interactions = interactions
         self._usage = usage
+        self._recollection = recollection
         self._transcript = ChatTranscript(
             self._timezone, clock=self._clock, loader=self._restore_lines
         )
@@ -439,6 +447,22 @@ class ChatService:
         events = request.events or self._events
         snapshot = self._current_persona()
         self._transcript.set_persona(snapshot.id)
+        # 先把主人这句落库：回忆要读当天聊天记录，模型不可用时这句也不能丢。
+        persisted = True
+        if user_text is not None:
+            persisted = self._daily_log.record_user(
+                user_text, at=received_at, persona_id=snapshot.id
+            )
+        # 回忆可能等待较久，落库之后、拼上下文之前等，跨零点则给新的一天补一次。
+        recollection = self._await_recollection(snapshot, turn_id)
+        # 先构建 chat 系统提示词，再交给上下文构建器拼装历史与记忆（D2、Q4）。
+        prompt = build_system_prompt(
+            "chat",
+            snapshot.config,
+            self._templates,
+            capabilities=self._capabilities,
+            resources=self._resources,
+        )
         builder = ContextBuilder(
             snapshot.config,
             self._templates,
@@ -449,6 +473,9 @@ class ChatService:
             resources=self._resources,
             perception=self._perception,
             transcript=self._transcript,
+            base_prompt=prompt,
+            recollection=recollection,
+            skip_recorded_input=user_text is not None,
         )
         assembled = builder.build(
             user_text,
@@ -459,13 +486,6 @@ class ChatService:
         )
         messages = assembled.messages
         digest = _prompt_digest(assembled.template_digest, snapshot.id, snapshot.version)
-        # 先把主人这句落库，模型失败或配置缺失时也能在重启后看到它；
-        # 上下文已在此之前读取，因此这一句不会在自己的提示词里出现两次。
-        persisted = True
-        if user_text is not None:
-            persisted = self._daily_log.record_user(
-                user_text, at=received_at, persona_id=snapshot.id
-            )
         try:
             client = self._llm.client_for("chat")
         except LlmUnavailableError as exc:
@@ -503,6 +523,27 @@ class ChatService:
             )
         finally:
             events.status("idle")
+
+    def _await_recollection(self, snapshot: PersonaSnapshot, turn_id: str | None) -> str:
+        """等回忆就绪并返回可注入上下文的正文；跨零点则给新的一天补一次。"""
+        if self._recollection is None:
+            return ""
+        today = self._now().date()
+        recall = self._recollection.ensure(today, persona=snapshot, turn_id=turn_id)
+        # 等待生成期间可能已经跨日：新的一天要再补一次，再按最新结果发言。
+        after = self._now().date()
+        if after != today:
+            recall = self._recollection.ensure(after, persona=snapshot, turn_id=turn_id)
+        if not recall.ok:
+            return ""
+        return self._recollection_line(recall.day, snapshot.id)
+
+    def _recollection_line(self, day: str, persona_id: str) -> str:
+        entry = self._daily_log.read_recollection(day, persona_id=persona_id)
+        if entry is None:
+            return ""
+        clock = f"{entry.created_at.astimezone(self._timezone):%H:%M:%S}"
+        return f"[assistant][{clock}]{entry.content}"
 
     def _finish_reply(
         self,

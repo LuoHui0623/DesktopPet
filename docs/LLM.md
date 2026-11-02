@@ -178,9 +178,9 @@ app_setting 的 llm.active.<capability>
 
 | 来源 | 提供什么 |
 |---|---|
-| `.env` | 启用哪些 provider、每个 provider 的 `base_url`、每个能力的默认模型 |
+| `.env` | 启用哪些 provider、每个 provider 的 `base_url`、每个 provider 的密钥环境变量名、每个能力的默认模型 |
 | `llm.yaml` | 每个 provider 的模型预设：标签、上游 id、范式、角色、温度、最大 token、上下文窗口、计数方式、固定请求头 |
-| 系统环境变量 | 每个 provider 的密钥 `<PROVIDER>_API_KEY` |
+| 系统环境变量 | 每个 provider 的实际密钥，变量名由 `.env` 解析得到，缺省 `<PROVIDER>_API_KEY` |
 | `app_setting` | 设置页切换后的当前模型，优先级最高 |
 
 ### 7.2 校验规则
@@ -200,7 +200,8 @@ app_setting 的 llm.active.<capability>
 ### 7.3 密钥
 
 - 只存在系统环境变量，不写入 `.env`、`llm.yaml`、数据库。
-- `.env` 中出现 `<PROVIDER>_API_KEY` 时启动报错。
+- `.env` 中的 `<PROVIDER>_API_KEY` 是间接引用，值是系统环境变量名：`DEEPSEEK_API_KEY=PET_API_KEY` 表示 `deepseek` 的密钥从 `PET_API_KEY` 读取。未写该键时默认读 `<PROVIDER>_API_KEY`。
+- 值必须匹配 `^[A-Z_][A-Z0-9_]*$`；写密钥本身（如 `DEEPSEEK_API_KEY=sk-…`）启动报错。值等于键名时等价于未写。
 - `GET /api/llm/providers` 不返回密钥值，只返回可用状态与原因。
 
 ## 8. 失败与降级

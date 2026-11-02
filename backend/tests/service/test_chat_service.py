@@ -26,11 +26,18 @@ from module.chat.chat_service import (
     split_sentences,
     visible_width,
 )
-from module.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
+from module.chat.context import (
+    CURRENT_SEPARATOR,
+    KIND_DAILY,
+    KIND_STRUCTURED,
+    MemoryFragment,
+    day_marker,
+)
 from module.interaction.interaction_service import InteractionService
 from module.llm import DbUsageReader, LlmService, UsageService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
+from module.memory.recollection_service import FAILURE_PREFIX, Recollection
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
 from module.persona.repository import DbPersonaVersions
@@ -85,7 +92,8 @@ def ask(chat: ChatService, text: str, fragments=()):
 
 
 class FakeChat:
-    def __init__(self, outcomes: list) -> None:
+    def __init__(self, outcomes: list, trace=None) -> None:
+        self.trace = trace
         self.outcomes = [
             outcome if isinstance(outcome, (Exception, Raw)) else chat_output(outcome)
             for outcome in outcomes
@@ -93,6 +101,8 @@ class FakeChat:
         self.calls: list[list] = []
 
     def invoke(self, messages, config=None, **kwargs):
+        if self.trace is not None:
+            self.trace.add("generate")
         self.calls.append(messages)
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
@@ -116,6 +126,8 @@ class Harness:
         interactions=None,
         llm_yaml: str = LLM_YAML,
         counter_factory=None,
+        trace=None,
+        recollection=None,
     ):
         self.db_file = tmp_path / "pet.db"
         self.tmp_path = tmp_path
@@ -125,7 +137,8 @@ class Harness:
         (tmp_path / ".env").write_text(env, encoding="utf-8")
         (tmp_path / "llm.yaml").write_text(llm_yaml, encoding="utf-8")
         environ = {"DEEPSEEK_API_KEY": "sk-test"} if keys is None else keys
-        self.fake = FakeChat(outcomes)
+        self.trace = trace
+        self.fake = FakeChat(outcomes, trace=trace)
         self.llm = LlmService(
             ModelSettingsSource(tmp_path, environ=environ),
             builder=lambda spec: self.fake,
@@ -144,13 +157,19 @@ class Harness:
         self.events = events
         self.orchestrator = orchestrator
         self.interactions = interactions
+        self.recollection = (
+            recollection(self.daily, trace) if callable(recollection) else recollection
+        )
+        if self.recollection is not None:
+            self.recollection.bind(self.daily, trace)
         self.chat = self.new_chat()
 
     def new_chat(self) -> ChatService:
         """在同一个数据库上重建服务，模拟重启。"""
+        daily = TracedDaily(self.daily, self.trace) if self.trace is not None else self.daily
         return ChatService(
             self.llm,
-            self.daily,
+            daily,
             persona_service(self.tmp_path, self.db_file),
             load_templates(),
             db_usage_sink(self.db_file),
@@ -160,6 +179,7 @@ class Harness:
             orchestrator=self.orchestrator,
             interactions=self.interactions,
             usage=UsageService(DbUsageReader(self.db_file)),
+            recollection=self.recollection,
         )
 
     def query(self, sql: str) -> list[tuple]:
@@ -736,7 +756,9 @@ def test_input_time_comes_from_the_receive_sample(tmp_path: Path):
 
     call = harness.fake.calls[0]
     assert call[-1].content == "[master][10:00:00]你好"
-    assert call[0].content.endswith("=======2026/10/29=======")
+    assert call[0].content.endswith(
+        day_marker(datetime(2026, 10, 29, tzinfo=ZoneInfo("Asia/Shanghai")))
+    )
 
 
 def test_restored_context_comes_from_daily_log_even_for_rows_written_elsewhere(
@@ -776,7 +798,7 @@ def test_legacy_temporary_setting_keeps_earlier_turns_in_the_snapshot(tmp_path: 
     assert contents == [
         "[master][10:00:00]第一句",
         f"[me][10:00:00]{SHORT}",
-        "======= current =======",
+        CURRENT_SEPARATOR,
         "[master][10:00:00]第二句",
     ]
 
@@ -1203,7 +1225,7 @@ def test_restart_restores_history_without_repeating_the_current_input(tmp_path: 
     contents = [message.content for message in harness.fake.calls[1][1:]]
     assert contents[0].endswith("]第一句")
     assert contents[1].endswith(f"]{SHORT}")
-    assert contents[2] == "======= current ======="
+    assert contents[2] == CURRENT_SEPARATOR
     assert contents[3].endswith("]第二句")
     assert sum(text.endswith("]第二句") for text in contents) == 1
 
@@ -1297,3 +1319,146 @@ def test_upstream_context_overflow_is_mapped_to_a_clear_error(tmp_path: Path):
     assert exc.value.code == "context_overflow"
     assert "maximum context length" in str(exc.value)
     assert harness.query("SELECT role, content FROM daily_log") == [("master", "你好")]
+
+
+# ---------- T-10：一轮对话的时序与跨零点 ----------
+
+RECALL_TEXT = "昨天主人说想去海边走走。"
+TODAY_TEXT = "今天有点困"
+
+
+class Trace:
+    """记录一轮对话里关键动作的先后顺序。"""
+
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def add(self, name: str) -> None:
+        self.names.append(name)
+
+
+class TracedDaily:
+    """只给 ChatService 用的日志代理：记录写入用户输入的时机。"""
+
+    def __init__(self, daily: DailyLogService, trace: Trace) -> None:
+        self._daily = daily
+        self._trace = trace
+
+    def __getattr__(self, name: str):
+        return getattr(self._daily, name)
+
+    def record_user(self, *args, **kwargs):
+        self._trace.add("record_user")
+        return self._daily.record_user(*args, **kwargs)
+
+
+class FakeRecollection:
+    """替身回忆服务：按日期记账，并把结果真正写进日志。"""
+
+    def __init__(
+        self,
+        daily: DailyLogService | None = None,
+        trace: Trace | None = None,
+        *,
+        ok: bool = True,
+        content: str = RECALL_TEXT,
+        on_ensure=None,
+    ) -> None:
+        self._daily = daily
+        self._trace = trace
+        self._ok = ok
+        self._content = content
+        self._on_ensure = on_ensure
+        self.days: list[str] = []
+
+    def bind(self, daily: DailyLogService, trace: Trace | None = None) -> None:
+        """Harness 会补上日志服务与踪迹，方便先造替身再交给 Harness。"""
+        self._daily = daily
+        if trace is not None:
+            self._trace = trace
+
+    def ensure(self, day, *, persona, turn_id=None):
+        target = (day - timedelta(days=1)).isoformat()
+        self.days.append(target)
+        if self._trace is not None:
+            self._trace.add("recollection")
+        body = self._content if self._ok else f"{FAILURE_PREFIX}子代理超时"
+        self._daily.record_recollection(target, body, persona_id=persona.id)
+        if self._on_ensure is not None:
+            self._on_ensure(target)
+        return Recollection(target, body, self._ok)
+
+
+def contents_of(call: list) -> list[str]:
+    return [message.content for message in call]
+
+
+def test_input_is_logged_before_the_recollection_is_awaited(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 18, 10, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    trace = Trace()
+    harness = Harness(tmp_path, [SHORT], clock=clock, trace=trace, recollection=FakeRecollection)
+    ask(harness.chat, TODAY_TEXT)
+    assert trace.names == ["record_user", "recollection", "generate"]
+    system = harness.fake.calls[0][0].content
+    assert f"[assistant][10:00:00]{RECALL_TEXT}" in system
+
+
+def test_logged_input_still_appears_only_once_in_the_prompt(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    ask(harness.chat, "第一句")
+    ask(harness.chat, "第二句")
+    contents = contents_of(harness.fake.calls[1])
+    assert sum(text.count("第二句") for text in contents) == 1
+    assert sum(text.count("第一句") for text in contents) == 1
+    assert len([text for text in contents if text.startswith("[master][")]) == 2
+    assert harness.query("SELECT role, content FROM daily_log ORDER BY id") == [
+        ("master", "第一句"),
+        ("me", SHORT),
+        ("master", "第二句"),
+        ("me", SHORT),
+    ]
+
+
+def test_waiting_across_midnight_recalls_both_days_before_replying(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 18, 23, 59, 30, tzinfo=ZoneInfo("Asia/Shanghai")))
+
+    def advance(target: str) -> None:
+        if target == "2026-10-17":
+            clock.moment = datetime(2026, 10, 19, 0, 0, 5, tzinfo=ZoneInfo("Asia/Shanghai"))
+
+    trace = Trace()
+    recall = FakeRecollection(on_ensure=advance)
+    harness = Harness(tmp_path, [SHORT], clock=clock, trace=trace, recollection=recall)
+    ask(harness.chat, TODAY_TEXT)
+    assert recall.days == ["2026-10-17", "2026-10-18"]
+    assert trace.names == ["record_user", "recollection", "recollection", "generate"]
+    assert f"[assistant][00:00:05]{RECALL_TEXT}" in harness.fake.calls[0][0].content
+
+
+def test_unavailable_model_keeps_the_input_once(tmp_path: Path):
+    trace = Trace()
+    harness = Harness(tmp_path, [], keys={}, trace=trace, recollection=FakeRecollection)
+    with pytest.raises(ChatError) as exc:
+        ask(harness.chat, TODAY_TEXT)
+    assert exc.value.code == "model_unavailable"
+    assert trace.names == ["record_user", "recollection"]
+    assert harness.query("SELECT role, content FROM daily_log WHERE role = 'master'") == [
+        ("master", TODAY_TEXT)
+    ]
+
+
+def test_failed_recollection_is_not_injected_and_loses_nothing(tmp_path: Path):
+    harness = Harness(
+        tmp_path,
+        [SHORT],
+        recollection=lambda daily, trace: FakeRecollection(daily, trace, ok=False),
+    )
+    ask(harness.chat, TODAY_TEXT)
+    contents = contents_of(harness.fake.calls[0])
+    assert "[assistant][" not in contents[0]
+    assert sum(text.count(TODAY_TEXT) for text in contents) == 1
+    assert harness.query("SELECT role, content FROM daily_log ORDER BY id") == [
+        ("master", TODAY_TEXT),
+        ("回忆", f"{FAILURE_PREFIX}子代理超时"),
+        ("me", SHORT),
+    ]

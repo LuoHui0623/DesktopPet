@@ -1,4 +1,4 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -7,24 +7,12 @@ from typing import Literal
 
 from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListTheme, PersonaConfig
 from constants.files import RESOURCE_ORDER, RESOURCES
-from constants.path import CAPABILITIES_FILE, PROMPTS_DIR
+from constants.path import CAPABILITIES_FILE
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS, SENTENCE_MAX_WIDTH
+from module.agent.chat_system_prompt import CHAT_PLACEHOLDERS, TOPIC_BODIES, TOPIC_ORDER
 
 AgentRole = Literal["chat"]
 
-PERSONA_TEMPLATE = "persona.md"
-PERSONA_PLACEHOLDERS = frozenset({"persona"})
-CHAT_TEMPLATE = "chat.md"
-CHAT_PLACEHOLDERS = frozenset(
-    {
-        "persona_section",
-        "capabilities",
-        "resources",
-        "sentence_max_chars",
-        "sentence_max_width",
-        "persona_hint_chars",
-    }
-)
 NO_CAPABILITIES = "暂无可用能力。"
 NO_RESOURCES = "暂无可用资源。"
 
@@ -47,7 +35,6 @@ class ResourceItem:
 
 @dataclass(frozen=True)
 class PromptTemplates:
-    persona: Template
     chat: Template
     digest: str
 
@@ -91,17 +78,36 @@ def default_resources() -> tuple[ResourceItem, ...]:
     return tuple(ResourceItem(RESOURCES[key].label, key) for key in RESOURCE_ORDER)
 
 
-def load_templates(directory: Path = PROMPTS_DIR) -> PromptTemplates:
-    persona_text = read_template(directory, PERSONA_TEMPLATE, PERSONA_PLACEHOLDERS)
-    chat_text = read_template(directory, CHAT_TEMPLATE, CHAT_PLACEHOLDERS)
-    digest = sha256(
-        "\n".join([PERSONA_TEMPLATE, persona_text, CHAT_TEMPLATE, chat_text]).encode("utf-8")
-    ).hexdigest()
-    return PromptTemplates(
-        persona=Template(persona_text),
-        chat=Template(chat_text),
-        digest=digest,
-    )
+def compose_chat_prompt(
+    order: Sequence[str] | None = None,
+    bodies: Mapping[str, str] | None = None,
+) -> str:
+    """把有序主题拼成系统提示词：每段包成「【主题】\\n正文」，段间空一行。"""
+    topics = TOPIC_ORDER if order is None else order
+    contents = TOPIC_BODIES if bodies is None else bodies
+    blocks: list[str] = []
+    for topic in topics:
+        body = contents.get(topic)
+        if body is None:
+            raise PromptError(f"系统提示词缺少正文：{topic}")
+        if not body.strip():
+            raise PromptError(f"系统提示词正文为空：{topic}")
+        blocks.append(f"【{topic}】\n{body}")
+    text = "\n\n".join(blocks)
+    try:
+        found = frozenset(Template(text).get_identifiers())
+    except ValueError as exc:
+        raise PromptError(f"系统提示词占位符不合法：{exc}") from exc
+    if found != CHAT_PLACEHOLDERS:
+        raise PromptError(
+            f"系统提示词的占位符应为 {sorted(CHAT_PLACEHOLDERS)}，实际为 {sorted(found)}"
+        )
+    return text
+
+
+def load_templates() -> PromptTemplates:
+    text = compose_chat_prompt(order=TOPIC_ORDER, bodies=TOPIC_BODIES)
+    return PromptTemplates(chat=Template(text), digest=sha256(text.encode("utf-8")).hexdigest())
 
 
 def read_template(directory: Path, name: str, placeholders: frozenset[str]) -> str:
@@ -166,7 +172,7 @@ def _build_chat(
     capabilities: Sequence[CapabilityDescription],
     resources: Sequence[ResourceItem],
 ) -> SystemPrompt:
-    persona_section = templates.persona.substitute(persona=render_persona(persona))
+    persona_section = render_persona(persona)
     text = templates.chat.substitute(
         persona_section=persona_section,
         capabilities=_render_capabilities(capabilities),

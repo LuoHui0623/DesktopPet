@@ -5,7 +5,13 @@ import pytest
 
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.memory.contracts import DailyLogRecord, DailyLogRow
+from module.memory.contracts import (
+    CHAT_ROLES,
+    RECOLLECTION_ROLE,
+    ROLES,
+    DailyLogRecord,
+    DailyLogRow,
+)
 from module.settings.contracts import AppSettingRecord, AppSettingRow
 
 
@@ -36,3 +42,20 @@ def test_app_setting_row_matches_columns(conn):
 
 def test_app_setting_record_matches_columns(conn):
     assert {field.name for field in fields(AppSettingRecord)} == column_names(conn, "app_setting")
+
+
+@pytest.mark.parametrize("role", sorted(ROLES))
+def test_daily_log_accepts_every_contract_role(conn, role: str):
+    conn.execute(
+        "INSERT INTO daily_log (event_time, role, content, persona_id, created_at) "
+        "VALUES ('2026-10-25T09:00:00.000+08:00', ?, 'x', '芙芙', "
+        "'2026-10-25T09:00:00.000+08:00')",
+        (role,),
+    )
+    stored = conn.execute("SELECT role FROM daily_log").fetchall()
+    assert [row["role"] for row in stored] == [role]
+
+
+def test_recollection_role_stays_out_of_the_chat_timeline():
+    assert RECOLLECTION_ROLE in ROLES
+    assert RECOLLECTION_ROLE not in CHAT_ROLES

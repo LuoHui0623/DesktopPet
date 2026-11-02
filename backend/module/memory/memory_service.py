@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from infra.files.json_store import read_json
-from module.memory.contracts import DailyLogEntry
+from module.memory.contracts import RECOLLECTION_ROLE, DailyLogEntry
 from module.memory.daily_events import event_text
 from module.memory.daily_log_service import DailyLogService
 from module.memory.sensitive import sensitive_reason
@@ -343,7 +343,9 @@ class MemoryReader:
                 day = date.fromisoformat(name).isoformat()
             except ValueError as exc:
                 raise MemoryReadError(f"日期格式不合法：{name}") from exc
-            records = self._daily.read_day(day)
+            records = [
+                entry for entry in self._daily.read_day(day) if entry.role != RECOLLECTION_ROLE
+            ]
             if not records:
                 raise MemoryReadError(f"{day} 没有对话记录")
             return render_daily_turns(records)

@@ -29,6 +29,9 @@ KNOWN_KEY = re.compile(
     r"^(PET_|WEATHER_|QWEATHER_|CAPABILITY_|LLM_PROVIDERS$|DEFAULT_(CHAT|CONSOLIDATE)_MODEL$)"
 )
 CAPABILITY_VARS = {"chat": "DEFAULT_CHAT_MODEL", "consolidate": "DEFAULT_CONSOLIDATE_MODEL"}
+# `.env` 里 `<PROVIDER>_API_KEY` 的值只允许是「系统环境变量名」（如 PET_API_KEY），表示
+# 实际密钥去那个环境变量里取；匹配不上的（如 sk-xxx）按「把密钥写进了文件」报错。
+API_KEY_REF = re.compile(r"^[A-Z_][A-Z0-9_]*$")
 
 ApiName = Literal["chat_completions", "responses", "messages"]
 Role = Literal["chat", "consolidate"]
@@ -147,6 +150,20 @@ def read_dotenv(path: Path) -> tuple[dict[str, str], list[str]]:
     return values, warnings
 
 
+def resolve_api_key_env(provider: str, file_values: Mapping[str, str]) -> str:
+    """解析 provider 实际读取密钥的系统环境变量名。
+
+    `.env` 中写 `DEEPSEEK_API_KEY=PET_API_KEY` 表示密钥存放在系统环境变量
+    `PET_API_KEY` 中，此时返回 `PET_API_KEY`；未声明或写成自身名字时仍然返回
+    `DEEPSEEK_API_KEY`。
+    """
+    default = f"{provider.upper()}_API_KEY"
+    declared = file_values.get(default, "")
+    if API_KEY_REF.match(declared):
+        return declared
+    return default
+
+
 def deprecated_scheduler_values(
     config_dir: Path = CONFIG_DIR,
     environ: Mapping[str, str] | None = None,
@@ -236,9 +253,9 @@ def load_model_settings(
 
     file_values, dotenv_warnings = read_dotenv(config_dir / ".env")
     warnings.extend(dotenv_warnings)
-    for key in file_values:
-        if key.endswith("_API_KEY"):
-            errors.append(f".env 中不允许出现 {key}，密钥应放在系统环境变量中")
+    for key, declared in file_values.items():
+        if key.endswith("_API_KEY") and declared and not API_KEY_REF.match(declared):
+            errors.append(f".env 中 {key} 只能写系统环境变量名（如 PET_API_KEY），不能写密钥本身")
 
     source: Mapping[str, str] = os.environ if environ is None else environ
     values = {key: value for key, value in file_values.items() if value}
@@ -267,9 +284,12 @@ def load_model_settings(
         if not base_url.startswith(("http://", "https://")):
             errors.append(f"{upper}_BASE_URL 必须以 http:// 或 https:// 开头")
             continue
-        api_key_env = f"{upper}_API_KEY"
-        if api_key_env not in values:
-            warnings.append(f"provider {name} 缺少环境变量 {api_key_env}，该 provider 不可用")
+        api_key_env = resolve_api_key_env(name, file_values)
+        if not source.get(api_key_env):
+            pointer = "" if api_key_env == f"{upper}_API_KEY" else f"（由 {upper}_API_KEY 指向）"
+            warnings.append(
+                f"provider {name} 缺少系统环境变量 {api_key_env}{pointer}，该 provider 不可用"
+            )
         definition = yaml_providers[name]
         models: dict[str, ModelItem] = {}
         for model in definition.models:

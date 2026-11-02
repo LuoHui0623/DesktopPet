@@ -6,9 +6,12 @@ from pydantic import BaseModel
 
 from constants.agent import DEFAULT_PERSONA_ID
 
-DailyLogRole = Literal["master", "me", "assistant", "system", "event"]
-ROLES: frozenset[str] = frozenset(("master", "me", "assistant", "system", "event"))
+DailyLogRole = Literal["master", "me", "assistant", "system", "event", "回忆"]
+ROLES: frozenset[str] = frozenset(("master", "me", "assistant", "system", "event", "回忆"))
 CHAT_ROLES: frozenset[str] = frozenset(("master", "me", "assistant"))
+
+# 回忆按「人设 + 日期」唯一，属于当天的旁注，不进聊天时间线。
+RECOLLECTION_ROLE: DailyLogRole = "回忆"
 
 
 @dataclass(frozen=True)

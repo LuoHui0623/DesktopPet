@@ -130,7 +130,7 @@ class LlmService:
             if environ.get(provider.api_key_env):
                 statuses.append(ProviderStatus(provider.name, provider.display_name, True, None))
             else:
-                reason = f"缺少环境变量 {provider.api_key_env}"
+                reason = f"缺少系统环境变量 {provider.api_key_env}"
                 statuses.append(ProviderStatus(provider.name, provider.display_name, False, reason))
         return statuses
 
@@ -167,7 +167,7 @@ class LlmService:
         api_key = self._env().get(provider.api_key_env)
         if not api_key:
             raise LlmUnavailableError(
-                f"provider {ref.provider} 不可用：缺少环境变量 {provider.api_key_env}"
+                f"provider {ref.provider} 不可用：缺少系统环境变量 {provider.api_key_env}"
             )
 
         key = (ref.provider, ref.model, settings.version)

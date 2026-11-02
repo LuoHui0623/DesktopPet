@@ -60,6 +60,7 @@ from module.memory.memory_service import (
     MemoryWriter,
     StructuredMemoryDoc,
 )
+from module.memory.recollection_service import RecollectionService
 from module.memory.repository import DbDailyLog
 from module.memory.services import MemoryServices
 from module.menu.menu_service import MenuService
@@ -208,6 +209,7 @@ def serve(
         ZoneInfo(settings.timezone),
     )
     approvals = ApprovalRegistry()
+    recollection = RecollectionService(orchestrator, daily_log)
     personas = PersonaService(
         settings.personas_dir,
         SettingsService(db_file),
@@ -246,6 +248,7 @@ def serve(
         resources=default_resources(),
         orchestrator=orchestrator,
         approvals=approvals,
+        recollection=recollection,
         perception=perception,
         activity=chat_activity,
         interactions=interaction_service,

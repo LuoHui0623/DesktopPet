@@ -3,7 +3,7 @@
 > 职责：定义 ChatService 的唯一入口、请求/回复契约、上下文组装、生成校验与落账。
 > 依赖：`module/llm`（模型）、`module/memory`（daily_log / 结构化记忆）、`module/persona`、`module/agent`（派发分支）、观测域解析器（current 事件）。
 > 不回答：模型配置与热更（见 [LLM.md](LLM.md)）、感知采集与阈值（见 [OBSERVER.md](OBSERVER.md)）、主动判定与管线（见 [PROACTIVE.md](PROACTIVE.md)）、气泡与前端渲染。
-> 状态：已实现（2026-10-29；2026-10-31 升级为多条连续发言、显示宽度句长与秒级时间戳；2026-11-01 升级为从 `daily_log` 跨重启恢复、`assistant` 角色、纯文本 `[角色][时间]` 历史与上下文窗口检查；同日补齐子代理正文回灌与主动轮只读派发）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，当天对话每次组装时从 `daily_log` 读取。
+> 状态：已实现（2026-10-29；2026-10-31 升级为多条连续发言、显示宽度句长与秒级时间戳；2026-11-01 升级为从 `daily_log` 跨重启恢复、`assistant` 角色、纯文本 `[角色][时间]` 历史与上下文窗口检查；同日补齐子代理正文回灌与主动轮只读派发；2026-11-03 升级为提示词主题常量编排与「昨天的回忆」注入）。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，当天对话每次组装时从 `daily_log` 读取。
 
 ## 1. 定位
 
@@ -11,7 +11,7 @@ ChatService 提供**完整的对话能力**：把一次输入组装成上下文�
 
 | 做什么 | 不做什么 |
 |---|---|
-| 组装系统提示词、结构化记忆、检索片段、当天对话、current 感知、本次输入 | 选择/装配模型 |
+| 组装系统提示词（主题常量编排）、日期分隔线、昨天的回忆、结构化记忆、检索片段、当天对话、current 感知、本次输入 | 选择/装配模型 |
 | 调模型，校验结构化输出、句长、引用 | 采集感知、判定阈值、决定开口 |
 | 写 `daily_log`；每次组装从当天记录恢复 | 推送主动气泡、编排主动轮 |
 | 派发能力、审批、检查点回灌（分支） | 按 topic 生成话术、维护发送台账 |
@@ -25,7 +25,8 @@ ChatService 提供**完整的对话能力**：把一次输入组装成上下文�
 - **ReplyMessage（一条发言）**：`message_id`、`text`、`at`（回复时间，秒级）、`sources`。同一轮的多条发言各自带 id 与时间，都记在同一次回复里。
 - **Turn**：一次对话回合。被动回合一问一答；主动回合没有用户输入，只有宠物回复。回合内的多条发言共享同一份 `sources` 去重结果。
 - **Transcript（当日快照）**：按当前人设从 `daily_log` 读取当天的 `master` / `me` / `assistant` 行，内存里只额外保存本次会话的事件与感知 notes；日切或切换人设时重读。
-- **Context（上下文）**：系统提示词 + 结构化记忆全文 + 检索片段 + 当日快照 + current 感知 + 本次输入。系统提示词结尾追加当日日期标记。
+- **Context（上下文）**：系统提示词 + 日期分隔线 + 昨天的回忆 + 结构化记忆全文 + 检索片段 + 当日快照 + current 感知 + 本次输入。系统提示词由主题常量按固定顺序拼装，日期分隔线紧跟其后（§5.2.1）。
+- **昨日回忆（Recollection）**：把过去某一天（默认昨天）的对话交给「记忆检索」子代理压缩成的一段第一人称正文，落库到被回忆的那一天，下一轮起注入上下文（§5.5）。
 - **Dispatch（派发）**：模型输出计划，由后端审批（被动轮）或按只读规则自动放行（主动轮）并执行子代理，再把检查点回灌给模型生成最终回复。
 - **`allow_dispatch`**：本次调用是否允许派发。它是能力开关，不是主动/被动标记。
 - **`read_only_dispatch`**：派发是否只允许只读能力。主动轮固定为 `True`，不请求审批；写入型与混合能力整项拒绝。
@@ -46,7 +47,10 @@ proactive ─┴─► chat ─► llm
 | 组件 | 落点 | 说明 |
 |---|---|---|
 | 唯一入口、生成、落账 | `module/chat/chat_service.py` | `chat(ChatRequest)`（目标名） |
-| 上下文组装 | `module/chat/context.py` | 系统提示词、记忆、快照、感知、输入 |
+| 上下文组装 | `module/chat/context.py` | 系统提示词、日期分隔线、回忆、记忆、快照、感知、输入 |
+| 提示词主题与顺序 | `module/agent/chat_system_prompt.py` | 只有正文常量与 `TOPIC_ORDER`，不拼装、不读文件 |
+| 提示词拼装 | `module/agent/prompt.py` | `compose_chat_prompt(order, bodies)` 与占位符填充 |
+| 昨日回忆 | `module/memory/recollection_service.py` | 判定回忆哪一天、只读派发、去重与失败落库 |
 | 当日快照 | `module/chat/transcript.py` | 日切清空，不落库 |
 | 引用解析 | `module/chat/citations.py` | 去标记、过滤来源 |
 | 对话活跃计数 | `module/chat/activity.py` | 供解析器判断“对话进行中” |
@@ -118,12 +122,14 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ### 5.1 输入顺序
 
-1. **系统提示词**：人设、行动规则、发言规则、能力名与资源 ID 清单；结尾追加当日日期标记（见 §5.2）。
-2. **结构化记忆全文**：全文注入，不设预算、不截断（它是大纲，截断会丢语义）。
-3. **检索片段**：调用方提供；超出预算舍弃并记 warning；有片段时追加引用规则。
-4. **当日快照**：从 `daily_log` 恢复当前人设当天的 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；`master → Human`，`me` / `assistant → AI`，按时间排序；不做 master/me 成对要求。会话内的感知 notes 按时间混入，保持原样不带角色前缀。
-5. **current 感知**：解析器返回的 1–3 条，作为 AI notes 混入时间线；以上一次 `me` 或 `assistant` 回复为界插入 `======= current =======`，当天没有回复时全部视为 current，不插分隔串。
-6. **本次输入**：被动轮追加 `HumanMessage`，正文带 `[master][HH:MM:SS]` 前缀（见 §5.2）；主动轮追加临时触发块（见 §5.3）。
+1. **系统提示词**：由 [chat_system_prompt.py](../backend/module/agent/chat_system_prompt.py) 的 `TOPIC_ORDER` + `TOPIC_BODIES` 逐主题拼成，顺序固定为：人设 → 行动规则 → 可用能力 → 可用资源 → 发言规则 → 约束。每个主题先包成 `【主题】\n正文`，再由 `compose_chat_prompt` 按顺序以空行串联；`$persona_section`、能力名与资源 ID 清单一类占位符在此填满。**不存在** `prompts/chat.md`、`prompts/persona.md` 这类文件模板，chat 提示词只有常量这一个来源。
+2. **日期分隔线**：紧接系统提示词之后，全局只出现这一次（见 §5.2.1）；其后才是各类注入段落。
+3. **昨天的回忆**：有可用回忆时注入（见 §5.5）；失败或无历史时不占位。
+4. **结构化记忆全文**：全文注入，不设预算、不截断（它是大纲，截断会丢语义）。
+5. **检索片段**：调用方提供；超出预算舍弃并记 warning；有片段时追加引用规则。
+6. **当日快照**：从 `daily_log` 恢复当前人设当天的 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；`master → Human`，`me` / `assistant → AI`，按时间排序；不做 master/me 成对要求。会话内的感知 notes 按时间混入，保持原样不带角色前缀。
+7. **current 感知**：解析器返回的 1–3 条，作为 AI notes 混入时间线；以上一次 `me` 或 `assistant` 回复为界插入 `===========current============`（`current` 居中到 30 列），当天没有回复时全部视为 current，不插分隔串。
+8. **本次输入**：被动轮追加 `HumanMessage`，正文带 `[master][HH:MM:SS]` 前缀（见 §5.2）；主动轮追加临时触发块（见 §5.3）。
 
 ### 5.2 快照规则
 
@@ -136,6 +142,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 - 历史行一律渲染为纯文本 `[角色][HH:MM:SS]正文`：`master`、`me`、`assistant` 使用各自角色名。不再把助手历史包装成 `{"type": "chat", ...}` JSON，避免模型把历史当成待模仿的输出格式。
 - 一次发言一行：同一轮的多条 `me` 在 `daily_log` 中是多行，恢复后也是多条独立历史消息，不合并成一个数组。
 - 用户发言与本次输入同格式，模型才能同时知道「这句话几点说的」和「现在几点」。历史行的时间取 `created_at`；本次输入取本轮接收时间（`received_at`）。
+- 顺序是先落库、再等回忆、再拼上下文：`master` 行先写 `daily_log`，`ChatTranscript` 会读回这一行，构建器于是按 `skip_recorded_input` 从时间线里删掉它，只有末尾那条本次输入带前缀的 `HumanMessage` 保留，同一句不会出现两次。
 - 一轮内只采样一次时点：`received_at` 同时决定本次输入前缀、日期标记（§5.2.1）与感知 notes 的「当天」过滤，三者不会跨秒或跨日错位。
 - 界面上的时间戳由前端按记录装配，后端不在 `text` / `content` 里重复拼接；时间前缀只存在于拼装出的上下文，不写入 `daily_log`。
 - 前缀只用于模型判断时点，不进入下游载荷：模型派发任务、写入记忆或草稿本时应只转述原始内容，不照抄 `[角色][HH:MM:SS]`。
@@ -143,8 +150,9 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ### 5.2.1 日期标记
 
-- 系统提示词末尾固定追加一行 `=======YYYY/MM/DD=======`（7 个等号，与 `======= current =======` 视觉一致），日期取本轮 `received_at`，而不是再读一次时钟。
-- 位置在系统提示词末尾，不进入快照、不写入 `daily_log`、不产生 `sources`。
+- 系统提示词之后固定追加一行日期分隔线，形如 `==========2026/11/03==========`；日期取本轮 `received_at`，而不是再读一次时钟。
+- 分隔线宽度统一 30 列（`chat_system_prompt.SEPARATOR_WIDTH`），`=` 填充，且**先格式化成 `YYYY/MM/DD` 再居中**——先居中再格式化会得到宽度不定的结果。`current` 分隔线与它同宽，因此两者视觉等高同类。
+- 位置紧随拼好的基础提示词，之后才是回忆、记忆、快照等注入段落：全局只出现这一次，不进入快照、不写入 `daily_log`、不产生 `sources`。
 - 各层提示词不各自带日期；快照只覆盖当天，因此一次请求只出现一个日期标记。
 
 ### 5.3 主动轮的上下文
@@ -166,7 +174,28 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 - 只有本次注入的检索片段可以作为来源。
 - 模型输出中的 `[引用 日期]` 标记被去除；`sources` 只保留命中注入片段的引用。
-- 感知 notes、结构化记忆全文不产生 `sources`。
+- 感知 notes、结构化记忆全文、昨天的回忆都不产生 `sources`。
+
+### 5.5 昨天的回忆
+
+回忆是把某个历史日期的原始对话压成一段第一人称正文，解决「跨日之后模型只知道今天」的问题。
+
+- **回顾哪一天**：`RecollectionService.ensure(day, persona=...)` 的 `day` 是「今天」，目标是 `day - 1`；同一人设同一天只保留一份回忆，重复调用直接复用已落库的内容。
+- **判定有没有聊天**：先看昨天是否同时存在 `master` 与 `me` 两种角色的行。有 → 直接回忆昨天；没有 → 找更早的最近一天有聊天记录的日子，派发时带上前缀 `昨天没有聊天，上次聊天在 <YYYY-MM-DD>：`；更早全都没有 → 不派发，直接写入 `昨天没有聊天，也没有更早的聊天记录可以回忆。`。
+- **派发方式**：交给「记忆检索」子代理，`read_only=True`（不弹审批）并带上 `turn_id`；只给事实（哪天、要什么），话术由子代理提示词决定。
+- **重试**：本轮与「无聊天回退」共用预算，最多 2 次派发；全部失败则把原因写成回忆正文并落库。
+- **落库**：回忆写进被回忆的那一天（`event_time` 是该日），`created_at` 是生成时刻；失败也落库，正文以 `回忆生成失败：` 开头，`ok=False`，注入时整段跳过。
+- **注入格式**：一段带角色的纯文本行，与历史同构：
+
+```text
+【昨天的回忆】
+[assistant][23:58:10]<回忆正文>
+```
+
+  其中 `[assistant][HH:MM:SS]` 取自该条记录的 `created_at`，让模型能判断这段记忆是「昨天晚上整理的」。
+- **时机**：每轮先落 `master`、等回忆就绪、再拼上下文与生成；等待期间若跨过零点，会给新的一天再补一次 `ensure`，保证醒来后的第一句话用的是今天的回忆。
+- **不进入快照**：回忆不写入 transcript 时间线、也不回灌到 `daily_log` 的聊天角色里；它只以独立注入段出现，`me` / `assistant` 的恢复照旧只读 `master`/`me`/`assistant` 三行角色。
+- **记忆读取排除回忆**：`MemoryReader` 组装当天记录时会过滤掉 `回忆` 角色，避免把回忆当成当天对话再喂回模型。
 
 ## 6. 生成与校验
 
@@ -264,10 +293,11 @@ chat 输出 dispatch
 | `me` | 宠物回复 | 成功生成并校验通过后（含主动） |
 | `assistant` | 子代理的结果正文（成功结果、失败或拒绝原因） | 子代理执行完成后、最终回复生成前；每个子代理一条 |
 | `event` | 结构化事件 | 审批拒绝、派发失败、会话边界 |
+| `回忆` | 昨日回忆正文（成功内容或失败原因） | 回忆生成完成后；每个「被回忆的那一天 + 人设」一条 |
 
 - `daily_log` 带 `persona_id`：写入时取本轮开始时的启用人设；旧数据由迁移按当时启用人设回填，没有设置时回填默认人设「芙芙」。
-- `event_time` 是事件发生时刻（带时区偏移的 ISO 8601 文本），按天读取时取它的日期部分；`created_at` 是入库时刻。当前两者由同一采样时间写入，迁移 `0014` 用 `created_at` 回填旧的 `date` 列。
-- `master` 先落库再调用模型：模型不可用、输入/output 校验失败或上下文超限时，用户这句话仍然保留，重启后可见；上下文在落库前读取，因此当前输入不会在自己的提示词里出现两次。
+- `event_time` 是事件发生时刻（带时区偏移的 ISO 8601 文本），按天读取时取它的日期部分；`created_at` 是入库时刻。聊天与事件行由同一采样时间写入，迁移 `0014` 用 `created_at` 回填旧的 `date` 列。唯一的例外是 `回忆`：`event_time` 记**被回忆的那一天**，`created_at` 才是生成时刻。
+- `master` 先落库再调用模型：模型不可用、输入/output 校验失败或上下文超限时，用户这句话仍然保留，重启后可见；落库之后、拼装之前会等回忆就绪，构建器按 `skip_recorded_input` 丢掉时间线里的这一行，因此当前输入不会在自己的提示词里出现两次（§5.2）。
 - `me` 只在最终回复通过校验后写入；`master`、`assistant`、`me` 各自独立写入，互不依赖对方是否成功。
 - `assistant` 存检查点正文：成功时是子代理 `output`，失败或拒绝时是 `error` 原因；不存 `执行：能力` 前缀、`[finished_plan]` 检查点包装、`plan_id` 或通用提示文字。查询任务的正文应包含查到的内容，可同时包含反馈；失败与拒绝也各留一条。
 - 不给 `daily_log` 加 `source` 列；主动回复就是一条普通 `me` 行——主动是触发路径的属性，不是数据属性。
@@ -276,6 +306,7 @@ chat 输出 dispatch
 - `master` 一行的内容就是用户原文，事件时刻存在 `event_time` 列；`[角色][时间]` 前缀只在装配上下文与界面渲染时拼接，不写进 `content`。
 - 每轮都写入，不再有跳过 `daily_log` 的模式。
 - 事件类型维持 3 种，不因感知扩表；感知只写 current 快照，不进 `daily_log`。
+- `回忆` 不是聊天角色：`restore_day` 只恢复 `master` / `me` / `assistant`，回忆由 `read_recollection` 单独读、单独注入（§5.5）。迁移 `0015` 给 `role` 的 CHECK 加上该值，并建了部分唯一索引 `(persona_id, substr(event_time, 1, 10)) WHERE role = '回忆'`，同一人设同一天最多一条。
 - 历史跨天永久保留；上下文只恢复当天。
 
 ### 7.2 transcript
@@ -338,6 +369,8 @@ chat 输出 dispatch
 | 入口 | `chat(ChatRequest)` 单入口；HTTP 路由构造 `ChatRequest(user_text=...)` |
 | 主动轮 | 同一入口，`user_text=None` + `trigger_reason`；由 `module/proactive/pipeline.py` 调用 |
 | 主入口写入 | 被动先 `record_user`（`master` 1 条），回复通过后再 `record_reply`（`me` 1–4 条）；主动只写 `record_reply`；子代理回灌用 `record_assistant` |
+| 提示词来源 | `module/agent/chat_system_prompt.py` 只放正文常量与 `TOPIC_ORDER`；拼装由 `module/agent/prompt.py` 的 `compose_chat_prompt` 完成，不再有 `prompts/chat.md`、`prompts/persona.md` |
+| 昨日回忆 | `module/memory/recollection_service.py`：每轮先判定、再只读派发；`回忆` 行落被回忆的那一天，同人设同日幂等 |
 | 快照写入 | 不再手工写入内存快照；每天每次组装从 `daily_log` 读取，只有事件/感知 notes 活在本进程 |
 | 上下文预算 | 调用前用 `TrackedChatModel.count_tokens` 检查 `输入 + max_tokens <= context_window`；本地估算时错误信息标注「估算」 |
 | 感知注入 | 注入 `PerceptionReader`（`PerceptionService` 实现），由 chat 只读 `recent_context_events` |
@@ -349,7 +382,7 @@ chat 输出 dispatch
 ## 12. 已定口径
 
 - ChatService 提供完整 chat 能力，不做主动编排；不新增 `generate_proactive`、`TurnPipeline`。
-- 上下文来自当天 `daily_log` 的 `master` / `me` / `assistant` 行，加上进程内事件与感知 notes；不按轮配对；current 与历史用分隔串区分；全量线性重建，不做增量更新。
+- 上下文来自当天 `daily_log` 的 `master` / `me` / `assistant` 行（外加单独注入的 `回忆`），加上进程内事件与感知 notes；不按轮配对；current 与历史用分隔串区分；全量线性重建，不做增量更新。
 - 主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`。
 - 解析器只输出 `Trigger{topic, reason}`；chat 不接收按 topic 的话术。
 - 一轮回复 1–4 条发言，`text` 是数组；解析层兼容旧的单字符串，提示词只教数组写法。
@@ -357,4 +390,7 @@ chat 输出 dispatch
 - `[角色][HH:MM:SS]` 由装配与渲染层拼装：用户发言（历史行与本次输入）在上下文里都带前缀，主动轮改用触发块的 `【当前时间】`；界面按 `created_at` 装配；`daily_log.content` 保持原文。
 - `daily_log` 只收有价值的 event；感知不写长期日志，只进 current 快照。
 - 主动轮允许只读派发：只接受全部工具均为只读的能力，自动放行、不请求审批；写入型与混合能力整项拒绝，执行阶段再次过滤工具。
+- 提示词只有一份来源：`chat_system_prompt.py` 定义主题正文与顺序（人设 → 行动规则 → 可用能力 → 可用资源 → 发言规则 → 约束），chat service 每轮把每个主题包成 `【主题】\n正文` 后按序串联；该模块不写函数、不读文件系统。
+- 回忆策略：先确定性地判定「昨天有没有聊天」，有就回忆昨天，没有就回退到更早最近的一天并说明「上次聊天在 X」，完全没有历史则不派发、只落原因；派发与重试共用 2 次预算，失败也落库但不注入。
+- 回忆是旁注不是聊天：`回忆` 行只经 `read_recollection` 注入，不进 `restore_day` 时间线，记忆读取时也会被过滤掉。
 - 草稿本（`自记笔记`）是短期便签，与 `daily_log` 这份长期记忆分开；它只能经派发子代理读写，被动轮写入走审批闸门，主动轮不允许写入，根目录为数据目录下的资源库。

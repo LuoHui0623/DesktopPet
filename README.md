@@ -113,11 +113,17 @@ copy .env.example .env
 - `LLM_PROVIDERS`：启用的 provider，如 `deepseek,opencode`。每个 provider 需要 `<NAME>_BASE_URL`。
 - `DEFAULT_CHAT_MODEL`、`DEFAULT_CONSOLIDATE_MODEL`：默认模型，如 `deepseek-flash`。
 
-密钥不写在 `.env` 中。每个 provider 的密钥从同名的系统环境变量读取，变量名为 `<PROVIDER>_API_KEY`（大写）。例如需要设置 `DEEPSEEK_API_KEY` 与 `OPENCODE_API_KEY`：
+密钥不写在 `.env` 中。每个 provider 的密钥从系统环境变量读取，默认变量名为 `<PROVIDER>_API_KEY`（大写）。例如需要设置 `DEEPSEEK_API_KEY` 与 `OPENCODE_API_KEY`：
 
 ```powershell
 [Environment]::SetEnvironmentVariable("DEEPSEEK_API_KEY", "你的密钥", "User")
 [Environment]::SetEnvironmentVariable("OPENCODE_API_KEY", "你的密钥", "User")
+```
+
+如果密钥存放在别的变量名下，可在 `.env` 中写变量名做间接引用，实际密钥仍从系统环境变量读取：
+
+```
+DEEPSEEK_API_KEY=PET_API_KEY
 ```
 
 设置后需重新打开终端或重启后端才能读取到。
