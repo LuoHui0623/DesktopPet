@@ -108,7 +108,7 @@ export function SettingsWindow() {
       </nav>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
         {tab === "models" && <ModelSettings />}
-        {tab === "personas" && <PersonaSettings />}
+        {tab === "personas" && <PersonaSettings onChanged={bundle.reload} />}
         {tab === "memory" && <MemorySettings />}
         {MANAGED_TABS.has(tab) && renderManaged()}
       </div>

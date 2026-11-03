@@ -36,7 +36,7 @@ const view: SettingsView = {
     dnd_start: "22:30",
     dnd_end: "08:00",
   },
-  avatar: { active: "default", packs: [] },
+  avatar: { persona: "芙芙", active: "default", preset_states: [], packs: [] },
   interaction: {
     report_enabled_kinds: ["click"],
     hover_dwell_ms: 300,

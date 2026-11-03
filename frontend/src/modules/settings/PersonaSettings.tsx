@@ -8,7 +8,7 @@ const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
 const headingStyle = { fontSize: 15, margin: 0 } as const;
 const buttonStyle = { padding: "2px 10px", fontSize: 12 } as const;
 
-export function PersonaSettings() {
+export function PersonaSettings({ onChanged }: { onChanged?: () => void }) {
   const [data, setData] = useState<PersonasResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -44,6 +44,7 @@ export function PersonaSettings() {
           setNotice(
             `已启用“${persona.name ?? persona.id}”。下一次对话起使用新人设，开始新会话，近期对话保留`,
           );
+          onChanged?.();
         },
         (error: unknown) => {
           setActionError(describeRequestError(error));
