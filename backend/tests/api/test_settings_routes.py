@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from constants.agent import DEFAULT_PERSONA_ID
 from constants.path import AVATAR_SOURCE_DIR
 from infra.store.db import connect
 from infra.store.migrate import migrate
@@ -18,7 +19,7 @@ from service.perception import PerceptionService
 
 TOKEN = "settings-token"
 AUTH = {"X-Pet-Token": TOKEN}
-DEFAULT_SOURCE = AVATAR_SOURCE_DIR / "default"
+DEFAULT_SOURCE = AVATAR_SOURCE_DIR / DEFAULT_PERSONA_ID
 
 PERCEPTION_BODY = {
     "enabled": True,
@@ -66,14 +67,20 @@ class MemorySettings:
 @pytest.fixture
 def avatars_dir(tmp_path: Path) -> Path:
     directory = tmp_path / "avatars"
-    AvatarService(directory, MemorySettings(), seed_dir=DEFAULT_SOURCE)
+    AvatarService(
+        directory,
+        MemorySettings(),
+        persona_id=lambda: DEFAULT_PERSONA_ID,
+        seed_dir=DEFAULT_SOURCE,
+    )
     return directory
 
 
 def add_pack(avatars_dir: Path) -> None:
     """复制默认包作为第二个形象包，manifest 的 id 必须与目录名一致。"""
-    target = avatars_dir / "alt"
-    shutil.copytree(avatars_dir / "default", target)
+    group = avatars_dir / DEFAULT_PERSONA_ID
+    target = group / "alt"
+    shutil.copytree(group / "default", target)
     manifest_path = target / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["id"] = "alt"
@@ -83,7 +90,11 @@ def add_pack(avatars_dir: Path) -> None:
 
 def make_client(db_file: Path, avatars_dir: Path) -> TestClient:
     settings = SettingsService(db_file)
-    avatars = AvatarService(avatars_dir, settings)
+    avatars = AvatarService(
+        avatars_dir,
+        settings,
+        persona_id=lambda: DEFAULT_PERSONA_ID,
+    )
     return TestClient(
         create_app(
             TOKEN,
@@ -112,6 +123,7 @@ def test_groups_come_from_the_backend_defaults(db_file: Path, avatars_dir: Path)
         "dnd_start": "22:30",
         "dnd_end": "08:00",
     }
+    assert body["avatar"]["persona"] == DEFAULT_PERSONA_ID
     assert body["avatar"]["active"] == "default"
     assert [pack["id"] for pack in body["avatar"]["packs"]] == ["default"]
     assert body["interaction"] == {

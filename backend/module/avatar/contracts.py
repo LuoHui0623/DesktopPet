@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from module.avatar.constants import PRESET_STATES
+
 
 @dataclass(frozen=True)
 class AvatarState:
@@ -15,9 +17,12 @@ class AvatarPack:
     height: int
     fallback: str
     states: dict[str, AvatarState]
+    static: str = ""
 
 
 @dataclass(frozen=True)
 class AvatarCatalog:
-    active: str
+    persona: str
+    active: str | None
     packs: tuple[AvatarPack, ...]
+    preset_states: tuple[str, ...] = PRESET_STATES

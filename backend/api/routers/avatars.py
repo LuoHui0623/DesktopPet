@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 
 from api.errors import error_response
 from api.schemas.avatars import (
@@ -44,3 +44,16 @@ def activate_avatar(request: Request, body: ActivateAvatarIn) -> Response | Avat
     except AvatarNotFoundError:
         return error_response(404, "avatar_not_found", f"形象包不存在：{body.id}")
     return catalog_view(catalog)
+
+
+@router.get(
+    "/avatars/{persona_id}/{pack_id}/{path:path}",
+    operation_id="get_avatar_asset",
+    include_in_schema=False,
+)
+def get_avatar_asset(request: Request, persona_id: str, pack_id: str, path: str) -> FileResponse:
+    try:
+        asset = _service(request).asset_path(persona_id, pack_id, path)
+    except AvatarNotFoundError:
+        raise HTTPException(status_code=404, detail="形象资源不存在") from None
+    return FileResponse(asset)

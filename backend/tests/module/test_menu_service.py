@@ -1,3 +1,4 @@
+from constants.agent import DEFAULT_PERSONA_ID
 from module.avatar.contracts import AvatarCatalog, AvatarPack
 from module.menu.constants import (
     OPEN_CHAT,
@@ -28,7 +29,7 @@ class FakeAvatars:
         self._active = active
 
     def catalog(self) -> AvatarCatalog:
-        return AvatarCatalog(active=self._active, packs=self._packs)
+        return AvatarCatalog(persona=DEFAULT_PERSONA_ID, active=self._active, packs=self._packs)
 
 
 class FakeScheduler:

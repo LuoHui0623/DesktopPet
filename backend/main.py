@@ -18,6 +18,7 @@ from config.settings import (
     deprecated_scheduler_values,
     load_service_settings,
 )
+from constants.agent import DEFAULT_PERSONA_ID
 from constants.path import AVATAR_SOURCE_DIR
 from infra.events.bus import EventBus
 from infra.lifecycle import ShutdownController, watch_stdin
@@ -231,7 +232,8 @@ def serve(
     avatars = AvatarService(
         settings.data_dir / "avatars",
         SettingsService(db_file),
-        seed_dir=AVATAR_SOURCE_DIR / "default",
+        persona_id=personas.active_id,
+        seed_dir=AVATAR_SOURCE_DIR / DEFAULT_PERSONA_ID,
     )
     interaction_service = InteractionService(settings_service)
     menu_service = MenuService(avatars, perception.scheduler)

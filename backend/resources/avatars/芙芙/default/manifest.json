@@ -6,6 +6,7 @@
     "height": 240
   },
   "fallback": "idle",
+  "static": "static.png",
   "states": {
     "idle": {
       "frames": [

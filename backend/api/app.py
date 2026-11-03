@@ -5,7 +5,6 @@ from typing import Any
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from starlette.middleware.cors import CORSMiddleware
-from starlette.staticfiles import StaticFiles
 
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
@@ -93,12 +92,6 @@ def create_app(
     app.include_router(avatars.router)
     app.include_router(menu.router)
     app.include_router(ws.router)
-    if avatar_service is not None:
-        app.mount(
-            "/api/avatars",
-            StaticFiles(directory=str(avatar_service.root), follow_symlink=False),
-            name="avatar-files",
-        )
     app.add_middleware(TokenAuthMiddleware, token=token)
     app.add_middleware(
         CORSMiddleware,

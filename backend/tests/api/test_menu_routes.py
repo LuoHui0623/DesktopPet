@@ -1,6 +1,7 @@
 from fastapi.testclient import TestClient
 
 from api.app import create_app
+from constants.agent import DEFAULT_PERSONA_ID
 from module.avatar.contracts import AvatarCatalog, AvatarPack
 from module.menu.menu_service import MenuService
 from service.perception.scheduler import SchedulerConfig
@@ -12,6 +13,7 @@ AUTH = {"X-Pet-Token": TOKEN}
 class FakeAvatars:
     def catalog(self) -> AvatarCatalog:
         return AvatarCatalog(
+            persona=DEFAULT_PERSONA_ID,
             active="default",
             packs=(
                 AvatarPack(
