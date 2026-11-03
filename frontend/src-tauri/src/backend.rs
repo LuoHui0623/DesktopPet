@@ -88,9 +88,7 @@ pub fn launch(spec: &LaunchSpec, timeout: Duration) -> Result<Launched, String> 
     thread::spawn(move || {
         let mut announced = false;
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if !announced
-                && let Some(port) = parse_port_line(&line)
-            {
+            if !announced && let Some(port) = parse_port_line(&line) {
                 announced = true;
                 let _ = port_tx.send(port);
                 continue;
@@ -271,7 +269,11 @@ mod tests {
         let first = create_token();
         let second = create_token();
         assert_eq!(first.len(), 43);
-        assert!(first.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
+        assert!(
+            first
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        );
         assert_ne!(first, second);
     }
 
@@ -314,7 +316,9 @@ mod tests {
         assert_eq!(http_status(port, Some(&token)), 200);
 
         let supervisor = Supervisor::new(launched, |_| {});
-        let exit = supervisor.stop(Duration::from_secs(15)).expect("exit status");
+        let exit = supervisor
+            .stop(Duration::from_secs(15))
+            .expect("exit status");
         assert_eq!(exit.code, Some(0));
 
         let log = fs::read_to_string(data_dir.join("logs").join("backend.log"))

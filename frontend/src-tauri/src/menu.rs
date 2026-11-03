@@ -33,7 +33,10 @@ pub fn handle_menu_event(app: &AppHandle, event: MenuEvent) {
     let _ = app.emit_to(crate::window::PET_WINDOW_LABEL, MENU_EVENT, id);
 }
 
-fn build_menu<R: Runtime, M: Manager<R>>(manager: &M, specs: &[MenuSpec]) -> tauri::Result<Menu<R>> {
+fn build_menu<R: Runtime, M: Manager<R>>(
+    manager: &M,
+    specs: &[MenuSpec],
+) -> tauri::Result<Menu<R>> {
     let items = specs
         .iter()
         .map(|spec| build_item(manager, spec))
@@ -79,16 +82,14 @@ fn build_item<R: Runtime, M: Manager<R>>(
         .iter()
         .map(|item| item as &dyn IsMenuItem<R>)
         .collect();
-    Ok(
-        Submenu::with_id_and_items(
-            manager,
-            spec.id.as_str(),
-            spec.label.as_str(),
-            spec.enabled,
-            &refs,
-        )?
-        .kind(),
-    )
+    Ok(Submenu::with_id_and_items(
+        manager,
+        spec.id.as_str(),
+        spec.label.as_str(),
+        spec.enabled,
+        &refs,
+    )?
+    .kind())
 }
 
 #[cfg(test)]

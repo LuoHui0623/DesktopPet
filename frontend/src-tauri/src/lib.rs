@@ -33,10 +33,7 @@ static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[tauri::command]
 fn get_backend_info(slot: State<'_, BackendSlot>) -> Result<BackendInfo, String> {
-    let info = slot
-        .info
-        .lock()
-        .map_err(|_| "后端状态不可用".to_string())?;
+    let info = slot.info.lock().map_err(|_| "后端状态不可用".to_string())?;
     info.clone().ok_or_else(|| "后端尚未就绪".to_string())
 }
 
@@ -102,11 +99,7 @@ fn on_backend_ready(app: AppHandle, launched: Launched) {
     let exit_app = app.clone();
     let supervisor = Supervisor::new(launched, move |exit: ExitInfo| {
         eprintln!("后端意外退出：代码 {:?}", exit.code);
-        show_error(
-            &exit_app,
-            "后端已退出",
-            "后端意外退出，应用将关闭。",
-        );
+        show_error(&exit_app, "后端已退出", "后端意外退出，应用将关闭。");
         exit_app.exit(1);
     });
     let slot = app.state::<BackendSlot>();
@@ -221,6 +214,7 @@ mod tests {
     const ALLOWED_PERMISSIONS: &[&str] = &[
         "core:default",
         "core:window:allow-start-dragging",
+        "core:window:allow-set-ignore-cursor-events",
         "allow-get-backend-info",
         "allow-open-chat-window",
         "allow-open-status-window",
@@ -309,7 +303,11 @@ mod tests {
 
     #[test]
     fn settings_window_only_gets_backend_info() {
-        assert_window_permissions(SETTINGS_CAPABILITY, "settings", SETTINGS_ALLOWED_PERMISSIONS);
+        assert_window_permissions(
+            SETTINGS_CAPABILITY,
+            "settings",
+            SETTINGS_ALLOWED_PERMISSIONS,
+        );
     }
 
     #[test]
@@ -341,7 +339,10 @@ mod tests {
     #[test]
     fn dev_build_marks_the_backend_for_development_mode() {
         #[cfg(debug_assertions)]
-        assert_eq!(crate::backend_env(), vec![("PET_DEV_MODE".to_string(), "1".to_string())]);
+        assert_eq!(
+            crate::backend_env(),
+            vec![("PET_DEV_MODE".to_string(), "1".to_string())]
+        );
         #[cfg(not(debug_assertions))]
         assert!(crate::backend_env().is_empty());
     }
