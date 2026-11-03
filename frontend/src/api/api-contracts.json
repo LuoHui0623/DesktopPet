@@ -796,6 +796,10 @@
             },
             "title": "States",
             "type": "object"
+          },
+          "static": {
+            "title": "Static",
+            "type": "string"
           }
         },
         "required": [
@@ -804,6 +808,7 @@
           "active",
           "frame",
           "fallback",
+          "static",
           "states"
         ],
         "title": "AvatarPackOut",
@@ -833,8 +838,15 @@
       "AvatarsResponse": {
         "properties": {
           "active": {
-            "title": "Active",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active"
           },
           "packs": {
             "items": {
@@ -842,10 +854,23 @@
             },
             "title": "Packs",
             "type": "array"
+          },
+          "persona": {
+            "title": "Persona",
+            "type": "string"
+          },
+          "preset_states": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Preset States",
+            "type": "array"
           }
         },
         "required": [
+          "persona",
           "active",
+          "preset_states",
           "packs"
         ],
         "title": "AvatarsResponse",
@@ -1014,7 +1039,8 @@
               "me",
               "assistant",
               "system",
-              "event"
+              "event",
+              "回忆"
             ],
             "title": "Role",
             "type": "string"

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import type { InteractionKind, PetState } from "../../api/types";
+import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
+import type { InteractionKind } from "../../api/types";
 import type { LoadedAvatar } from "../../service/avatar.service";
-import { loadAvatarAlpha, type AvatarAlpha } from "./avatar-alpha";
-import { selectAvatarAnimation } from "./avatar-view";
-import { centerOffset } from "./pet-alpha";
+import type { AnimationResource } from "./animation-resource";
+import { containRect, offsetRect, transformOrigin } from "./avatar-layout";
+import { isAvatarPixel, type FrameViewport } from "./avatar-hit";
+import { avatarStateKey, selectAvatarAnimation } from "./avatar-state";
 import { useAvatarFrame } from "./use-avatar-frame";
 
 const RENDER_SIZE = 120;
@@ -11,7 +12,10 @@ const RENDER_SIZE = 120;
 /** 用窗口坐标判断是否落在形象的不透明像素上；返回 null 表示暂无轮廓信息。 */
 export type PetHitTest = (clientX: number, clientY: number) => boolean;
 
-const STATE_COLORS: Record<PetState, string> = {
+/** 供穿透轮询读取当前帧掩码与绘制矩形；坐标均为窗口内 CSS 坐标。 */
+export type PetFrameProvider = () => FrameViewport | null;
+
+const STATE_COLORS: Record<string, string> = {
   idle: "#8ec5ff",
   thinking: "#c3a6ff",
   speaking: "#ffd166",
@@ -26,8 +30,8 @@ const REACTIONS: Record<InteractionKind, string> = {
   menu: "scale(0.95)",
 };
 
-function FallbackPet({ state }: { state: PetState | null }) {
-  const color = state === null ? "transparent" : STATE_COLORS[state];
+function FallbackPet({ state }: { state: string | null }) {
+  const color = state === null ? "transparent" : (STATE_COLORS[state] ?? "#8ec5ff");
   return (
     <svg
       data-tauri-drag-region
@@ -66,67 +70,67 @@ export function PetView({
   avatar,
   reaction,
   hitTestRef,
+  frameProviderRef,
 }: {
-  state: PetState | null;
+  state: string | null;
   avatar: LoadedAvatar | null;
   reaction: InteractionKind | null;
   hitTestRef?: RefObject<PetHitTest | null>;
+  frameProviderRef?: RefObject<PetFrameProvider | null>;
 }) {
-  const animation = avatar === null ? null : selectAvatarAnimation(avatar.pack, state);
+  const selection =
+    avatar === null ? null : selectAvatarAnimation(avatar.table, avatarStateKey(state));
+  const animation: AnimationResource | null = selection?.animation ?? null;
   const frame = useAvatarFrame(animation);
-  const src =
-    animation === null || frame === undefined || avatar === null
-      ? undefined
-      : avatar.frameUrls.get(frame);
-  const imageRef = useRef<HTMLImageElement>(null);
-  const alphaRef = useRef<AvatarAlpha | null>(null);
-  const [alignment, setAlignment] = useState<{ src: string; offset: number } | null>(null);
-  const offset = alignment !== null && alignment.src === src ? alignment.offset : 0;
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWidth = animation?.canvas.width ?? 0;
+  const canvasHeight = animation?.canvas.height ?? 0;
+  const drawRect = useMemo(
+    () => containRect({ width: canvasWidth, height: canvasHeight }, RENDER_SIZE, RENDER_SIZE),
+    [canvasWidth, canvasHeight],
+  );
+
+  const provider = useCallback((): FrameViewport | null => {
+    const canvas = canvasRef.current;
+    if (canvas === null || animation === null) return null;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      mask: frame?.mask ?? null,
+      drawRect: offsetRect({ x: rect.left, y: rect.top }, drawRect),
+      sourceWidth: animation.canvas.width,
+      sourceHeight: animation.canvas.height,
+    };
+  }, [animation, drawRect, frame]);
 
   useEffect(() => {
-    alphaRef.current = null;
-    if (src === undefined) return;
-    let cancelled = false;
-    const url = src;
-    loadAvatarAlpha(url)
-      .then((alpha) => {
-        if (cancelled || alpha === null) return;
-        alphaRef.current = alpha;
-        setAlignment({ src: url, offset: centerOffset(alpha.bounds, alpha.width, RENDER_SIZE) });
-      })
-      .catch((error: unknown) => {
-        console.error("读取形象轮廓失败", error);
-      });
+    if (frameProviderRef === undefined) return;
+    frameProviderRef.current = provider;
     return () => {
-      cancelled = true;
+      frameProviderRef.current = null;
     };
-  }, [src]);
+  }, [frameProviderRef, provider]);
 
   useEffect(() => {
     if (hitTestRef === undefined) return;
-    hitTestRef.current = (clientX, clientY) => {
-      const image = imageRef.current;
-      const alpha = alphaRef.current;
-      // 还没有轮廓信息（首帧未解码或使用占位形象）时按整块命中，避免误吞点击。
-      if (image === null || alpha === null) return true;
-      const rect = image.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) return true;
-      if (
-        clientX < rect.left ||
-        clientX > rect.right ||
-        clientY < rect.top ||
-        clientY > rect.bottom
-      ) {
-        return false;
-      }
-      const x = Math.floor(((clientX - rect.left) / rect.width) * alpha.width);
-      const y = Math.floor(((clientY - rect.top) / rect.height) * alpha.height);
-      return alpha.isOpaqueAt(x, y);
-    };
+    hitTestRef.current = (clientX, clientY) =>
+      isAvatarPixel(provider(), { x: clientX, y: clientY });
     return () => {
       hitTestRef.current = null;
     };
-  }, [hitTestRef]);
+  }, [hitTestRef, provider]);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (canvas === null) return;
+    const context = canvas.getContext("2d");
+    if (context === null) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    if (frame === null || frame.image === null) return;
+    context.imageSmoothingEnabled = true;
+    context.drawImage(frame.image, drawRect.left, drawRect.top, drawRect.width, drawRect.height);
+  }, [drawRect, frame]);
+
+  const drawable = frame !== null && frame.image !== null;
 
   return (
     <div
@@ -135,32 +139,22 @@ export function PetView({
         height: RENDER_SIZE,
         flexShrink: 0,
         transform: reaction === null ? undefined : REACTIONS[reaction],
-        transformOrigin: "50% 90%",
+        transformOrigin: animation === null ? "50% 50%" : transformOrigin(drawRect),
         transition: "transform 140ms ease-out",
       }}
     >
-      <div style={{ transform: `translateX(${offset}px)` }}>
-        {src === undefined ? (
-          <FallbackPet state={state} />
-        ) : (
-          <img
-            ref={imageRef}
-            data-tauri-drag-region
-            src={src}
-            alt=""
-            aria-hidden="true"
-            draggable={false}
-            width={RENDER_SIZE}
-            height={RENDER_SIZE}
-            style={{
-              display: "block",
-              width: RENDER_SIZE,
-              height: RENDER_SIZE,
-              objectFit: "contain",
-            }}
-          />
-        )}
-      </div>
+      {drawable ? (
+        <canvas
+          ref={canvasRef}
+          data-tauri-drag-region
+          width={RENDER_SIZE}
+          height={RENDER_SIZE}
+          aria-hidden="true"
+          style={{ display: "block", width: RENDER_SIZE, height: RENDER_SIZE }}
+        />
+      ) : (
+        <FallbackPet state={state} />
+      )}
     </div>
   );
 }

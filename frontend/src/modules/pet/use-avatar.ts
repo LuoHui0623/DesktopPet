@@ -7,7 +7,11 @@ export function useAvatar(revision = 0): LoadedAvatar | null {
   useEffect(() => {
     let cancelled = false;
     let loaded: LoadedAvatar | null = null;
-    loadAvatar().then(
+    loadAvatar(undefined, {
+      onStatic: (preview) => {
+        if (!cancelled) setAvatar(preview);
+      },
+    }).then(
       (result) => {
         if (cancelled) {
           if (result !== null) releaseAvatar(result);

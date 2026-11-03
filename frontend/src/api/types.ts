@@ -242,11 +242,14 @@ export interface AvatarPack {
   active: boolean;
   frame: AvatarFrameSize;
   fallback: string;
+  static: string;
   states: Record<string, AvatarState>;
 }
 
 export interface AvatarsResponse {
-  active: string;
+  persona: string;
+  active: string | null;
+  preset_states: string[];
   packs: AvatarPack[];
 }
 

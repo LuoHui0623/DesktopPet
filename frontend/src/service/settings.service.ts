@@ -18,7 +18,7 @@ import type {
 import { getApiClient } from "./api-client";
 import { SETTINGS_CHANGED_EVENT } from "./tauri-events";
 
-export type SettingsDomain = "perception" | "proactive" | "avatar" | "interaction";
+export type SettingsDomain = "perception" | "proactive" | "avatar" | "interaction" | "persona";
 
 /** 悬浮窗标签与 src-tauri/src/window.rs 的 PET_WINDOW_LABEL 保持一致。 */
 export const PET_WINDOW_LABEL = "pet";

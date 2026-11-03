@@ -26,7 +26,7 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
       dnd_start: "22:30",
       dnd_end: "08:00",
     },
-    avatar: { active: "default", packs: [] },
+    avatar: { persona: "芙芙", active: "default", preset_states: [], packs: [] },
     interaction: {
       report_enabled_kinds: ["click"],
       hover_dwell_ms: 300,
@@ -44,6 +44,7 @@ function makePack(id: string, states: Record<string, string[]>): AvatarPack {
     active: id === "default",
     frame: { width: 240, height: 240 },
     fallback: "thinking",
+    static: "static.png",
     states: Object.fromEntries(
       Object.entries(states).map(([key, frames]) => [key, { frames, frame_ms: 160 }]),
     ),

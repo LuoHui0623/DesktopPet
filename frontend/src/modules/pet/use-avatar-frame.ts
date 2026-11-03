@@ -1,28 +1,48 @@
 import { useEffect, useState } from "react";
-import type { AvatarAnimation } from "./avatar-view";
+import {
+  frameAt,
+  timeToNextFrame,
+  type AnimationFrame,
+  type AnimationResource,
+} from "./animation-resource";
 
-interface FrameTick {
-  key: string;
-  tick: number;
+function now(): number {
+  return typeof performance === "undefined" ? Date.now() : performance.now();
 }
 
-export function useAvatarFrame(animation: AvatarAnimation | null): string | undefined {
-  const key = animation === null ? "" : `${animation.frameMs}:${animation.frames.join("\u0000")}`;
-  const count = animation?.frames.length ?? 0;
-  const frameMs = animation?.frameMs ?? 0;
-  const [progress, setProgress] = useState<FrameTick>({ key, tick: 0 });
+/** 按资源累计时间轴播放；切换状态从新动画首帧开始。 */
+export function useAvatarFrame(animation: AnimationResource | null): AnimationFrame | null {
+  const [playback, setPlayback] = useState<{
+    animation: AnimationResource;
+    frame: AnimationFrame;
+  } | null>(null);
 
   useEffect(() => {
-    if (count <= 1) return;
-    const timer = setInterval(() => {
-      setProgress((previous) =>
-        previous.key === key ? { key, tick: previous.tick + 1 } : { key, tick: 1 },
-      );
-    }, frameMs);
-    return () => clearInterval(timer);
-  }, [key, count, frameMs]);
+    if (animation === null || animation.frames.length === 0) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const startedAt = now();
+    let currentId: string | null = null;
 
-  if (animation === null || count === 0) return undefined;
-  const tick = progress.key === key ? progress.tick : 0;
-  return animation.frames[tick % count];
+    const tick = (): void => {
+      if (cancelled) return;
+      const elapsed = now() - startedAt;
+      const next = frameAt(animation, elapsed);
+      if (next !== null && next.id !== currentId) {
+        currentId = next.id;
+        setPlayback({ animation, frame: next });
+      }
+      timer = setTimeout(tick, Math.max(8, timeToNextFrame(animation, elapsed)));
+    };
+
+    tick();
+    return () => {
+      cancelled = true;
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [animation]);
+
+  if (animation === null || animation.frames.length === 0) return null;
+  if (playback !== null && playback.animation === animation) return playback.frame;
+  return frameAt(animation, 0);
 }

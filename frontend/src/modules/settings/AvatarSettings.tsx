@@ -6,7 +6,7 @@ import { SaveButton, Section, StatusLine, HINT_STYLE } from "./settings-controls
 import { packStatesText, previewFrame } from "./settings-view";
 import { useSettingsSave } from "./use-settings-save";
 
-function PackPreview({ pack }: { pack: AvatarPack }) {
+function PackPreview({ persona, pack }: { persona: string; pack: AvatarPack }) {
   const [url, setUrl] = useState<string | null>(null);
 
   useEffect(() => {
@@ -14,7 +14,7 @@ function PackPreview({ pack }: { pack: AvatarPack }) {
     if (frame === null) return;
     let objectUrl: string | null = null;
     let cancelled = false;
-    loadAvatarFrameUrl(pack.id, frame).then(
+    loadAvatarFrameUrl(persona, pack.id, frame).then(
       (next) => {
         if (cancelled) {
           URL.revokeObjectURL(next);
@@ -29,7 +29,7 @@ function PackPreview({ pack }: { pack: AvatarPack }) {
       cancelled = true;
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl);
     };
-  }, [pack]);
+  }, [persona, pack]);
 
   const { width, height } = pack.frame;
   return url === null ? (
@@ -62,20 +62,23 @@ export function AvatarSettings({
   settings: SettingsView;
   onSaved: (view: SettingsView) => void;
 }) {
-  const [selected, setSelected] = useState(() => settings.avatar.active);
+  const [selected, setSelected] = useState<string | null>(() => settings.avatar.active);
   const { busy, error, notice, save } = useSettingsSave(onSaved);
+  const persona = settings.avatar.persona;
 
   // 选中项初值来自后端下发的读模型；保存后 active 与选中一致，切换 tab 会重新挂载。
-  const dirty = selected !== settings.avatar.active;
+  const dirty = selected !== null && selected !== settings.avatar.active;
   const onSave = () => {
-    if (!dirty) return;
+    if (selected === null || !dirty) return;
     save(() => saveActiveAvatar(selected), "形象已切换，悬浮窗立即重载");
   };
 
   return (
     <div>
-      <Section title="形象包" hint="形象包由后端下发，切换后悬浮窗无需重启。">
-        {settings.avatar.packs.length === 0 && <p style={HINT_STYLE}>后端未提供任何形象包。</p>}
+      <Section title="形象包" hint={`当前人设「${persona}」的形象组，切换后悬浮窗无需重启。`}>
+        {settings.avatar.packs.length === 0 && (
+          <p style={HINT_STYLE}>当前人设没有可用形象，悬浮窗显示占位。</p>
+        )}
         <ul style={{ listStyle: "none", margin: 0, padding: 0, display: "grid", gap: 8 }}>
           {settings.avatar.packs.map((pack) => (
             <li key={pack.id}>
@@ -98,7 +101,7 @@ export function AvatarSettings({
                   disabled={busy}
                   onChange={() => setSelected(pack.id)}
                 />
-                <PackPreview pack={pack} />
+                <PackPreview persona={persona} pack={pack} />
                 <span>
                   <strong>{pack.name}</strong>
                   <small style={{ color: "#777", marginLeft: 8 }}>{pack.id}</small>
