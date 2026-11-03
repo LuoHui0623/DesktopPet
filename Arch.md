@@ -1,6 +1,6 @@
 # 桌面宠物 · 架构设计
 
-- 版本：v0.14（M4：感知采集/判定/调度、主动管线与主动气泡、形象包与状态联动动图、基础互动、右键菜单与独立状态窗口已实现；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式）
+- 版本：v0.14（M4：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口已实现；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式）
 - 对应需求与技术选型：`桌面宠物PRD.md`（v0.7）
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD，行动计划见 `Task.md`。
 
@@ -152,7 +152,7 @@ frontend/
    │  └─ env.d.ts
    │
    ├─ modules/                # 【功能模块层】按功能划分的页面与组件
-   │  ├─ pet/                 # 悬浮窗：形象包渲染（加载失败回退内联 SVG）、状态标签、拖动、点击打开对话、互动反应（缩放/位移）、感知候选气泡、主动消息气泡（排队、自动消失、忽略）、右键原生菜单；use-interaction-config.ts 读取互动配置并在 settings-changed 后重新载入；pet-alpha.ts / avatar-alpha.ts 从帧图 alpha 通道取有色边界，用 translateX 让轮廓水平居中，并按不透明像素判定点击与悬停命中（透明处不响应）
+   │  ├─ pet/                 # 悬浮窗：形象包渲染（加载失败回退内联 SVG）、状态标签、拖动、点击打开对话、互动反应（缩放/位移）、感知候选气泡、主动消息气泡（排队、自动消失、忽略）、右键原生菜单；use-interaction-config.ts 读取互动配置并在 settings-changed 后重新载入；frame-mask.ts 在加载期生成每帧 1bpp 掩码，avatar-layout.ts 计算绘制矩形，avatar-hit.ts 判定像素与气泡/标签命中，pass-through.ts 轮询光标并切换窗口忽略开关，pet-hit-state.ts 在按压后锁定交互直到释放
    │  ├─ chat/                # 对话窗口：标签页、多轮对话（一轮可含多条发言）、流式展示、`[角色][HH:MM:SS]` 头行（clock-view.ts 统一格式化）、历史搜索、记忆来源、审批确认
    │  ├─ settings/            # 设置窗口：模型（列表、可用性、切换、重载）、记忆（结构化记忆查看与编辑、每日对话查看）、人设选择、感知、主动消息、形象、互动
    │  │  ├─ SettingsWindow.tsx     # 设置窗口装配：左侧 tab + 右侧面板，持有统一读模型
@@ -162,7 +162,7 @@ frontend/
    │  │  ├─ settings-controls.tsx  # NumberRow / TextRow / ToggleRow / StatusLine / SaveButton 等共享控件
    │  │  ├─ PerceptionSettings.tsx # 感知总开关、前台进程开关、离开与久坐阈值
    │  │  ├─ ProactiveSettings.tsx  # 主动消息开关、最小间隔、每日上限、勿扰时段与当日台账
-   │  │  ├─ AvatarSettings.tsx     # 形象包列表与启用（与右键菜单同源）
+   │  │  ├─ AvatarSettings.tsx     # 当前人设形象组内的包列表与启用（与右键菜单同源）
    │  │  └─ InteractionSettings.tsx# 互动上报范围、悬停停留、上报间隔、反应时长
    │  └─ status/             # 状态窗口：只展示当前轮次（轮次总览 + 每次调用明细），断线清空、重连以服务端快照为准；开发模式展开完整请求/回复，正式模式只显示 token 与耗时
    │     ├─ StatusWindow.tsx       # 状态窗口装配：连接与模式徽标、轮次汇总、调用卡片
@@ -181,7 +181,7 @@ frontend/
    │  ├─ model.service.ts     # 模型列表、切换、重载
    │  ├─ memory.service.ts    # 记忆读取、结构化记忆保存
    │  ├─ persona.service.ts   # 人设列表与启用
-   │  ├─ avatar.service.ts    # 形象包目录读取、帧图带令牌下载为 blob URL、释放
+   │  ├─ avatar.service.ts    # 形象组目录读取、帧与主形象带令牌下载、加载期逐帧解码与状态建表、资源释放
    │  ├─ perception.service.ts# 感知采集开关、样本转发、候选气泡裁决
    │  ├─ interaction.service.ts# 互动反应、客户端节流、悬停停留判定、拖动结束判定与上报
    │  ├─ menu.service.ts       # 右键菜单：取后端菜单条目、调 Tauri 弹出原生菜单、按 id 分发动作
@@ -214,7 +214,7 @@ backend/
 │
 ├─ resources/                # 【资源】代码随附的静态资源，入 Git
 │  ├─ skills/                # 技能说明书：每个能力一个 <file>.md，开头的 > 引用块即“何时使用”
-│  └─ avatars/               # 内置形象包：default/（manifest.json + 帧图），首次启动复制到数据目录
+│  └─ avatars/               # 内置形象组：<人设 id>/default/（manifest.json + static.png + 帧图），首次启动复制到数据目录
 │
 ├─ config/                   # 【配置】.env、llm.yaml、角色卡；解析为不可变快照
 │  ├─ .env.example           # 环境变量模板，入 Git（本机 .env 不入 Git）
@@ -237,7 +237,7 @@ backend/
 │     ├─ llm.py              # 模型列表、当前对话与整理模型、手动重载
 │     ├─ memories.py         # 记忆读取、结构化记忆全文保存
 │     ├─ personas.py         # 人设列表与启用
-│     ├─ avatars.py          # 形象包列表、当前启用项与切换
+│     ├─ avatars.py          # 当前人设的形象组目录、启用项与切换
 │     ├─ perception.py       # 感知上报、状态查询、候选进程裁决、配置读写、清空缓冲
 │     ├─ scheduler.py        # 调度配置读取/保存、当日台账
 │     ├─ interaction.py      # 互动行为上报（单击/悬停/拖动/菜单）与互动配置读取
@@ -265,9 +265,9 @@ backend/
 │  │  ├─ contracts.py        # PersonaVersion 契约
 │  │  └─ repository.py       # 持久化
 │  ├─ avatar/
-│  │  ├─ avatar_service.py   # 形象包：扫描目录、首次复制内置 default、按 R-02 校验 manifest 与帧、返回当前启用项
-│  │  ├─ contracts.py        # AvatarPack / AvatarState / AvatarCatalog 契约
-│  │  └─ constants.py        # 帧画布、帧数、单帧与整包大小上限
+│  │  ├─ avatar_service.py   # 形象组：按当前人设扫描 <人设 id>/ 下的包、首次复制内置默认组、按 R-02 校验 manifest / GIF 元数据 / 静态主形象 / 帧尺寸、维护每人设的启用项
+│  │  ├─ contracts.py        # AvatarPack（含 static）/ AvatarState / AvatarCatalog（persona、可空 active、preset_states）契约
+│  │  └─ constants.py        # 帧画布、帧数、单帧与整包大小上限、可扩展状态注册表
 │  ├─ memory/
 │  │  ├─ memory_service.py   # 结构化记忆（单文件纯文本，空文件初始化，行区间正则替换）读写、行号视图与 helper
 │  │  ├─ daily_log_service.py# 每日对话：写入、读取
@@ -301,7 +301,7 @@ backend/
 │  │  ├─ contracts.py        # Menu / MenuItem / AvatarCatalogReader / SchedulerConfigReader 契约
 │  │  └─ constants.py        # 菜单项 id 与形象项前缀
 │  └─ settings/
-│     ├─ settings_service.py # app_setting 读写：llm.active.*、scheduler.*、perception.*、avatar.active、interaction.config
+│     ├─ settings_service.py # app_setting 读写：llm.active.*、scheduler.*、perception.*、avatar.active.<persona_id>、interaction.config
 │     ├─ contracts.py        # 设置记录契约
 │     └─ repository.py       # 持久化
 │
@@ -343,7 +343,7 @@ backend/
 │
 ├─ data/                     # 运行数据（PET_DATA_DIR 指定，默认 backend/data），不入 Git
 │  ├─ pet.db                 # SQLite：daily_log、llm_call、agent_run、app_setting 等
-│  ├─ avatars/               # 形象包：<pack_id>/manifest.json 与帧图，首次启动从 resources/avatars/default 复制
+│  ├─ avatars/               # 形象组：<人设 id>/<pack_id>/manifest.json、static.png 与帧图，首次启动从 resources/avatars/<默认人设>/default 复制
 │  ├─ memory/                # structured.md（结构化记忆，纯文本大纲）与 index.json（由代码生成）
 │  ├─ resources/             # 资源库：草稿本.md 与 表情包/，首次启动由 prepare_workspace 生成，已有内容不覆盖
 │  ├─ logs/                  # 后端日志
@@ -422,7 +422,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 - 当前界面使用内联样式，颜色与文案直接写在组件中。统一的颜色、文案与样式（共享层）尚未建立，后续需要时再引入。
 - 每个窗口一份 store，不跨窗口共享内存；跨窗口同步靠后端 WebSocket 事件。
 - 设置项的默认值与取值区间只写在后端（`api/schemas` 的 `ge/le` 与 `service/perception/constants.py`、`module/interaction/constants.py`）。前端 `settings-view.ts` 的 `LIMITS` 是同一区间的镜像，用于即时提示，真源仍是后端；组件的草稿初值一律来自 `GET /api/settings` 的读模型，不在组件里写死数字。
-- 设置窗口保存成功后，除 HTTP 回读外还会经 Tauri 事件 `settings-changed`（payload `{domain}`）广播给悬浮窗；悬浮窗按 domain 决定是否重新载入互动配置。这条 window→window 通道只用于「同一次保存立刻反映到另一个窗口」，跨进程的状态一致性仍以 `app_setting` 为准。
+- 设置窗口保存成功后，除 HTTP 回读外还会经 Tauri 事件 `settings-changed`（payload `{domain}`）广播给悬浮窗；悬浮窗按 domain 决定是否重新载入互动配置，`avatar` 与 `persona` 都会触发形象目录与帧重载（人设切换由 `service/persona.service.ts` 发出 `persona` 域）。这条 window→window 通道只用于「同一次保存立刻反映到另一个窗口」，跨进程的状态一致性仍以 `app_setting` 为准。
 
 ### 4.5 Tauri 壳约定
 
@@ -507,11 +507,11 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | **感知 tick 循环** | `service/perception/runtime.py` | 每 5 秒 tick，向 `on_trigger` 交付 `Trigger` |
 | **主动管线** | `module/proactive/pipeline.py` | Trigger → chat → 台账 → WS；只做编排，见 docs/PROACTIVE.md |
 | **互动上报、节流与上下文注入** | `module/interaction/`，注入点在 `module/chat/chat_service.py` | 业务规则：互动只在用户对话时进入上下文，不落库、不写记忆 |
-| **右键菜单结构、可用与勾选状态** | `module/menu/menu_service.py`（读模型）、`api/routers/menu.py` | 业务规则：菜单项、文案、禁用与勾选由后端决定；形象项来自形象包目录，暂停项取调度配置 |
+| **右键菜单结构、可用与勾选状态** | `module/menu/menu_service.py`（读模型）、`api/routers/menu.py` | 业务规则：菜单项、文案、禁用与勾选由后端决定；形象项来自当前人设的形象组，暂停项取调度配置 |
 | **原生菜单构建与点击回传** | `frontend/src-tauri/src/menu.rs`、`frontend/src/service/menu.service.ts` | 桌面壳只按下发的条目建菜单；点击回传 id，由前端分发到既有服务，不硬编码菜单结构 |
 | **角色卡解析与校验** | `config/persona.py` | 配置层，启动时执行；直接用 PyYAML 解析 |
-| **形象包扫描、校验与默认包复制** | `module/avatar/avatar_service.py` | 业务规则：manifest 形状、R-02 大小/帧数限制、帧文件是否越界、当前启用项回退 |
-| **形象帧静态服务** | `api/app.py`（`StaticFiles` 挂载 `/api/avatars`） | 只读挂载数据目录下的形象包，经过令牌鉴权，拒绝越界路径 |
+| **形象组扫描、校验与默认组复制** | `module/avatar/avatar_service.py` | 业务规则：按当前人设取组目录、manifest 形状、R-02 大小/帧数限制、GIF 元数据、静态主形象、帧文件是否越界、每人设启用项与回退 |
+| **形象资源读取** | `api/routers/avatars.py` | 只允许当前人设组内的包资源（帧与主形象），需令牌、拒绝越界与跨组路径 |
 | **聊天记录解析**（未实现，M5） | 文件读取在 `infra/files/`，格式解析与标准化在 `module/chat_import/` | 格式标准由业务定义 |
 | **事件总线** | `infra/events/bus.py` | 技术机制，业务层只发布事件 |
 | **能力校验（应用、域名白名单）**（未实现，M6） | `capabilities/validator.py` | 安全规则，单独成层便于审查 |
@@ -597,24 +597,22 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 
 未实现（M6）。模型输出计划 → 白名单与参数校验 → 分级确认 → 执行与撤销。见 §3.3 末尾的未实现模块列表。
 
-### 6.5 形象包
+### 6.5 形象域
 
-形象以“包”为单位存放在数据目录 `data/avatars/<pack_id>/`：`manifest.json` 声明 id、名称、帧画布尺寸、`fallback` 状态与各状态的帧序列（`frames` + `frame_ms`）。后端首次启动把 `resources/avatars/default` 复制为 `data/avatars/default`（已存在则不覆盖）；之后每次请求重新扫描目录，删除某个包目录后它立即从列表中消失。
+形象域由后端 `module/avatar` 与前端 `service/avatar.service.ts` / `modules/pet/` 组成：后端按当前人设取形象组，扫描组内形象包、校验 manifest 与资源、维护该人设的当前启用项；前端读取目录、下载资源，在加载期解码并生成掩码，按状态取动画后驱动播放与命中。目录与资源分别经 `GET /api/avatars` 与令牌鉴权的资源路径暴露，其它业务域不直接读包文件。
 
 ```
-前端 pet 窗口 ─► service/avatar.service.ts
-   ├─ GET /api/avatars                 取包列表与当前启用项（app_setting avatar.active，缺省 default）
-   ├─ 依次尝试当前包、default 包
-   ├─ GET /api/avatars/<pack_id>/<frame>  带 X-Pet-Token 下载帧图 → URL.createObjectURL
-   └─ PetView 按状态播放帧序列：状态 → manifest fallback → 内联 SVG（无白屏）
+module/avatar ─► GET /api/avatars（人设、目录、状态清单、当前启用项）─► service/avatar.service.ts
+      │
+      ├─► /api/avatars/<persona_id>/<pack_id>/<path>（帧与主形象，需令牌，限当前人设组）─► modules/pet
+      │
+      └─► 窗口壳：光标坐标、窗口位置与缩放、set_ignore_cursor_events
 ```
 
-- 状态键为 `idle / thinking / speaking / executing / sleeping`，未连接时使用 `disconnected`。每个状态按 manifest 的 `frames` + `frame_ms` 循环播放；状态切换立即从新状态首帧开始，同一状态的状态事件不会重置进度。全部帧在加载时预解码为 blob，切帧不出现空白。
-- 某状态不在 manifest 中时使用 `fallback` 状态；整个包不可用（目录被删除、校验不通过）时依次尝试当前包、`default` 包，最终回退到内联 SVG。
-- 当前启用包不可用（目录被删除、校验不通过）时，列表接口的 `active` 回退为 `default`；`default` 也不可用时包列表为空，前端显示内联 SVG，不出现白屏。
-- 校验（R-02）：帧画布 ≤ 512×512 且与 manifest 声明一致；每状态 1–24 帧；单帧 ≤ 300KB；整包 ≤ 15MB；帧路径必须是包内相对路径，解析后不得越出包目录。任一条件不满足的包不会出现在列表中。
-- 帧文件只接受 PNG / WebP，尺寸从文件头读取（PNG IHDR、WebP VP8X/VP8L/VP8）；扩展名与实际内容不符时判为无效。
-- 帧只能经带令牌的请求取得，因此 `<img>` 不能直接指向后端 URL；前端下载为 blob 后渲染，CSP 的 `img-src` 因此包含 `blob:`。
+- 包结构、形象组归属、状态注册表、行为解析、动画资源、命中范围与回退链属于形象域业务设计，见 [docs/AVATAR/](docs/AVATAR/README.md)；本节只保留分层、落点与跨域契约。
+- 当前启用项、组目录与内置组复制属于形象域内部规则：启用项按人设分别记忆，数据目录为 `<数据目录>/avatars/<persona_id>/`，同样以 [docs/AVATAR/](docs/AVATAR/README.md) 为准。
+- 人设切换后目录同时变化：`PUT /api/personas/active` 成功后，前端以 `settings-changed` 的 `persona` 域通知悬浮窗重新拉取目录，形象随之切换。
+- 掩码、绘制矩形与穿透判定都留在前端；窗口壳只提供光标坐标与忽略开关，不接收掩码或系统区域。
 
 ### 6.6 基础互动
 
@@ -654,8 +652,8 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
         ├─ 按 id 建索引（含子项）
         └─ invoke("show_context_menu", {items})
 后端 api/routers/menu.py ─► module/menu/menu_service.py
-   ├─ 打开对话 / 状态 / 设置 / 切换形象（子项为形象包，当前启用项勾选）/ 暂停主动消息 / 退出
-   └─ enabled 与 checked 每次按形象包目录、调度配置实时计算
+   ├─ 打开对话 / 状态 / 设置 / 切换形象（子项为当前人设组内的包，启用项勾选）/ 暂停主动消息 / 退出
+   └─ enabled 与 checked 每次按当前人设的形象组、调度配置实时计算
 Tauri src/menu.rs
    ├─ checked 为 null → MenuItem；为布尔 → CheckMenuItem；有 children → Submenu
    ├─ menu.popup(window)
@@ -669,10 +667,10 @@ Tauri src/menu.rs
 
 - 六项顺序固定：打开对话、状态、设置、切换形象、暂停主动消息、退出。勾选语义分两类：形象子项表示当前启用；暂停项表示已暂停，与调度配置 `enabled` 相反。
 - 暂停使用调度配置键 `scheduler.enabled`，与设置页「主动消息」开关共用同一份配置，两处状态自然一致；解析器闸门与调度读取同一份配置，切换后立即生效。
-- 切换形象写入 `app_setting.avatar.active`；宠物窗口按返回结果重新加载帧（`useAvatar(revision)`），无需重启，目录中不可用的包不会出现在子项中。
+- 切换形象写入 `app_setting.avatar.active.<persona_id>`；宠物窗口按返回结果重新加载帧（`useAvatar(revision)`），无需重启，当前人设组内不可用的包不会出现在子项中。
 - 退出复用既有安全退出路径（§1.3）：`exit_app` 结束应用 → `RunEvent::ExitRequested` 先向后端 stdin 写入退出指令并等待其结束，再结束进程。
 - 菜单每次右键重新获取，不缓存结构；后端不可用时不弹出，错误只记入控制台。
-- 禁用项由后端标记（如没有任何可用形象包时“切换形象”不可用），Rust 与前端都不自行判断。
+- 禁用项由后端标记（如当前人设没有任何可用形象包时“切换形象”不可用），Rust 与前端都不自行判断。
 
 ### 6.8 设置页
 
@@ -689,13 +687,13 @@ Tauri src/menu.rs
    └─ emitTo("pet", "settings-changed", {domain}) —— Tauri window→window 事件
 前端 pet 窗口
    ├─ use-interaction-config.ts：domain 为 interaction → 重新 GET /api/interaction/config
-   ├─ PetWindow：domain 为 avatar → 递增 revision，重新加载帧
+   ├─ PetWindow：domain 为 avatar 或 persona → 递增 revision，重新加载目录与帧
    └─ perception.service.ts：domain 为 perception → 按新配置调整采集与上报
 后端写路径 ─► api/routers/settings.py ─► api/schemas/settings.py（区间与 extra=forbid）
    └─ 各域服务：service/perception、service/perception/scheduler、module/avatar、module/interaction/config
 ```
 
-- 立即生效：感知阈值改完当次 tick 即采用（离开判定不再等重启）；主动消息开关是调度与解析器的共用闸门；互动配置决定上报种类与停留、间隔；形象切换与右键菜单读写同一个 `avatar.active`。
+- 立即生效：感知阈值改完当次 tick 即采用（离开判定不再等重启）；主动消息开关是调度与解析器的共用闸门；互动配置决定上报种类与停留、间隔；形象切换与右键菜单读写同一个当前人设的启用项（`avatar.active.<persona_id>`）；切换人设后设置页形象 tab 与悬浮窗一起换成新组的目录。
 - 一次只保存一组：某组校验失败（422）或形象包不存在（404）返回 `{"error": {code, message}}`，其它组不受影响；读模型仍是后端算出的结果，前端不做二次推断。
 - 「清空感知记录」调用 `POST /api/perception/clear`，只丢弃内存缓冲（采样状态、候选、去重窗口），感知本就不落库，也不改配置。
 - 旧的 `.env` 调度项（`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY`）已废弃：一次性迁移已删除，`main.py` 只在启动日志里提示一次「本次启动已忽略」，配置一律以 `app_setting` 为准（见 §8.2）。
@@ -739,9 +737,9 @@ Tauri src/menu.rs
 | PUT | `/api/memories/structured` | `save_structured_memory` | 保存结构化记忆全文 |
 | GET | `/api/personas` | `list_personas` | 人设卡片列表与当前启用项 |
 | PUT | `/api/personas/active` | `activate_persona` | 启用指定人设 |
-| GET | `/api/avatars` | `list_avatars` | 形象包列表（含 manifest 内容）与当前启用项 |
-| PUT | `/api/avatars/active` | `activate_avatar` | 切换当前启用形象包；包不存在返回 404 |
-| GET | `/api/avatars/{pack_id}/{path}` | — | 形象包静态文件（帧图），只读、需令牌、禁止越界路径 |
+| GET | `/api/avatars` | `list_avatars` | 当前人设的形象组：包列表（含 manifest 内容与 `static`）、状态清单 `preset_states`、人设 id 与可空的当前启用项 |
+| PUT | `/api/avatars/active` | `activate_avatar` | 切换当前人设组内的启用形象包；包不存在于本组返回 404 |
+| GET | `/api/avatars/{persona_id}/{pack_id}/{path}` | — | 当前人设组内的包资源（帧图与主形象），只读、需令牌、拒绝越界与跨组路径 |
 | POST | `/api/perception` | `ingest_perception` | 上报感知样本（空闲/前台/全屏/锁屏/进程/候选） |
 | GET | `/api/perception/state` | `get_perception_state` | 感知开关、状态、白名单、忽略名单与内存候选 |
 | GET / PUT | `/api/perception/config` | `get_perception_config` / `update_perception_config` | 感知总开关、前台进程开关、离开与久坐阈值 |
@@ -754,7 +752,7 @@ Tauri src/menu.rs
 | GET | `/api/settings` | `get_settings` | 设置页四组配置的统一读模型（感知 / 主动消息 / 形象 / 互动） |
 | PUT | `/api/settings/perception` | `update_settings_perception` | 写入感知配置并返回统一读模型 |
 | PUT | `/api/settings/proactive` | `update_settings_proactive` | 写入调度配置（与右键菜单“暂停主动消息”同源） |
-| PUT | `/api/settings/avatar` | `update_settings_avatar` | 切换启用形象包；包不存在返回 404 |
+| PUT | `/api/settings/avatar` | `update_settings_avatar` | 切换当前人设的启用形象包；包不存在返回 404 |
 | PUT | `/api/settings/interaction` | `update_settings_interaction` | 写入互动配置 |
 | GET | `/api/menu` | `get_menu` | 右键菜单读模型：条目、可用与勾选状态（结构由后端决定） |
 | GET | `/api/llm/providers` | `list_llm_providers` | 预设 provider 与模型，含可用状态与不可用原因（不含密钥） |
@@ -813,7 +811,7 @@ Tauri src/menu.rs
 
 `.env.example` 中还列有以下变量，但对应功能尚未实现，当前无效果：`WEATHER_*`、`QWEATHER_*`（天气，本期不纳入）；`CAPABILITY_ALLOWED_*`（能力，M6）。
 
-感知、调度、形象与互动配置都不在 `.env` 中：`perception.enabled`、`perception.foreground_enabled`、`perception.idle_away_minutes`、`perception.sit_minutes`、`perception.process_whitelist`、`perception.process_muted`，以及 `scheduler.enabled`、`scheduler.min_interval_minutes`、`scheduler.max_per_day`、`scheduler.dnd_start`、`scheduler.dnd_end`、`scheduler.sent`，`avatar.active`（缺省 `default`）与 `interaction.config`（上报种类、悬停停留、上报间隔、反应时长）都存放在数据库 `app_setting`，由 `service/perception/settings.py`、`service/perception/scheduler.py`、`module/avatar` 与 `module/interaction/config.py` 读写。统一读模型是 `GET /api/settings`，分组写入口是 `PUT /api/settings/<group>`（§6.8）；域内接口 `/api/perception/*`、`/api/scheduler/*`、`/api/interaction/config`、`/api/avatars/*` 仍然保留，与设置页读写同一份配置，不存在第二套取值。形象包目录固定为 `<数据目录>/avatars`，不提供环境变量。`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_DAY`、`PET_PROACTIVE_MAX_PER_HOUR` 三个 `.env` 调度键已废弃：不再有迁移路径，启动时只在日志里提示一次（`config/settings.py` 的 `DEPRECATED_SCHEDULER_KEYS` 与 `deprecated_scheduler_values()`），值本身不参与任何配置，可以直接从 `.env` 删除。设置页四组配置都不需要重启：写入后当次请求即从新的 `app_setting` 值生效（感知阈值影响下一次采样判定，主动消息开关影响下一个 tick 的闸门，形象切换影响下一次菜单与帧加载，互动配置影响前端下一次上报节流）。
+感知、调度、形象与互动配置都不在 `.env` 中：`perception.enabled`、`perception.foreground_enabled`、`perception.idle_away_minutes`、`perception.sit_minutes`、`perception.process_whitelist`、`perception.process_muted`，以及 `scheduler.enabled`、`scheduler.min_interval_minutes`、`scheduler.max_per_day`、`scheduler.dnd_start`、`scheduler.dnd_end`、`scheduler.sent`，`avatar.active.<persona_id>`（每个启用过的人设分别记忆，缺省为本组 `default`，否则取排序首个包）与 `interaction.config`（上报种类、悬停停留、上报间隔、反应时长）都存放在数据库 `app_setting`，由 `service/perception/settings.py`、`service/perception/scheduler.py`、`module/avatar` 与 `module/interaction/config.py` 读写。统一读模型是 `GET /api/settings`，分组写入口是 `PUT /api/settings/<group>`（§6.8）；域内接口 `/api/perception/*`、`/api/scheduler/*`、`/api/interaction/config`、`/api/avatars/*` 仍然保留，与设置页读写同一份配置，不存在第二套取值。形象组目录固定为 `<数据目录>/avatars/<persona_id>`，不提供环境变量。`PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_DAY`、`PET_PROACTIVE_MAX_PER_HOUR` 三个 `.env` 调度键已废弃：不再有迁移路径，启动时只在日志里提示一次（`config/settings.py` 的 `DEPRECATED_SCHEDULER_KEYS` 与 `deprecated_scheduler_values()`），值本身不参与任何配置，可以直接从 `.env` 删除。设置页四组配置都不需要重启：写入后当次请求即从新的 `app_setting` 值生效（感知阈值影响下一次采样判定，主动消息开关影响下一个 tick 的闸门，形象切换影响下一次菜单与帧加载，互动配置影响前端下一次上报节流）。
 
 `.env.example` 与本表保持一致，新增变量时两处同步修改。
 

@@ -12,6 +12,12 @@
 | [Task.md](../Task.md) | 当前阶段的进度评估、任务台账（T-*）、验收记录与限制清单 | 设计细节（引用域文档）、已定口径的正文（只在域文档写） | 现行（Git 忽略，仅本地） |
 | [docs/LLM.md](LLM.md) | 模型域：provider/model、能力映射、快照/热更、装配缓存、用量、不可用 | 提示词、上下文、重试、句长 | 已实现 |
 | [docs/CHAT.md](CHAT.md) | 对话域：单入口、上下文、生成契约、落账、快照、引用、派发 | 模型配置、感知阈值、开口判定 | 已实现 |
+| [docs/AVATAR/README.md](AVATAR/README.md) | 形象域导航：边界、概念、组件地图、阅读路径 | 各主题的详细契约正文 | 已实现 |
+| [docs/AVATAR/PACK.md](AVATAR/PACK.md) | 形象包：目录、manifest、静态主形象、资源约束、目录接口、包级失败 | 状态选择、逐帧解码、窗口穿透 | 已实现 |
+| [docs/AVATAR/STATE.md](AVATAR/STATE.md) | 状态层：注册表、行为解析、状态表、回退链、状态扩展 | 事件产生时机、动画播放、命中判定 | 已实现 |
+| [docs/AVATAR/ANIMATION.md](AVATAR/ANIMATION.md) | 动画资源：GIF/序列解码、时间轴、资源 id、掩码、锚点与绘制矩形 | 包校验、状态选择、窗口交互 | 已实现 |
+| [docs/AVATAR/WINDOW.md](AVATAR/WINDOW.md) | 悬浮窗：渲染、可交互范围、坐标换算、按压锁定、轮询与穿透开关 | 包与状态解析、聊天与互动业务 | 已实现 |
+| [docs/AVATAR/GROUP.md](AVATAR/GROUP.md) | 形象组：人设 id 归属、组内包选择、切换人设、缺组降级 | 人设内容、状态注册、动画解码、窗口命中 | 已实现 |
 | [docs/OBSERVER.md](OBSERVER.md) | 观测域：观测器（看）与解析器（判）的边界、契约、消费顺序、阈值归属 | Win32 采集细节、话术、模型 | 已实现 |
 | [docs/PROACTIVE.md](PROACTIVE.md) | 管线：Trigger → chat → 台账 → WS，失败与去重 | 事件阈值、话术模板 | 已实现 |
 | [docs/PERCEPTION.md](PERCEPTION.md) | 采集细节：Win32 调用、过滤规则、判断条件、主题与限额的原始设计 | 分层与契约（以 OBSERVER.md 为准） | 旧稿，待拆分 |
@@ -21,6 +27,8 @@
 
 - 想知道“产品要什么”：`桌面宠物PRD.md` → `Task.md`。
 - 想知道“系统怎么分层”：`Arch.md` → `docs/LLM.md` → `docs/CHAT.md` → `docs/OBSERVER.md` → `docs/PROACTIVE.md`。
+- 想改形象包、状态或动画：`docs/AVATAR/README.md` → 对应主题（`PACK.md` / `STATE.md` / `ANIMATION.md` / `WINDOW.md`）→ `Arch.md` §6.5（分层与落点）。
+- 想改形象与人设的归属：`docs/AVATAR/GROUP.md` → `PACK.md`（包契约）。
 - 想改某条链路：先读对应域文档的“对外契约”，再读 `Task.md` 的验收口径。
 
 ## 3. 写作规则
@@ -34,8 +42,8 @@
 
 ## 4. 当前迁移状态
 
-- **四份域文档已按实现落地**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `service/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `module/chat/transcript.py` 的当日时间线（正文从 `daily_log` 恢复，事件/感知 notes 在内存）；主动管线在 `module/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
-- **`Arch.md` 已对齐当前实现**：目录、分层、接口表、配置与数据流均按 `module/<业务域>` 与 `service/perception` 更新。剩余差异是实现位置而非契约：observer/parser 尚未拆包。主动气泡与忽略、形象包与状态联动动图、基础互动、右键菜单、独立状态窗口均已实现；形象包的格式、校验与帧服务见 `Arch.md` §6.5，互动的上报、节流与上下文注入见 §6.6，右键菜单的读模型、原生菜单与动作分发见 §6.7，状态窗口的当前轮次面板与开发/正式展示边界见 §6.9。
+- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `service/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `module/chat/transcript.py` 的当日时间线（正文从 `daily_log` 恢复，事件/感知 notes 在内存）；主动管线在 `module/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
+- **`Arch.md` 已对齐当前实现**：目录、分层、接口表、配置与数据流均按 `module/<业务域>` 与 `service/perception` 更新。剩余差异是实现位置而非契约：observer/parser 尚未拆包。主动气泡与忽略、形象组与人设挂载、形象包与状态联动动图、像素级穿透、基础互动、右键菜单、独立状态窗口均已实现；形象域的业务设计独立到 [docs/AVATAR/](AVATAR/README.md)（包、状态、动画、窗口与形象组均已实现），`Arch.md` §6.5 只保留分层与落点；互动的上报、节流与上下文注入见 §6.6，右键菜单的读模型、原生菜单与动作分发见 §6.7，状态窗口的当前轮次面板与开发/正式展示边界见 §6.9。
 - **`PERCEPTION.md` 作为采集细节附录保留**（已被 OBSERVER.md 顶部标注为旧稿）：
   - 保留：§2 状态模型、§3 采集方式、§3.1 进程名三问、§4 判断条件、§7 事件分层、§8 开关与默认值。OBSERVER.md 不再重复 Win32 细节。
   - 已由 OBSERVER.md 取代：§5 主题键（事件→主题、话术门槛）、§6 节制规则（开口闸门）。两份若冲突，以 OBSERVER.md 为准；§5 的话术示例在 chat 的提示词定稿前暂留，仅作参考，不是契约。
@@ -79,7 +87,9 @@
 | 互动的注入与上报 | 互动以 `[master] <行为>` 注入当轮上下文、不写记忆；前端反应与上报分离 | [Arch.md](../Arch.md) §6.6 |
 | 右键菜单读模型 | 菜单结构、可用与勾选状态由后端读模型决定，桌面壳只构建原生菜单 | [Arch.md](../Arch.md) §6.7 |
 | 主动消息不做反馈 | 气泡忽略只在前端本会话生效，后端没有反馈接口与反馈表 | [PROACTIVE.md](PROACTIVE.md) §9 |
-| 宠物窗口命中与居中 | 点击/悬停按形象不透明像素判定；形象有色边界水平居中、纵向完整可见 | [Arch.md](../Arch.md) §6.1 与 `frontend/src/modules/pet/pet-alpha.ts` |
+| 宠物窗口命中与穿透 | 点击、悬停与拖动只认当前帧不透明像素、状态标签与气泡；透明区域穿透到桌面；锚点取资源矩形中心，绘制矩形水平居中、贴底 | [WINDOW.md](AVATAR/WINDOW.md) §2–§5 与 `frontend/src/modules/pet/avatar-hit.ts`、`pass-through.ts` |
+| 形象资源模型 | 行为解析 → 状态 → 动画；后端维护可扩展状态注册表，资源解析把动画挂载到状态，状态动画缺失按 fallback → 静默主形象 → 占位回退 | [STATE.md](AVATAR/STATE.md) §3–§5、[ANIMATION.md](AVATAR/ANIMATION.md) §1–§6 |
+| 形象组与人设挂载 | 组目录名即人设 id，组内含多个包；按人设记忆当前包；切人设自动切换；缺组显示占位 | [GROUP.md](AVATAR/GROUP.md) §2–§7 |
 | 子代理输出格式 | 每次回复只输出一个 JSON 对象，禁止 `tool_calls`/DSML 标记；解析失败先清洗再重试 | [CHAT.md](CHAT.md) §6.3 |
 | 草稿本（小本本） | 短期便签，与长期记忆分开；只有派发子代理能读写，写入走审批；资源库在数据目录下，启动自动建文件且不覆盖 | [CHAT.md](CHAT.md) §6.3 |
 | 模型调用落库 | 每次调用（含失败）把完整请求与回复正文写入 `llm_call`，回复同时保留归一化文本（`reply_text`）与未解析原始响应（`reply_raw`），按轮次关联；汇总只累加已知 token，模型耗时取调用区间并集 | [LLM.md](LLM.md) §6 |
