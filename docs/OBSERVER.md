@@ -136,7 +136,7 @@ ObservedEvent {
 parser.take_context_events(limit) -> tuple[ObservedEvent, ...]
 ```
 
-- 只返回 `in_context=true` 的事件，最多 1–3 条。
+- 只返回 `in_context=true` 的事件，最多 5 条（`CONTEXT_EVENT_LIMIT`），按原始发生时间升序。
 - `app_in_use` 只保留最近 1 条。
 - 读取后清空 current。
 - 被动 chat 在组装上下文时调用；主动轮不调用。

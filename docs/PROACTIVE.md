@@ -3,7 +3,7 @@
 > 职责：定义解析器产出 Trigger 之后，如何调用 chat、写台账、推送 `proactive.message`，以及失败与并发处理。
 > 依赖：观测域解析器（Trigger）、ChatService（单入口）、`app_setting` 台账、WS 事件总线、`chat_active` 端口。
 > 不回答：采集、事件阈值、勿扰/限额判定（见 [OBSERVER.md](OBSERVER.md)）、话术内容（见 [CHAT.md](CHAT.md)）、气泡渲染。
-> 状态：已实现（2026-10-29；2026-10-31 升级为一条 `proactive.message` 可携带 1–4 条发言）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8。
+> 状态：已实现（2026-10-29；2026-10-31 升级为一条 `proactive.message` 可携带 1–4 条发言；2026-11-03 补齐逐工具只读判定、合并回注与可选 `notices`）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8。
 
 ## 1. 定位
 
@@ -101,12 +101,14 @@ handle(trigger)
     { message_id: <str>, text: <str>, at: <ISO 8601>, sources: [] }
   ],
   topic: <Trigger.topic>,
-  at: <ISO 8601>
+  at: <ISO 8601>,
+  notices: [<code>]                 // 可选；只有 memory_unloaded 会出现
 }
 ```
 
 - 与前端 `types.ts` 的 WS 联合类型同步；`api/schemas/events.py` 增加模型。
 - `messages` 是权威结构，前端逐条入队成气泡；`text` 只为旧调用方保留。
+- `notices` 是用户可见的系统提示 code（D-30），不占正文；主动轮的结构化记忆读取失败也会经此提示。
 - `at` 是管线推送时刻；每条发言自己的 `at` 在 `messages[i].at`，与 `daily_log` 的 `created_at` 同源。
 - 不包含 `sources`、`reason`、`source` 字段；前端只需要显示文本（`messages[i].sources` 恒为空数组）。
 - 不作为 `daily_log` 的 `source`；`daily_log` 仍是普通 `me` 行（多条发言即多行）。
@@ -154,6 +156,7 @@ handle(trigger)
 - 管线只负责推送 `proactive.message`；气泡由 pet 窗口（320×360，宠物贴底、气泡占上部）的 webview 绘制，不新开窗口。
 - 一轮主动回复的多条发言各占一个气泡，按 `messages` 顺序逐条排队显示；气泡默认 15 秒自动消失，每条独立计时，新消息到达不打断当前气泡的剩余时长。
 - 气泡只显示正文，不带角色与时间头行（D-03 的界面时间口径只覆盖对话窗口的消息与历史面板）；点击气泡打开对话后，同一条 `me` 行在历史与消息列表里显示 `[me][HH:MM:SS]`。
+- `notices` 不单独占气泡：多发言时附在第一条气泡正文下方作为小字提示，单条时附在该气泡下；前端只映射已知 code。
 - 点击气泡：前端移除该气泡并打开对话窗口，定位到历史页；消息本身是 `daily_log` 的普通 `me` 行，并已追加进当日快照，可继续对话。
 - 忽略：清空当前队列并压制本会话后续主动气泡；只在前端内存，不调接口、不写库。
 - 不做 `POST /api/proactive/feedback`（该路由不存在，请求返回 404），也不写 `proactive_feedback` 表——该表从未有写入方，已由迁移 `0009_drop_proactive_feedback.sql` 移除。
@@ -171,17 +174,17 @@ handle(trigger)
 ## 10. 主动轮只读派发
 
 - 主动轮允许派发，但请求固定带 `read_only_dispatch=True`；只要能直接从当前上下文回答，仍可直接 `chat`，不强制每轮派发。
-- 能力是否可用由服务端按技能工具清单判定：只有全部工具都在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的能力可以执行，当前为「记忆检索」。
-- 写入型能力（「记忆写入」「自记笔记」）与任何混合能力在起草前整项拒绝，检查点状态为 `rejected`、错误码为 `read_only_denied`；执行阶段还会再次过滤工具，写入工具不会到达子代理。
-- 混合计划按项处理：只读项正常执行，写入项单独拒绝；只读项不因同批次的写入项而取消。
-- 主动轮不请求审批，也不会等待 `approval_request`。拒绝原因按每个子代理一条 `assistant` 正文落账，并随检查点回灌给主 agent；不写 `approval_rejected` 事件。
+- 是否放行按草案**实际声明的工具**逐项判定：全部在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里才执行；当前可用的纯读取任务主要来自「记忆检索」。
+- 声明含写入工具时在起草后立即拒绝，检查点状态为 `rejected`、错误码为 `read_only_denied`；执行阶段还会再次过滤工具，非只读工具不会到达子代理（D-25/D-28）。
+- 混合技能中的纯读取任务可以执行；混合计划按项处理：只读项正常执行，写入项单独拒绝，只读项不因同批次的写入项而取消。
+- 主动轮不请求审批，也不会等待 `approval_request`。本轮所有子代理结果（成功输出与拒绝原因）合并成一条 `assistant` 正文落账，并作为回注交给主 agent；不写 `approval_rejected` 事件（D-24）。
 - 最终仍只生成一次 `chat` 回复；再次派发按 `invalid_output` 处理。
 
 ## 11. 待定
 
 | 项 | 建议 | 状态 |
 |---|---|---|
-| 主动轮是否允许派发 | 允许只读能力；自动放行，写入整项拒绝 | 已实现 |
+| 主动轮是否允许派发 | 允许只读操作；按声明工具逐项放行，含写入即拒绝 | 已实现 |
 | 重试次数 | 整轮 1 次 | 已实现 |
 | 台账与推送顺序 | 先台账后推送 | 已实现 |
 | 管线忙碌时排队还是丢弃 | 丢弃 | 已实现 |
@@ -198,5 +201,6 @@ handle(trigger)
 - 解析器集中判定，只输出 `Trigger{topic, reason}`；管线只做编排。
 - ChatService 提供完整 chat 能力，主动管线调用同一入口。
 - 不做主动消息反馈；忽略只在前端本会话生效，后端没有反馈接口与反馈表。
-- 主动轮允许只读派发：`read_only_dispatch=True`，只读能力自动放行，写入型与混合能力整项拒绝，不请求审批。
+- 主动轮允许只读派发：`read_only_dispatch=True`，按草案声明的工具逐项判定，全部只读才放行、含写入即拒绝，不请求审批。
+- 主动轮的结构化记忆读取失败不中断消息，经 `proactive.message.notices`（`memory_unloaded`）提示；结果与拒绝原因合并为一条 `assistant` 回注。
 - 关联：[CHAT.md](CHAT.md) §5.3 主动轮上下文、[OBSERVER.md](OBSERVER.md) §4.3 解析器输出。

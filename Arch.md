@@ -1,6 +1,6 @@
 # 桌面宠物 · 架构设计
 
-- 版本：v0.14（M4：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口已实现；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式）
+- 版本：v0.15（M4：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口已实现；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议改为 `topic/task` 且按任务内容路由技能，本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示）
 - 对应需求与技术选型：`桌面宠物PRD.md`（v0.7）
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD，行动计划见 `Task.md`。
 
@@ -248,8 +248,8 @@ backend/
 ├─ module/                   # 【业务域】完整业务能力；跨域组装在 main.py
 │  ├─ chat/
 │  │  ├─ chat_service.py     # 对话用例：派发分支、组装上下文、调模型、多发言与句长校验、引用解析、写 daily_log、推送事件
-│  │  ├─ context.py          # 上下文组装：系统提示词（结尾带当日日期标记）→ 检索片段 → 引用规则 → 当日时间线（master / me / assistant 历史行均带 [角色][HH:MM:SS]）→ current 感知 → 本次输入（同样带时间前缀；主动轮改用触发块的【当前时间】）
-│  │  ├─ transcript.py       # 当日对话时间线：正文按天、按人设从 daily_log 读取；只有事件/感知 notes 存内存，日切或切人设时清空
+│  │  ├─ context.py          # 上下文组装：系统提示词 → 日期分隔线 → 昨天的回忆 → 结构化记忆 → 检索片段与引用规则 → 当日历史 → current 分隔线 → 感知事件 → 本次输入（被动轮）；主动轮改用触发块
+│  │  ├─ transcript.py       # 当日对话时间线：每次按天、按人设从 daily_log 读取，不存内存快照；event 不恢复
 │  │  ├─ citations.py        # 引用标记 [引用 日期] 的解析与来源过滤（只保留本次注入的记忆片段）
 │  │  └─ activity.py         # 对话活跃计数：供感知解析器判断“对话进行中”
 │  ├─ llm/
@@ -279,15 +279,17 @@ backend/
 │  │  ├─ sensitive.py        # 敏感信息识别（证件号、银行卡、密码、健康细节）
 │  │  └─ services.py         # 记忆服务装配（MemoryServices）
 │  ├─ agent/
-│  │  ├─ orchestrator.py     # 派发：按能力运行子代理，记录 agent_run，生成检查点
+│  │  ├─ orchestrator.py     # 派发：按 task 推断技能、运行子代理、记录 agent_run、逐工具校验只读
 │  │  ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步
 │  │  ├─ approval.py         # 审批：草案 → 推送前端 → 等待确认/超时拒绝
-│  │  ├─ skills.py           # 能力注册表：登记能力名、说明书文件与工具清单，从 SKILL.md 解析说明
+│  │  ├─ skills.py           # 技能注册表：登记技能名、说明书文件、工具清单与路由关键词
 │  │  ├─ workspace.py        # 启动准备：保证资源库目录与草稿本存在，已有内容不覆盖
-│  │  ├─ prompt.py           # 提示词构建与注入（角色卡、行动规则、能力名、发言规则）
+│  │  ├─ chat_system_prompt.py # Chat 主题注册表：Topic(id, category, render) 与正文常量，不读文件
+│  │  ├─ chat_output.py      # 结构化输出解析与审核（chat / dispatch、行动规则正文）
+│  │  ├─ prompt.py           # 主题拼装：compose_chat_prompt、范畴分组与占位符填充
 │  │  ├─ contracts.py        # 派发契约
 │  │  ├─ repository.py       # agent_run 持久化
-│  │  ├─ prompts/            # 提示词模板（.md，string.Template 占位）：chat（含行动规则）、persona、subagent
+│  │  ├─ prompts/            # 子代理提示词模板（subagent.md、subagent_draft.md）
 │  │  └─ tools/
 │  │     ├─ files.py         # 统一文件工具：八个动作共用资源注册表与路径解析
 │  │     └─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
@@ -487,8 +489,8 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 | **LLM 配置解析与校验**（.env、llm.yaml → model_settings） | `config/settings.py` | 配置层，启动和重载时执行，产出不可变的 `ModelSettings` |
 | **LLM 客户端装配、缓存、热更新** | `module/llm/llm_service.py` | 业务用例：用 model_settings 装配 client，变化检测后原子替换 |
 | **当前模型选择** | `module/llm/llm_service.py`（设置页切换的结果保存在数据库 `app_setting`） | 业务用例，决定哪个模型用于对话与整理 |
-| **提示词构建与注入** | `module/agent/prompt.py`，模板在 `module/agent/prompts/` | 决定模型看到什么，属于业务 |
-| **上下文组装** | `module/chat/context.py`（含 `transcript.py` 的当日会话快照） | 决定哪些记忆片段与感知事件进入对话，是业务规则 |
+| **提示词构建与注入** | `module/agent/prompt.py`（拼装）、`module/agent/chat_system_prompt.py`（主题正文） | 决定模型看到什么，属于业务 |
+| **上下文组装** | `module/chat/context.py` 与 `transcript.py`（按天/人设读取 `daily_log`，不存快照） | 决定哪些记忆片段与感知事件进入对话，是业务规则 |
 | **结构化输出的数据模型** | `module/memory/` | 数据形状由业务决定，用 Pydantic 定义 |
 | **SQLite 连接与迁移** | `infra/store/db.py`、`migrate.py` | 技术细节 |
 | **仓储（CRUD）** | `module/<域>/repository.py` | 各表的读写，只返回数据，不做规则判断；连接与事务原语来自 `infra/store/db.py` |
@@ -538,40 +540,42 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
 ```
 前端 chat 模块 ─► service/chat.service.ts ─► api（POST /api/chat）
 后端 api/routers/chat.py ─► module/chat/chat_service.py
-   ├─ 结构化输出（§6.3）：type=dispatch 时运行子代理取得检查点，回灌后由模型生成一次回复，不再允许继续派发；被动轮逐项审批，主动轮只读能力自动放行、写入整项拒绝
-   ├─ module/agent/prompt          构建系统提示词：角色卡 + 行动规则 + 能力名与资源 ID + 发言规则
-   ├─ module/chat/context          组装：系统提示词 → 检索片段 → 引用规则 → 当日会话快照 → current 感知 → 本次输入
-   │     └─ module/chat/transcript 当日对话时间线（正文从 daily_log 按天/人设读取，内存只保留事件与感知 notes）
+   ├─ 结构化输出（§6.3）：type=dispatch 时按 task 内容路由技能、起草并执行子代理，本轮所有结果合并成一条 assistant 回注后由模型生成一次回复，不再允许继续派发；被动轮逐项审批，主动轮逐工具只读校验、写入工具不执行
+   ├─ module/agent/chat_system_prompt  Chat 主题注册表（身份/能力/行为三范畴）与正文常量
+   ├─ module/agent/prompt          按范畴顺序拼装系统提示词：角色卡 → 可用能力 → 可用资源 → 行动规则 → 发言规则 → 约束
+   ├─ module/chat/context          组装：系统提示词 → 日期 → 回忆（可选）→ 结构化记忆全文 → 检索片段与引用规则 → 当日历史 → current 分隔 → 感知事件 → 本次输入
+   │     └─ module/chat/transcript 当日对话时间线（正文从 daily_log 按天/人设读取，不存内存快照；event 只审计，不恢复）
    ├─ infra/llm                    调用对话模型（非流式），记录用量
    ├─ 输出校验                      type=chat 时 text 为 1–4 条发言（旧字符串归一化为一条）；逐句按显示宽度校验
    ├─ 句长校验                      单句 ≤ 80 显示宽度（东亚宽字符计 2，其余计 1，中文约 40 字），超限重新生成一次
    ├─ module/chat/citations        去除 [引用 日期] 标记；来源只保留本次注入上下文中的记忆片段
-   ├─ module/memory/repository     写入 daily_log（经 infra/store）：先 record_user，成功后 record_reply 多行 me，子代理回灌按每个检查点一行 assistant（成功存 output，失败/拒绝存 error）
-   └─ infra/events/bus             按句段推送 chat.chunk，完成后推送 chat.done（含 messages 与 sources）；每轮另推送 usage.turn.started / usage.turn.finished，每次模型调用推送 usage.call.started / usage.call.finished
+   ├─ module/memory/repository     写入 daily_log（经 infra/store）：先 record_user（失败即返回 record_failed，不调模型），成功后 record_reply 多行 me，本轮子代理结果合并为一行 assistant（成功存 output，失败/拒绝存 error）
+   └─ infra/events/bus             按句段推送 chat.chunk，完成后推送 chat.done（含 messages、sources 与 notices）；每轮另推送 usage.turn.started / usage.turn.finished，每次模型调用推送 usage.call.started / usage.call.finished
 前端 api/ws.ts ─► service/events.ts ─► stores/chat.store.ts ─► modules/chat 渲染
 ```
 
 - 流式：后端在整段回复生成后按句段推送 `chat.chunk`，不是逐 token 推送。
 - 多条发言：一轮回复由模型给出 1–4 条，`chat.done` 携带完整 `messages`，前端逐条入列并各自显示 `[角色][HH:MM:SS]` 头行；时间由后端按回复时刻采样，前端只做装配渲染，不写进正文。
-- 日期：系统提示词末尾追加一行 `=======YYYY/MM/DD=======`，让模型知道今天是哪天；快照本身只覆盖当天。
-- 检索：主 agent 可派发「记忆检索」能力读取历史记忆；日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.chat` 接受的检索片段仍由调用方提供。
+- 日期：系统提示词之后追加一行居中的 `==========YYYY/MM/DD==========`（总宽 30 列），让模型知道今天是哪天；历史本身只覆盖当天。
+- 检索：主 agent 可派发记忆检索任务；技能按 `task` 内容路由，名称只用于说明用途。日常对话的主路径不做自动检索，进入上下文的记忆只有随系统提示词注入的结构化记忆全文，`ChatService.chat` 接受的检索片段仍由调用方提供。
+- 感知：被动轮把当日可进入上下文的事件按发生时间升序取最多 5 条（`CONTEXT_EVENT_LIMIT`），以 `[event][HH:MM:SS]` 放在 current 分隔之后、本次输入之前；读取即清空，不写 `daily_log`，主动轮不读 current。
 - 互动：自上次用户对话以来记录的行为由 `module/interaction` 在本次用户输入前取出，以 `[master] <行为>` 行进入上下文（§6.6），不写记忆。
 
 ### 6.2 主动消息
 
-解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=True, read_only_dispatch=True))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动轮只读能力自动放行，写入型与混合能力在起草前整项拒绝，执行阶段再次过滤工具；不请求审批。主动回复在 `daily_log` 中是普通 `me` 行（多条发言即多行），下一轮从 `daily_log` 恢复；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 的 `messages` 按顺序排队，逐条显示气泡，到时自动消失；点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端。
+解析器按 `docs/OBSERVER.md` 产出 `Trigger{topic, reason}`，`service/perception/runtime.py` 每 5 秒 tick 一次并在工作线程调用 `module/proactive/pipeline.py` 的 `handle`。管线只做编排：检查 `chat_active` → `ChatService.chat(ChatRequest(user_text=None, trigger_reason=..., allow_dispatch=True, read_only_dispatch=True))` → 写 `scheduler.sent` → 推送 WS `proactive.message`。主动轮按技能声明的工具逐项校验只读：全部落在 `READ_ONLY_TOOLS` 的项自动放行，混合项中的只读任务照常执行、写入任务在起草前拒绝，执行阶段再次过滤工具；不请求审批，也不写 `approval_rejected` 事件。主动回复在 `daily_log` 中是普通 `me` 行（多条发言即多行），下一轮从 `daily_log` 恢复；失败静默、最多重试整轮一次。前端 pet 窗口把 `proactive.message` 的 `messages` 按顺序排队，逐条显示气泡，到时自动消失；`notices` 非空时附着在首个气泡上。点击气泡打开对话并定位到历史页，忽略后本会话不再弹。气泡与忽略只在前端内存，不落库、不通知后端。
 
 ### 6.3 结构化记忆写入与检索
 
-日常对话每天完整保留在 `daily_log`，不做日终摘要。对话上下文由 `module/chat/transcript.py` 构造：每次按当天与当前人设从 `daily_log` 读取 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；事件与感知只作为进程内 notes，不写库、不跨重启。`daily_log` 同时用于历史查询、记忆检索与展示。记录角色为 `master`（主人）、`me`（宠物）、`assistant`（子代理回灌）与 `event`（事件），每行带 `persona_id`。`event` 的内容为结构化 JSON（含 `type`），类型表与上下文规则见 `module/memory/daily_events.py`：会话边界不进入上下文，派发失败与审批拒绝进入上下文；所有 event 都保留在记忆中。
+日常对话每天完整保留在 `daily_log`，不做日终摘要。对话上下文由 `module/chat/context.py` 装配，正文由 `module/chat/transcript.py` 每次按当天与当前人设从 `daily_log` 读取 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；装配时按记录 id 移除本轮输入，紧邻的重复输入在上下文里只保留最后一次（库里都保留）。`daily_log` 同时用于历史查询、记忆检索与展示。记录角色为 `master`（主人）、`me`（宠物）、`assistant`（子代理回灌）与 `event`（事件），每行带 `persona_id`。`event` 的内容为结构化 JSON（含 `type`），类型表见 `module/memory/daily_events.py`；event 只用于审计，不进入任何一轮的模型上下文，可见诊断经合并后的 `assistant` 回注与 `notices` 呈现。
 
-写不写入结构化记忆由主 agent 决定：对话模型输出结构化结果，`type=dispatch` 时按能力派发子代理。
+写不写入结构化记忆由主 agent 决定：对话模型输出结构化结果，`type=dispatch` 时按 `task` 派发子代理。
 
 ```
-主 agent 输出 {"type": "dispatch", "plan": [{"capability", "task"}]}
-  ─► module/agent/skills 按能力名取技能（能力名注入提示词，说明不注入）
-  ─► module/agent/orchestrator 起草：并行生成各项草案，只允许只读工具
-  ─► 审批：逐项等待用户确认（capability / task / tools）
+主 agent 输出 {"type": "dispatch", "plan": [{"topic": "...", "task": "..."}]}
+  ─► module/agent/skills 按 task 内容打分路由技能（topic 只用于表达，不参与路由）
+  ─► module/agent/orchestrator 起草：并行生成各项草案，按技能声明的工具逐项判定只读
+  ─► 审批：逐项等待用户确认（topic / task / content / tools；主动轮不审批）
   ─► 执行：并行运行子代理（consolidate 模型，ReAct，最多 8 步）
        ├─ resources/skills/<file>.md：子代理先用 index 看技能清单，再 read 打开说明书
        ├─ tools/files：index / read / grep / edit / append / insert / replace / delete
@@ -582,10 +586,12 @@ config 只在 main.py 的组装阶段被读取，然后以参数注入
        │    永久记忆是只读虚拟资源，按 date 或 from/to 读取当前人设，单次结果不得超过
        │    子代理模型（consolidate）的 max_tokens
        └─ module/memory/index 重新生成记忆索引
-  ─► agent_run 记录行为路径与输出；检查点回灌给主 agent，由其生成一条回复告知用户
+  ─► agent_run 记录行为路径与输出；本轮所有结果合并为一条 assistant 回注给主 agent，由其生成一次回复告知用户
 ```
 
-拟人化的能力划分放在技能说明书里，代码只登记「能力名 + 说明书文件 + 工具清单」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。写入后，用户可在设置页查看与编辑。
+结构化记忆读取失败不中断本轮：`ChatService` 把失败记入 `ChatReply.notices`（当前只有 `memory_unloaded`），HTTP 响应与 `chat.done` / `proactive.message` 都透传该字段，前端据此显示提示；诊断只写日志，不把记忆正文带进提示。被动轮同一会话一次只处理一轮，第二个请求返回 `session_busy`；`master` 落库失败返回 `record_failed`，不调模型、不回复。
+
+拟人化的能力划分放在技能说明书里，代码只登记「技能名 + 说明书文件 + 工具清单 + 路由关键词」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。技能名只用于审计与日志，模型按任务内容描述即可。写入后，用户可在设置页查看与编辑。
 
 草稿本（`自记笔记`）是**短期便签**，与 `daily_log` 这份长期记忆分开，在资源注册表中对应 `draft`：`read` 看现状，`append` / `insert` 追加，`edit` / `replace` 按行修改，`delete` 提供 `lines` 删除内容但不能删除文件本体。资源库与草稿本在后端启动时由 `module/agent/workspace.prepare_workspace()` 创建，已存在的文件内容不覆盖；资源解析器按 `settings.data_dir` 构造，因此 `PET_DATA_DIR` 换了资源库也跟着走。
 

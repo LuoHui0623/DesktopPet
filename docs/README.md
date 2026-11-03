@@ -42,7 +42,7 @@
 
 ## 4. 当前迁移状态
 
-- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `service/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `module/chat/transcript.py` 的当日时间线（正文从 `daily_log` 恢复，事件/感知 notes 在内存）；主动管线在 `module/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
+- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `service/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `module/chat/transcript.py` 的当日时间线（正文从 `daily_log` 读取，不存内存快照；感知事件每轮单独读取，最多 5 条）；主动管线在 `module/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
 - **`Arch.md` 已对齐当前实现**：目录、分层、接口表、配置与数据流均按 `module/<业务域>` 与 `service/perception` 更新。剩余差异是实现位置而非契约：observer/parser 尚未拆包。主动气泡与忽略、形象组与人设挂载、形象包与状态联动动图、像素级穿透、基础互动、右键菜单、独立状态窗口均已实现；形象域的业务设计独立到 [docs/AVATAR/](AVATAR/README.md)（包、状态、动画、窗口与形象组均已实现），`Arch.md` §6.5 只保留分层与落点；互动的上报、节流与上下文注入见 §6.6，右键菜单的读模型、原生菜单与动作分发见 §6.7，状态窗口的当前轮次面板与开发/正式展示边界见 §6.9。
 - **`PERCEPTION.md` 作为采集细节附录保留**（已被 OBSERVER.md 顶部标注为旧稿）：
   - 保留：§2 状态模型、§3 采集方式、§3.1 进程名三问、§4 判断条件、§7 事件分层、§8 开关与默认值。OBSERVER.md 不再重复 Win32 细节。
@@ -76,7 +76,7 @@
 | 感知事件边界 | 感知事件不落库、不写 `daily_log`、不扩 `EVENT_TYPES` | [OBSERVER.md](OBSERVER.md) §10 |
 | 判定集中 | 解析器集中判定，只输出 `Trigger{topic, reason}` | [OBSERVER.md](OBSERVER.md) §4.3 |
 | chat 职责 | ChatService 提供完整 chat 能力，不做主动编排 | [CHAT.md](CHAT.md) §1 |
-| 上下文来源 | 当天 `daily_log` 的 `master` / `me` / `assistant` 行，加上进程内事件/感知 notes；current 与历史用分隔串区分 | [CHAT.md](CHAT.md) §5 |
+| 上下文来源 | 当天 `daily_log` 的 `master` / `me` / `assistant` 行，加上当日可进入上下文的感知事件（最多 5 条）；current 与历史用分隔串区分 | [CHAT.md](CHAT.md) §5 |
 | 连续发言 | 一轮回复 1–4 条，`text` 是数组；解析层兼容旧字符串，提示词只教数组 | [CHAT.md](CHAT.md) §6.1 |
 | 句长预算 | 单句按显示宽度 80 计（东亚宽字符 2、其余 1），中文约 40 字、英文约 80 字符；上限只管 `text` 里每一条发言，不管整个 output 长度 | [CHAT.md](CHAT.md) §6.2 |
 | 角色与时间戳 | 上下文用户的每一句话（历史行与本次输入）都带 `[master][HH:MM:SS]`，主动轮用 `【当前时间】`；界面按 `created_at`/`at` 装配，不写正文 | [CHAT.md](CHAT.md) §5.2 |
