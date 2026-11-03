@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useStore } from "zustand";
 import { sendMessage } from "../../service/chat.service";
+import { noticeLabels } from "../../service/notices";
 import { chatStore } from "../../service/stores/chat.store";
 import { ApprovalCard } from "./ApprovalCard";
 import { MessageBubble } from "./MessageBubble";
@@ -11,6 +12,7 @@ export function ConversationPanel() {
   const approvals = useStore(chatStore, (state) => state.approvals);
   const approvalSubmitting = useStore(chatStore, (state) => state.approvalSubmitting);
   const approvalError = useStore(chatStore, (state) => state.approvalError);
+  const notices = useStore(chatStore, (state) => state.notices);
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -20,6 +22,7 @@ export function ConversationPanel() {
   }, [messages]);
 
   const canSend = !sending && draft.trim().length > 0;
+  const noticeTexts = noticeLabels(notices);
 
   const submit = () => {
     if (!canSend) return;
@@ -55,6 +58,22 @@ export function ConversationPanel() {
           messages.map((message) => <MessageBubble key={message.localId} message={message} />)
         )}
       </div>
+      {noticeTexts.length > 0 ? (
+        <p
+          role="status"
+          aria-live="polite"
+          style={{
+            margin: 0,
+            padding: "6px 12px",
+            borderTop: "1px solid #f2e2c4",
+            background: "#fff7e6",
+            color: "#8a6d3b",
+            fontSize: 12,
+          }}
+        >
+          {noticeTexts.join("；")}
+        </p>
+      ) : null}
       {approvals.length > 0 ? (
         <div
           style={{

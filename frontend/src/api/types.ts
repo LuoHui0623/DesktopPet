@@ -18,7 +18,7 @@ export interface ReplyMessage {
 export interface ApprovalItem {
   approval_id: string;
   run_id: string;
-  capability: string;
+  topic: string;
   task: string;
   content: string;
   tools: string[];
@@ -77,6 +77,7 @@ export type ServerEvent =
       text: string;
       sources: MemorySourceRef[];
       messages?: ReplyMessage[];
+      notices?: string[];
     }
   | { type: "approval.request"; plan_id: string; items: ApprovalItem[] }
   | {
@@ -86,6 +87,7 @@ export type ServerEvent =
       topic: string;
       at: string;
       messages?: ReplyMessage[];
+      notices?: string[];
     }
   | { type: "usage.call.started"; call: UsageCall }
   | { type: "usage.call.finished"; call: UsageCall }
@@ -113,6 +115,8 @@ export interface ChatReplyResponse {
   recorded: boolean;
   sources: MemorySourceRef[];
   messages?: ReplyMessage[];
+  /** 用户可见的系统提示 code，如 memory_unloaded；展示文案由前端映射（D-30）。 */
+  notices?: string[];
 }
 
 export interface ChatHistoryItem {

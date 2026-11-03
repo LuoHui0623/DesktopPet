@@ -203,4 +203,28 @@ describe("pet store: several utterances in one proactive turn", () => {
     expect(store.getState().proactiveMessages).toEqual([]);
     expect(timers.pending).toEqual([]);
   });
+
+  it("attaches the notices to the first bubble only", () => {
+    const { store } = setup();
+    store.getState().applyEvent({
+      ...proactiveTurn("p1", "2026-10-29T10:00:07+08:00", ["第一句", "第二句"]),
+      notices: ["memory_unloaded"],
+    });
+    expect(store.getState().proactiveMessages[0]?.notices).toEqual(["memory_unloaded"]);
+    expect(store.getState().proactiveMessages[1]?.notices).toBeUndefined();
+  });
+
+  it("keeps a single-bubble event with its notices", () => {
+    const { store } = setup();
+    store.getState().applyEvent({ ...proactive("p1"), notices: ["memory_unloaded"] });
+    expect(store.getState().proactiveMessages).toEqual([
+      {
+        id: "p1",
+        text: "起来动动吧。",
+        topic: "app_in_use.code",
+        at: "2026-10-29T10:00:00+08:00",
+        notices: ["memory_unloaded"],
+      },
+    ]);
+  });
 });

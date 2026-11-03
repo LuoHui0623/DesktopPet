@@ -23,7 +23,7 @@ export function ApprovalCard({ approval, busy }: ApprovalCardProps) {
         gap: 4,
       }}
     >
-      <header style={{ fontSize: 13, fontWeight: 600 }}>待审批：{approval.capability}</header>
+      <header style={{ fontSize: 13, fontWeight: 600 }}>待审批：{approval.topic}</header>
       <p style={{ fontSize: 13, margin: 0 }}>任务：{approval.task}</p>
       <pre
         style={{

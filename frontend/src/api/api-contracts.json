@@ -691,10 +691,6 @@
             "title": "Approval Id",
             "type": "string"
           },
-          "capability": {
-            "title": "Capability",
-            "type": "string"
-          },
           "content": {
             "title": "Content",
             "type": "string"
@@ -713,12 +709,16 @@
             },
             "title": "Tools",
             "type": "array"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
           }
         },
         "required": [
           "approval_id",
           "run_id",
-          "capability",
+          "topic",
           "task",
           "content"
         ],
@@ -913,6 +913,13 @@
             "title": "Messages",
             "type": "array"
           },
+          "notices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notices",
+            "type": "array"
+          },
           "sources": {
             "items": {
               "$ref": "#/components/schemas/SourceOut"
@@ -970,6 +977,13 @@
               "$ref": "#/components/schemas/ReplyMessageOut"
             },
             "title": "Messages",
+            "type": "array"
+          },
+          "notices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notices",
             "type": "array"
           },
           "recorded": {
@@ -1724,6 +1738,13 @@
               "$ref": "#/components/schemas/ReplyMessageOut"
             },
             "title": "Messages",
+            "type": "array"
+          },
+          "notices": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Notices",
             "type": "array"
           },
           "text": {

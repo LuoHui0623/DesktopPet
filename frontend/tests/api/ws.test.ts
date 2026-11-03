@@ -227,7 +227,7 @@ describe("event stream connection", () => {
         {
           approval_id: "ap_1",
           run_id: "r_1",
-          capability: "记忆写入",
+          topic: "记忆写入",
           task: "记住用户喜欢美式咖啡",
           content: "写入一条偏好记忆",
           tools: ["memory_create"],

@@ -32,6 +32,8 @@ export interface ChatStoreState {
   approvals: PendingApproval[];
   approvalSubmitting: string | null;
   approvalError: string | null;
+  /** 最近一轮的用户可见系统提示 code，如 memory_unloaded。 */
+  notices: string[];
   beginSend: (text: string) => string | null;
   completeSend: (localId: string, reply: ChatReplyResponse) => void;
   failSend: (localId: string, message: string) => void;
@@ -125,6 +127,7 @@ export function createChatStore() {
       approvals: [],
       approvalSubmitting: null,
       approvalError: null,
+      notices: [],
       beginSend: (text) => {
         const trimmed = text.trim();
         if (!trimmed || get().sending) return null;
@@ -150,13 +153,16 @@ export function createChatStore() {
           messages: [...state.messages, userMessage, replyMessage],
           sending: true,
           pendingLocalId: replyMessage.localId,
+          notices: [],
         }));
         return replyMessage.localId;
       },
       completeSend: (localId, reply) => {
         settleTurn(localId, reply);
         set((state) =>
-          state.pendingLocalId === localId ? { sending: false, pendingLocalId: null } : {},
+          state.pendingLocalId === localId
+            ? { sending: false, pendingLocalId: null, notices: reply.notices ?? [] }
+            : {},
         );
       },
       failSend: (localId, message) => {
@@ -215,6 +221,7 @@ export function createChatStore() {
           const localId = resolveTarget(event.message_id);
           if (!localId) return;
           settleTurn(localId, event);
+          set({ notices: event.notices ?? [] });
         }
       },
     };

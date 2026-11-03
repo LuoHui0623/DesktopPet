@@ -6,6 +6,8 @@ export interface ProactiveMessage {
   text: string;
   topic: string;
   at: string;
+  /** 本轮的用户可见系统提示 code，挂在同一触发的第一条气泡上（D-30）。 */
+  notices?: string[];
 }
 
 export interface PetStoreState {
@@ -67,15 +69,25 @@ export function createPetStore(options: PetStoreOptions = {}) {
         if (event.type !== "proactive.message") return;
         if (get().proactiveMuted) return;
         const showing = get().proactiveMessages.length > 0;
-        // 一次触发可带多条发言，按服务端顺序逐条排队，各自计时显示。
+        const notices = event.notices ?? [];
+        // 一次触发可带多条发言，按服务端顺序逐条排队，各自计时显示；提示只挂第一条。
         const incoming: ProactiveMessage[] = event.messages?.length
-          ? event.messages.map((message) => ({
+          ? event.messages.map((message, index) => ({
               id: message.message_id,
               text: message.text,
               topic: event.topic,
               at: message.at,
+              ...(index === 0 && notices.length > 0 ? { notices } : {}),
             }))
-          : [{ id: event.id, text: event.text, topic: event.topic, at: event.at }];
+          : [
+              {
+                id: event.id,
+                text: event.text,
+                topic: event.topic,
+                at: event.at,
+                ...(notices.length > 0 ? { notices } : {}),
+              },
+            ];
         set((state) => ({
           proactiveMessages: [...state.proactiveMessages, ...incoming],
         }));

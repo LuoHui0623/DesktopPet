@@ -1,3 +1,4 @@
+import { noticeLabels } from "../../service/notices";
 import type { ProactiveMessage } from "../../service/stores/pet.store";
 
 interface ProactiveBubbleProps {
@@ -36,9 +37,14 @@ export function ProactiveBubble({ message, onOpen, onIgnore }: ProactiveBubblePr
         cursor: "pointer",
       }}
     >
-      <p style={{ margin: 0, flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-        {message.text}
-      </p>
+      <div style={{ flex: 1, display: "grid", gap: 2 }}>
+        <p style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{message.text}</p>
+        {noticeLabels(message.notices).map((text) => (
+          <span key={text} style={{ color: "#8a6d3b", fontSize: 11 }}>
+            {text}
+          </span>
+        ))}
+      </div>
       <button
         type="button"
         aria-label="忽略本会话的主动消息"

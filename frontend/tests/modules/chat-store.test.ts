@@ -114,7 +114,7 @@ describe("chat store: approvals", () => {
   const item = {
     approval_id: "ap_1",
     run_id: "r_1",
-    capability: "记忆写入",
+    topic: "记忆写入",
     task: "记住用户喜欢美式咖啡",
     content: "将写入一条偏好记忆：喜欢美式咖啡，不加糖",
     tools: ["memory_create"],
@@ -164,7 +164,7 @@ describe("chat store: approvals", () => {
     store.getState().applyEvent({
       type: "approval.request",
       plan_id: "plan_2",
-      items: [{ ...item, approval_id: "ap_9", capability: "记忆写入" }],
+      items: [{ ...item, approval_id: "ap_9", topic: "记忆写入" }],
     });
     expect(store.getState().approvals.map((entry) => entry.approval_id)).toEqual(["ap_9"]);
     expect(store.getState().approvals[0]?.planId).toBe("plan_2");
@@ -361,5 +361,45 @@ describe("chat store: several utterances in one turn", () => {
     const at = store.getState().messages[0]?.at;
     expect(typeof at).toBe("string");
     expect(Number.isNaN(Date.parse(at as string))).toBe(false);
+  });
+});
+
+describe("chat store: notices", () => {
+  it("starts empty and stores the notices from the HTTP reply", () => {
+    const { store, localId } = setup();
+    expect(store.getState().notices).toEqual([]);
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "你好",
+      recorded: true,
+      sources: [],
+      notices: ["memory_unloaded"],
+    });
+    expect(store.getState().notices).toEqual(["memory_unloaded"]);
+  });
+
+  it("stores notices carried by the done event", () => {
+    const { store } = setup();
+    store.getState().applyEvent({
+      type: "chat.done",
+      message_id: "m1",
+      text: "你好",
+      sources: [],
+      notices: ["memory_unloaded"],
+    });
+    expect(store.getState().notices).toEqual(["memory_unloaded"]);
+  });
+
+  it("clears the previous notices when the next turn starts", () => {
+    const { store, localId } = setup();
+    store.getState().completeSend(localId, {
+      message_id: "m1",
+      text: "你好",
+      recorded: true,
+      sources: [],
+      notices: ["memory_unloaded"],
+    });
+    expect(store.getState().beginSend("再来一次")).not.toBeNull();
+    expect(store.getState().notices).toEqual([]);
   });
 });
