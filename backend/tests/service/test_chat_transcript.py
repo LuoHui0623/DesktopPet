@@ -22,13 +22,17 @@ def line(
     text: str,
     *,
     is_reply: bool = False,
+    record_id: int | None = None,
 ) -> ChatLine:
     message = HumanMessage(content=text) if role == "master" else AIMessage(content=text)
-    return ChatLine(at=moment, message=message, is_reply=is_reply, role=role)
-
-
-def note(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=AIMessage(content=text))
+    return ChatLine(
+        at=moment,
+        message=message,
+        is_reply=is_reply,
+        role=role,
+        record_id=record_id,
+        record_day=moment.date(),
+    )
 
 
 class Loader:
@@ -46,9 +50,15 @@ def test_restored_lines_are_returned_in_source_order():
     loader = Loader(
         {
             (moment.date(), "小桌"): [
-                line(moment, "master", "你好"),
-                line(moment + timedelta(seconds=1), "assistant", "查到咖啡"),
-                line(moment + timedelta(seconds=2), "me", "记住啦", is_reply=True),
+                line(moment, "master", "你好", record_id=1),
+                line(moment + timedelta(seconds=1), "assistant", "查到咖啡", record_id=2),
+                line(
+                    moment + timedelta(seconds=2),
+                    "me",
+                    "记住啦",
+                    is_reply=True,
+                    record_id=3,
+                ),
             ]
         }
     )
@@ -60,7 +70,45 @@ def test_restored_lines_are_returned_in_source_order():
     assert [item.role for item in lines] == ["master", "assistant", "me"]
     assert [item.message.content for item in lines] == ["你好", "查到咖啡", "记住啦"]
     assert [item.is_reply for item in lines] == [False, False, True]
+    assert [item.record_id for item in lines] == [1, 2, 3]
     assert loader.calls == [(moment.date(), "小桌")]
+
+
+def test_same_moment_is_ordered_by_daily_log_identity():
+    """同一时刻的多行以 daily_log 自增 id 作次级键（D-18）。"""
+    moment = datetime(2026, 10, 18, 9, 0, tzinfo=TZ)
+    loader = Loader(
+        {
+            (moment.date(), "芙芙"): [
+                line(moment, "me", "后写先给", is_reply=True, record_id=9),
+                line(moment, "master", "先写后给", record_id=4),
+            ]
+        }
+    )
+    snapshot = ChatTranscript(TZ, clock=Clock(moment), loader=loader)
+
+    assert [item.record_id for item in snapshot.lines()] == [4, 9]
+
+
+def test_reading_uses_the_given_day_instead_of_the_clock():
+    """整轮固定 received_at 日期：调用方给哪天就读哪天（D-07）。"""
+    moment = datetime(2026, 10, 18, 23, 59, tzinfo=TZ)
+    loader = Loader(
+        {
+            (date(2026, 10, 18), "芙芙"): [line(moment, "master", "昨晚的话", record_id=1)],
+            (date(2026, 10, 19), "芙芙"): [
+                line(moment + timedelta(minutes=2), "master", "今天的话", record_id=2)
+            ],
+        }
+    )
+    snapshot = ChatTranscript(
+        TZ,
+        clock=Clock(datetime(2026, 10, 19, 8, 0, tzinfo=TZ)),
+        loader=loader,
+    )
+
+    assert [item.message.content for item in snapshot.lines(date(2026, 10, 18))] == ["昨晚的话"]
+    assert loader.calls[-1] == (date(2026, 10, 18), "芙芙")
 
 
 def test_several_utterances_are_restored_as_separate_lines():
@@ -68,9 +116,9 @@ def test_several_utterances_are_restored_as_separate_lines():
     loader = Loader(
         {
             (moment.date(), "芙芙"): [
-                line(moment, "master", "你好"),
-                line(moment + timedelta(seconds=1), "me", "第一句。", is_reply=True),
-                line(moment + timedelta(seconds=2), "me", "第二句！", is_reply=True),
+                line(moment, "master", "你好", record_id=1),
+                line(moment + timedelta(seconds=1), "me", "第一句。", is_reply=True, record_id=2),
+                line(moment + timedelta(seconds=2), "me", "第二句！", is_reply=True, record_id=3),
             ]
         }
     )
@@ -83,65 +131,16 @@ def test_several_utterances_are_restored_as_separate_lines():
     assert all(not item.message.content.startswith("{") for item in lines)
 
 
-def test_session_notes_are_merged_by_time_and_never_persisted():
+def test_persona_switch_reloads_from_the_new_persona():
     moment = datetime(2026, 10, 18, 9, 0, tzinfo=TZ)
     loader = Loader(
         {
-            (moment.date(), "芙芙"): [
-                line(moment, "master", "你好"),
-                line(moment + timedelta(seconds=5), "me", "早呀", is_reply=True),
-            ]
+            (moment.date(), "芙芙"): [line(moment, "master", "芙芙在", record_id=1)],
+            (moment.date(), "小桌"): [line(moment, "master", "小桌在", record_id=2)],
         }
     )
     snapshot = ChatTranscript(TZ, clock=Clock(moment + timedelta(hours=1)), loader=loader)
-    snapshot.add_note(note(moment + timedelta(seconds=3), "[感知 09:00] 打开 code"))
-
-    lines = snapshot.lines()
-
-    assert [item.message.content for item in lines] == [
-        "你好",
-        "[感知 09:00] 打开 code",
-        "早呀",
-    ]
-    assert lines[1].role is None
-
-
-def test_day_change_clears_notes_and_reloads_the_new_day():
-    clock = Clock(datetime(2026, 10, 18, 23, 0, tzinfo=TZ))
-    loader = Loader(
-        {
-            (date(2026, 10, 18), "芙芙"): [
-                line(datetime(2026, 10, 18, 23, 0, tzinfo=TZ), "master", "昨天的话")
-            ],
-            (date(2026, 10, 19), "芙芙"): [
-                line(datetime(2026, 10, 19, 8, 0, tzinfo=TZ), "master", "今天的话")
-            ],
-        }
-    )
-    snapshot = ChatTranscript(TZ, clock=clock, loader=loader)
-    snapshot.add_note(note(datetime(2026, 10, 18, 23, 0, tzinfo=TZ), "[感知] 昨晚"))
-    assert [item.message.content for item in snapshot.lines()] == ["昨天的话", "[感知] 昨晚"]
-
-    clock.moment = datetime(2026, 10, 19, 8, 0, tzinfo=TZ)
-
-    assert [item.message.content for item in snapshot.lines()] == ["今天的话"]
-    assert loader.calls[-1] == (date(2026, 10, 19), "芙芙")
-
-
-def test_persona_switch_reloads_and_discards_notes_of_the_previous_persona():
-    moment = datetime(2026, 10, 18, 9, 0, tzinfo=TZ)
-    loader = Loader(
-        {
-            (moment.date(), "芙芙"): [line(moment, "master", "芙芙在")],
-            (moment.date(), "小桌"): [line(moment, "master", "小桌在")],
-        }
-    )
-    snapshot = ChatTranscript(TZ, clock=Clock(moment + timedelta(hours=1)), loader=loader)
-    snapshot.add_note(note(moment, "[感知] 旧人设的会话"))
-    assert [item.message.content for item in snapshot.lines()] == [
-        "芙芙在",
-        "[感知] 旧人设的会话",
-    ]
+    assert [item.message.content for item in snapshot.lines()] == ["芙芙在"]
 
     snapshot.set_persona("小桌")
 
@@ -149,8 +148,7 @@ def test_persona_switch_reloads_and_discards_notes_of_the_previous_persona():
     assert loader.calls[-1] == (moment.date(), "小桌")
 
 
-def test_without_a_loader_only_session_notes_are_returned():
+def test_without_a_loader_only_the_requested_day_is_empty():
     moment = datetime(2026, 10, 18, 9, 0, tzinfo=TZ)
     snapshot = ChatTranscript(TZ, clock=Clock(moment))
-    snapshot.add_note(note(moment, "[事件] 派发失败"))
-    assert [item.message.content for item in snapshot.lines()] == ["[事件] 派发失败"]
+    assert snapshot.lines() == ()

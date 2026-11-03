@@ -1,33 +1,65 @@
-"""Chat 系统提示词的主题正文与拼接顺序。
+"""Chat 系统提示词的主题契约与注册表。
 
-本模块只声明两样数据：
+每个主题声明 id、category 与 render(ctx)；render 只返回正文，不负责
+`【主题】` 包装，也不负责范畴分隔线——这两件事统一由装配器完成。
 
-1. 每个主题的正文，原样写在三引号字符串里，不做任何行拼接；
-2. `TOPIC_ORDER`——唯一决定主题顺序的有序列表。
-
-把主题包成 `【<主题>】\n<正文>` 再按 `TOPIC_ORDER` 串联成一份提示词，属于拼装动作，
-由 chat service 在每轮构建系统提示词时完成（渲染入口放在 `module.agent.prompt`），本模块不参与。
+`TOPIC_REGISTRY` 记录注册顺序；输出时先按范畴顺序分组，再按注册顺序排列
+组内主题。范畴顺序固定为 身份 → 能力 → 行为。
 """
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from string import Template
+from typing import Literal
+
+from module.agent.chat_output import ACTION_RULES_BODY, render_action_rules
 
 # 上下文与系统提示词里的分隔线统一居中到该宽度（含标签）。
 SEPARATOR_WIDTH = 30
 
-TOPIC_PERSONA = "人设"
-TOPIC_ACTION_RULES = "行动规则"
-TOPIC_CAPABILITIES = "可用能力"
-TOPIC_RESOURCES = "可用资源"
-TOPIC_SPEECH_RULES = "发言规则"
-TOPIC_CONSTRAINTS = "约束"
+CATEGORY_IDENTITY = "身份"
+CATEGORY_CAPABILITY = "能力"
+CATEGORY_BEHAVIOR = "行为"
 
-# 系统提示词的主题顺序只由这个列表决定，调用方无法绕过它另行排序。
-TOPIC_ORDER: tuple[str, ...] = (
-    TOPIC_PERSONA,
-    TOPIC_ACTION_RULES,
-    TOPIC_CAPABILITIES,
-    TOPIC_RESOURCES,
-    TOPIC_SPEECH_RULES,
-    TOPIC_CONSTRAINTS,
+Category = Literal["身份", "能力", "行为"]
+CATEGORY_ORDER: tuple[Category, ...] = (
+    CATEGORY_IDENTITY,
+    CATEGORY_CAPABILITY,
+    CATEGORY_BEHAVIOR,
 )
+
+
+@dataclass(frozen=True)
+class TopicContext:
+    """渲染主题正文所需的全部占位值。"""
+
+    persona_section: str = ""
+    capabilities: str = ""
+    resources: str = ""
+    sentence_max_chars: str = ""
+    sentence_max_width: str = ""
+    persona_hint_chars: str = ""
+
+    def as_mapping(self) -> dict[str, str]:
+        return {
+            "persona_section": self.persona_section,
+            "capabilities": self.capabilities,
+            "resources": self.resources,
+            "sentence_max_chars": self.sentence_max_chars,
+            "sentence_max_width": self.sentence_max_width,
+            "persona_hint_chars": self.persona_hint_chars,
+        }
+
+
+Render = Callable[[TopicContext], str]
+
+
+@dataclass(frozen=True)
+class Topic:
+    id: str
+    category: Category
+    render: Render
+
 
 # 全部正文合起来必须正好用到这些 $占位符。
 CHAT_PLACEHOLDERS: frozenset[str] = frozenset(
@@ -43,23 +75,7 @@ CHAT_PLACEHOLDERS: frozenset[str] = frozenset(
 
 PERSONA_BODY = """$persona_section"""
 
-ACTION_RULES_BODY = """每次说话要用 `{}` JSON 格式!!!
-每次对话前，你可以先派发一次任务，最多一次哦
-
-一、对话
-这是对话格式：`{"type": "chat", "text": ["要说给主人的话"]}`
-- "type" 为 "chat" 时表示你要说话
-- "text" 要求是 `Sequence[str]`，每个 str 是你想说的一句话，最多说四句话哦！
-
-二、派发任务
-这是派发任务格式：`{"type": "dispatch", "plan": [{"capability": "能力名", "task": "任务描述"}]}`
-- "type" 为 "dispatch" 时表示你想派发任务
-- "plan" 要求是 `list[dict[capability, task]]`，包含 1–3 项，每项恰好有 capability 和 task 两个字段，都不能为空。
-- task 是给执行者的独立任务描述，写清要做什么、范围与限制，不要写成对话。
-- 只有当主人明确需要执行能力时才派发；一次派发不要超过 3 项，也不要拆成多次回复派发。
-- 派发后由系统执行并回报结果，当前回复不要再补充执行细节。"""
-
-CAPABILITIES_BODY = """只提供能力名，具体做法由执行者自行查阅说明书。
+CAPABILITIES_BODY = """下面是你可以交办的事项；派发时按任务内容描述，不必指定名称。
 $capabilities"""
 
 RESOURCES_BODY = """$resources"""
@@ -72,10 +88,43 @@ SPEECH_RULES_BODY = """- 下面的长度上限只管 text 数组里解析出的�
 CONSTRAINTS_BODY = """每次说话要用 `{}` JSON 格式，"type" 必须是第一个字段。"""
 
 TOPIC_BODIES: dict[str, str] = {
-    TOPIC_PERSONA: PERSONA_BODY,
-    TOPIC_ACTION_RULES: ACTION_RULES_BODY,
-    TOPIC_CAPABILITIES: CAPABILITIES_BODY,
-    TOPIC_RESOURCES: RESOURCES_BODY,
-    TOPIC_SPEECH_RULES: SPEECH_RULES_BODY,
-    TOPIC_CONSTRAINTS: CONSTRAINTS_BODY,
+    "人设": PERSONA_BODY,
+    "可用能力": CAPABILITIES_BODY,
+    "可用资源": RESOURCES_BODY,
+    "行动规则": ACTION_RULES_BODY,
+    "发言规则": SPEECH_RULES_BODY,
+    "约束": CONSTRAINTS_BODY,
 }
+
+
+def _template_render(body: str) -> Render:
+    """把主题正文的占位符替换成上下文值；替换只做一遍，不递归解释值里的 `$`。"""
+    template = Template(body)
+
+    def render(context: TopicContext) -> str:
+        try:
+            return template.substitute(context.as_mapping())
+        except KeyError as exc:
+            raise KeyError(f"主题正文缺少占位符 {exc}") from exc
+        except ValueError as exc:
+            raise ValueError(f"主题正文占位符不合法：{exc}") from exc
+
+    return render
+
+
+TOPIC_PERSONA = Topic("人设", CATEGORY_IDENTITY, _template_render(PERSONA_BODY))
+TOPIC_CAPABILITIES = Topic("可用能力", CATEGORY_CAPABILITY, _template_render(CAPABILITIES_BODY))
+TOPIC_RESOURCES = Topic("可用资源", CATEGORY_CAPABILITY, _template_render(RESOURCES_BODY))
+TOPIC_ACTION_RULES = Topic("行动规则", CATEGORY_BEHAVIOR, render_action_rules)
+TOPIC_SPEECH_RULES = Topic("发言规则", CATEGORY_BEHAVIOR, _template_render(SPEECH_RULES_BODY))
+TOPIC_CONSTRAINTS = Topic("约束", CATEGORY_BEHAVIOR, _template_render(CONSTRAINTS_BODY))
+
+# 注册顺序只在这里声明；输出时范畴顺序优先，范畴内沿用这里的顺序。
+TOPIC_REGISTRY: tuple[Topic, ...] = (
+    TOPIC_PERSONA,
+    TOPIC_CAPABILITIES,
+    TOPIC_RESOURCES,
+    TOPIC_ACTION_RULES,
+    TOPIC_SPEECH_RULES,
+    TOPIC_CONSTRAINTS,
+)

@@ -12,7 +12,7 @@ URL = "/api/agent/approvals"
 def make_draft(run_id: str = "run-1") -> ApprovalDraft:
     return ApprovalDraft(
         run_id=run_id,
-        capability="记忆写入",
+        topic="记忆写入",
         task="记一下我喜欢猫",
         content="写入一条偏好记忆。",
         tools=("append",),

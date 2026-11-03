@@ -3,8 +3,9 @@
 用法（在 backend 目录下）：uv run python -m scripts.e2e.run_e2e
 
 不需要真实的模型密钥；数据写入临时目录，不影响 backend/data。
-覆盖：启动、模型列表与切换、流式对话、派发执行与检查点回灌、非法输出重试、
-记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、正常关闭（stdin 指令）、
+覆盖：启动、模型列表与切换、流式对话、派发执行与合并回注、非法输出重试、
+记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、记忆读取失败降级、
+正常关闭（stdin 指令）、
 设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）、
 草稿本（启动生成 + 自记笔记派发后写入）。
 """
@@ -31,8 +32,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_llm import (  # noqa: E402
     MULTI_REPLIES,
     MULTI_TRIGGER,
+    NOTE_TOPIC,
     PROACTIVE_REPLY,
     PROACTIVE_TEXTS,
+    RETRIEVE_TOPIC,
+    WRITE_TOPIC,
     FakeLlm,
 )
 
@@ -330,14 +334,28 @@ def check_dispatch(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     mark = len(tap.events)
     before = len(llm.requests)
     reply = api.call("POST", "/api/chat", {"text": "派发测试"})
-    check(reply["text"] == "嗯，我在听。", f"派发后的回复异常：{reply}")
+    check(
+        reply["text"] == "没有找到能执行这项任务的方法",
+        f"派发后的回复应转述失败原因：{reply}",
+    )
     attempts = [request for request in llm.requests[before:] if _is_main_chat(request)]
     check(len(attempts) == 2, f"派发应只多问一次（共 2 次调用），实际 {len(attempts)} 次")
-    block = "\n".join(str(item.get("content", "")) for item in attempts[-1]["messages"])
-    check("[finished_plan]" in block, "回灌给模型的消息里应含检查点标记")
-    check('"capability": "天气查询"' in block, "检查点应带上派发的目标能力")
-    check('"status": "failed"' in block, "未知能力应记为失败检查点")
-    check("未知能力：天气查询" in block, "检查点应带上失败原因")
+    block = "\n".join(
+        str(item.get("content", ""))
+        for item in attempts[-1]["messages"]
+        if item.get("role") != "system"
+    )
+    check("[finished_plan]" not in block, "二次生成不应携带检查点标记")
+    check('"plan_id"' not in block, "二次生成不应携带计划标识")
+    check('"type": "dispatch"' not in block, "二次生成不应复读派发 JSON")
+    check("没有找到能执行这项任务的方法" in block, "合并回注应带上失败原因")
+    messages = attempts[-1]["messages"]
+    check(messages[-1].get("role") == "user", "二次生成应以收尾提示结束")
+    check(messages[-2].get("role") == "assistant", "回注应为一条 assistant 消息")
+    check(
+        "没有找到能执行这项任务的方法" in str(messages[-2].get("content", "")),
+        "回注正文应与落库的失败原因一致",
+    )
     fresh = tap.wait_until_idle_after(mark)
     states = [event["state"] for event in fresh if event["type"] == "status"]
     check(
@@ -348,7 +366,7 @@ def check_dispatch(api: Api, tap: EventTap, llm: FakeLlm) -> None:
         "".join(event["text"] for event in fresh if event["type"] == "chat.chunk") == reply["text"],
         "派发后的流式片段与回复不一致",
     )
-    step("派发：子 agent 执行未知能力记失败检查点，检查点回灌后只回一条 chat，状态顺序正确")
+    step("派发：子 agent 执行未知任务记失败，合并回注后只回一条 chat，状态顺序正确")
 
 
 def check_invalid_output_regenerates(api: Api, tap: EventTap, llm: FakeLlm) -> None:
@@ -384,7 +402,7 @@ def check_dispatched_write(api: Api, tap: EventTap) -> str:
     check(len(approvals) == 1, f"应推送一次审批：{approvals}")
     check(len(approvals[0]["items"]) == 1, f"应只有一个审批项：{approvals[0]}")
     item = approvals[0]["items"][0]
-    check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
+    check(item["topic"] == WRITE_TOPIC, f"审批项主题异常：{item}")
     check(item["task"] == "请记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
     check(item["tools"] == ["append"], f"审批项应带草案声明的工具：{item}")
     check(item["content"], "审批项应带草案内容")
@@ -417,7 +435,7 @@ def check_draft_note(api: Api, tap: EventTap, data_dir: Path) -> None:
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"记笔记应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
-    check(item["capability"] == "自记笔记", f"审批项能力异常：{item}")
+    check(item["topic"] == NOTE_TOPIC, f"审批项主题异常：{item}")
     check(item["tools"] == ["read", "append"], f"审批项应带草案声明的工具：{item}")
     text = draft.read_text(encoding="utf-8")
     check(text.startswith("# 草稿本"), f"草稿本标题应保留：{text!r}")
@@ -451,7 +469,7 @@ def check_memory_replace(api: Api, tap: EventTap) -> str:
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"改写应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
-    check(item["capability"] == "记忆写入", f"审批项能力异常：{item}")
+    check(item["topic"] == WRITE_TOPIC, f"审批项主题异常：{item}")
     check(item["tools"] == ["replace"], f"审批项应带改写工具：{item}")
     after = api.call("GET", "/api/memories")["structured"]
     check("只喝冰美式" in after, f"应写入替换后的内容：{after!r}")
@@ -473,7 +491,7 @@ def check_memory_retrieve(api: Api, tap: EventTap) -> None:
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
-    check(item["capability"] == "记忆检索", f"审批项能力异常：{item}")
+    check(item["topic"] == RETRIEVE_TOPIC, f"审批项主题异常：{item}")
     check(item["tools"] == ["index", "read"], f"审批项应带探索工具：{item}")
     step("记忆检索：子代理读说明书后按 index/read 探索记忆，审批后返回片段")
 
@@ -483,7 +501,7 @@ def check_write_rejected(api: Api, tap: EventTap, structured: str) -> None:
     approvals_before = len(tap.approvals)
     tap.reject_next = True
     notice = api.call("POST", "/api/chat", {"text": "请记住，我喜欢拿铁"})
-    check(notice["text"] == "这次没能做到：用户拒绝执行", f"拒绝后回复异常：{notice}")
+    check(notice["text"] == "用户拒绝执行", f"拒绝后回复应转述拒绝原因：{notice}")
     fresh = tap.wait_until_idle_after(mark)
     approvals = [event for event in fresh if event["type"] == "approval.request"]
     check(len(approvals) == 1, f"拒绝场景也应推送审批：{approvals}")
@@ -510,17 +528,61 @@ def check_structured_in_prompt(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     step("系统提示：结构化记忆全文注入主对话，未检索时不下发来源")
 
 
+def check_memory_unload_notice(api: Api, tap: EventTap, data_dir: Path) -> None:
+    """把记忆文件临时换成目录制造读取失败，校验 HTTP 与推送都带 memory_unloaded。"""
+    path = data_dir / "memory" / "structured.md"
+    backup = path.with_name("structured.md.bak")
+    path.replace(backup)
+    path.mkdir()
+    try:
+        mark = len(tap.events)
+        reply = api.call("POST", "/api/chat", {"text": "你好"})
+        check(reply["text"] == "你好呀，今天过得怎么样？", f"降级时仍应正常回复：{reply}")
+        check(
+            reply["notices"] == ["memory_unloaded"],
+            f"读取失败应回报 memory_unloaded：{reply.get('notices')}",
+        )
+        fresh = tap.wait_until_idle_after(mark)
+        done = [event for event in fresh if event["type"] == "chat.done"]
+        check(len(done) == 1, f"应收到一次 chat.done：{done}")
+        check(
+            done[0]["notices"] == ["memory_unloaded"],
+            f"chat.done 应透传 notices：{done[0].get('notices')}",
+        )
+    finally:
+        path.rmdir()
+        backup.replace(path)
+    step("记忆降级：结构化记忆读取失败时本轮继续回复，HTTP 与 chat.done 都提示 memory_unloaded")
+
+
 def check_daily_records(api: Api) -> None:
-    history = api.call("GET", "/api/chat/history")
-    check(len(history["items"]) >= 6, f"每日对话记录不完整：{len(history['items'])} 条")
+    history = api.call("GET", "/api/chat/history")["items"]
+    check(len(history) >= 6, f"每日对话记录不完整：{len(history)} 条")
+    active = api.call("GET", "/api/personas")["active"]
+    # 回忆行落在被回忆的那一天，索引里可能多出「没有聊天」的昨天，因此以最新记录定位当天。
+    today = history[0]["event_time"][:10]
+    expected = {
+        item["id"]
+        for item in history
+        if item["event_time"].startswith(today) and item["persona_id"] == active
+    }
+    check(len(expected) >= 2, f"当天应至少有用户与宠物两条记录：{expected}")
     memories = api.call("GET", "/api/memories")
     days = [day for month in memories["daily_memory"].values() for day in month]
-    check(len(days) == 1, f"每日对话索引应只有一天：{days}")
-    records = api.call("GET", f"/api/memories?date={days[0]}")["daily_records"]
-    check(len(records) >= 6, f"每日对话记录不完整：{len(records)} 条")
+    check(today in days, f"每日对话索引应包含当天 {today}：{days}")
+    records = api.call("GET", f"/api/memories?date={today}")["daily_records"]
+    # 按日查询只返回当前人设的记录，与历史中同人设当天的行一一对应。
     check(
-        all(record["event_time"].startswith(days[0]) for record in records),
+        {record["id"] for record in records} == expected,
+        f"每日对话记录不完整：{len(records)} 条，期望 {len(expected)} 条",
+    )
+    check(
+        all(record["event_time"].startswith(today) for record in records),
         f"记录日期应与查询一致：{records}",
+    )
+    check(
+        all(record["persona_id"] == active for record in records),
+        f"按日查询应只返回当前人设：{records}",
     )
     check(
         api.call("GET", "/api/memories?date=2026-13-01", expect=422)["error"]["code"]
@@ -771,6 +833,7 @@ def run() -> Path:
             check_memory_replace(api, tap)
             check_draft_note(api, tap, data_dir)
             check_structured_in_prompt(api, tap, llm)
+            check_memory_unload_notice(api, tap, data_dir)
             check_persona_switch(api, tap, llm, data_dir)
             check_perception_to_proactive(api, tap, llm)
         check_daily_records(api)

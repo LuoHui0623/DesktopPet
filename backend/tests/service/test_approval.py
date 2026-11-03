@@ -17,7 +17,7 @@ from module.agent.approval import (
 def make_draft(run_id: str = "run-1") -> ApprovalDraft:
     return ApprovalDraft(
         run_id=run_id,
-        capability="写笔记",
+        topic="写笔记",
         task="记一下牛奶",
         content="用 write_note 记下牛奶",
         tools=("write_note",),

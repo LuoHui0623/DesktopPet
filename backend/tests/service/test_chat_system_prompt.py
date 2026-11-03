@@ -1,9 +1,12 @@
 from string import Template
 
-from module.agent import chat_system_prompt as module
 from module.agent.chat_system_prompt import (
     ACTION_RULES_BODY,
     CAPABILITIES_BODY,
+    CATEGORY_BEHAVIOR,
+    CATEGORY_CAPABILITY,
+    CATEGORY_IDENTITY,
+    CATEGORY_ORDER,
     CHAT_PLACEHOLDERS,
     CONSTRAINTS_BODY,
     PERSONA_BODY,
@@ -14,56 +17,51 @@ from module.agent.chat_system_prompt import (
     TOPIC_BODIES,
     TOPIC_CAPABILITIES,
     TOPIC_CONSTRAINTS,
-    TOPIC_ORDER,
     TOPIC_PERSONA,
+    TOPIC_REGISTRY,
     TOPIC_RESOURCES,
     TOPIC_SPEECH_RULES,
+    TopicContext,
 )
 
 BODIES = {
-    TOPIC_PERSONA: PERSONA_BODY,
-    TOPIC_ACTION_RULES: ACTION_RULES_BODY,
-    TOPIC_CAPABILITIES: CAPABILITIES_BODY,
-    TOPIC_RESOURCES: RESOURCES_BODY,
-    TOPIC_SPEECH_RULES: SPEECH_RULES_BODY,
-    TOPIC_CONSTRAINTS: CONSTRAINTS_BODY,
+    TOPIC_PERSONA.id: PERSONA_BODY,
+    TOPIC_ACTION_RULES.id: ACTION_RULES_BODY,
+    TOPIC_CAPABILITIES.id: CAPABILITIES_BODY,
+    TOPIC_RESOURCES.id: RESOURCES_BODY,
+    TOPIC_SPEECH_RULES.id: SPEECH_RULES_BODY,
+    TOPIC_CONSTRAINTS.id: CONSTRAINTS_BODY,
 }
 
 
-def test_topic_names_are_distinct_and_readable():
-    names = [
-        TOPIC_PERSONA,
-        TOPIC_ACTION_RULES,
-        TOPIC_CAPABILITIES,
-        TOPIC_RESOURCES,
-        TOPIC_SPEECH_RULES,
-        TOPIC_CONSTRAINTS,
-    ]
-    assert names == [
+def test_topic_ids_are_distinct_and_readable():
+    ids = [topic.id for topic in TOPIC_REGISTRY]
+    assert ids == [
         "人设",
-        "行动规则",
         "可用能力",
         "可用资源",
+        "行动规则",
         "发言规则",
         "约束",
     ]
-    assert len(set(names)) == len(names)
+    assert len(set(ids)) == len(ids)
 
 
-def test_order_is_the_only_source_of_sequence():
-    assert TOPIC_ORDER == (
-        TOPIC_PERSONA,
-        TOPIC_ACTION_RULES,
-        TOPIC_CAPABILITIES,
-        TOPIC_RESOURCES,
-        TOPIC_SPEECH_RULES,
-        TOPIC_CONSTRAINTS,
-    )
+def test_registry_maps_topics_to_the_three_categories():
+    assert CATEGORY_ORDER == ("身份", "能力", "行为")
+    assert [topic.category for topic in TOPIC_REGISTRY] == [
+        CATEGORY_IDENTITY,
+        CATEGORY_CAPABILITY,
+        CATEGORY_CAPABILITY,
+        CATEGORY_BEHAVIOR,
+        CATEGORY_BEHAVIOR,
+        CATEGORY_BEHAVIOR,
+    ]
 
 
-def test_order_covers_every_body_exactly_once():
-    assert len(TOPIC_ORDER) == len(set(TOPIC_ORDER))
-    assert set(TOPIC_ORDER) == set(BODIES)
+def test_registry_order_covers_every_body_exactly_once():
+    assert len(TOPIC_REGISTRY) == len({topic.id for topic in TOPIC_REGISTRY})
+    assert set(TOPIC_BODIES) == {topic.id for topic in TOPIC_REGISTRY}
 
 
 def test_body_table_points_at_the_named_constants():
@@ -96,7 +94,7 @@ def test_action_rules_explain_the_single_optional_dispatch():
 
 def test_capability_note_is_separated_from_the_value_line():
     lines = CAPABILITIES_BODY.splitlines()
-    assert lines[0] == "只提供能力名，具体做法由执行者自行查阅说明书。"
+    assert lines[0] == "下面是你可以交办的事项；派发时按任务内容描述，不必指定名称。"
     assert lines[1] == "$capabilities"
     assert len(lines) == 2
 
@@ -143,10 +141,32 @@ def test_separator_width_is_fixed_for_the_whole_prompt():
     assert SEPARATOR_WIDTH == 30
 
 
-def test_module_declares_no_behaviour():
-    members = [
-        name
-        for name, value in vars(module).items()
-        if not name.startswith("__") and (callable(value) or isinstance(value, type))
-    ]
-    assert members == []
+def topic_context() -> TopicContext:
+    return TopicContext(
+        persona_section="人设正文",
+        capabilities="- 能力",
+        resources="- 资源",
+        sentence_max_chars="40",
+        sentence_max_width="80",
+        persona_hint_chars="20",
+    )
+
+
+def test_every_topic_renders_a_body_without_its_own_heading():
+    context = topic_context()
+    for topic in TOPIC_REGISTRY:
+        body = topic.render(context)
+        assert body.strip()
+        assert "【" not in body
+        assert "】" not in body
+
+
+def test_topics_substitute_their_placeholders_from_the_context():
+    context = topic_context()
+    capabilities_body = "下面是你可以交办的事项；派发时按任务内容描述，不必指定名称。\n- 能力"
+    assert TOPIC_PERSONA.render(context) == "人设正文"
+    assert TOPIC_CAPABILITIES.render(context) == capabilities_body
+    assert TOPIC_RESOURCES.render(context) == "- 资源"
+    assert "不超过 40 个汉字" in TOPIC_SPEECH_RULES.render(context)
+    assert "80 个英文字符" in TOPIC_SPEECH_RULES.render(context)
+    assert "约 20 字" in TOPIC_SPEECH_RULES.render(context)

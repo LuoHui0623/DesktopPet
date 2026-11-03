@@ -5,7 +5,7 @@ from infra.store.db import connect, transaction
 from module.agent.contracts import AgentRunRecord
 
 COLUMNS = (
-    "id, session_id, capability, instruction, steps, output, status, error_code, "
+    "id, session_id, skill, instruction, steps, output, status, error_code, "
     "started_at, finished_at, turn_id"
 )
 
@@ -16,7 +16,7 @@ def insert(conn: sqlite3.Connection, record: AgentRunRecord) -> None:
         (
             record.id,
             record.session_id,
-            record.capability,
+            record.skill,
             record.instruction,
             record.steps,
             record.output,

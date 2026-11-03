@@ -10,7 +10,7 @@ AT = datetime(2026, 10, 29, 10, 0, tzinfo=TZ)
 TRIGGER = Trigger("app_in_use.code", "使用 code 已 3 分钟")
 
 
-def make_reply(message_id: str, texts: tuple[str, ...]) -> ChatReply:
+def make_reply(message_id: str, texts: tuple[str, ...], notices: tuple[str, ...] = ()) -> ChatReply:
     return ChatReply(
         message_id=message_id,
         messages=tuple(
@@ -18,6 +18,7 @@ def make_reply(message_id: str, texts: tuple[str, ...]) -> ChatReply:
             for index, text in enumerate(texts, 1)
         ),
         recorded=True,
+        notices=notices,
     )
 
 
@@ -49,13 +50,15 @@ class FakeLedger:
 
 class FakePublisher:
     def __init__(self, *, fail: bool = False) -> None:
-        self.messages: list[tuple[str, list[str], str, datetime]] = []
+        self.messages: list[tuple[str, list[str], str, datetime, tuple[str, ...]]] = []
         self._fail = fail
 
-    def proactive_message(self, message_id, messages, topic: str, at: datetime) -> None:
+    def proactive_message(self, message_id, messages, topic: str, at: datetime, notices=()) -> None:
         if self._fail:
             raise RuntimeError("socket closed")
-        self.messages.append((message_id, [item.text for item in messages], topic, at))
+        self.messages.append(
+            (message_id, [item.text for item in messages], topic, at, tuple(notices))
+        )
 
 
 def make_pipeline(
@@ -85,7 +88,7 @@ def test_success_generates_records_and_publishes_once():
     assert request.read_only_dispatch is True
     assert request.events is not None
     assert ledger.topics == [("app_in_use.code", AT)]
-    assert publisher.messages == [("m1", ["今天也辛苦啦。"], "app_in_use.code", AT)]
+    assert publisher.messages == [("m1", ["今天也辛苦啦。"], "app_in_use.code", AT, ())]
 
 
 def test_several_utterances_are_published_in_one_event_and_recorded_once():
@@ -96,7 +99,23 @@ def test_several_utterances_are_published_in_one_event_and_recorded_once():
 
     assert result.sent is True
     assert ledger.topics == [("app_in_use.code", AT)]
-    assert publisher.messages == [("m1", ["第一句。", "第二句！"], "app_in_use.code", AT)]
+    assert publisher.messages == [("m1", ["第一句。", "第二句！"], "app_in_use.code", AT, ())]
+
+
+class NoticedChat:
+    def chat(self, request: ChatRequest) -> ChatReply:
+        return make_reply("m1", ("今天也辛苦啦。",), notices=("memory_unloaded",))
+
+
+def test_reply_notices_are_forwarded_to_the_proactive_event():
+    pipeline, _, publisher = make_pipeline(NoticedChat())
+
+    result = pipeline.handle(TRIGGER)
+
+    assert result.sent is True
+    assert publisher.messages == [
+        ("m1", ["今天也辛苦啦。"], "app_in_use.code", AT, ("memory_unloaded",))
+    ]
 
 
 def test_active_chat_drops_the_trigger_without_calling_the_model():

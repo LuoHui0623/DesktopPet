@@ -91,7 +91,7 @@ class BusEventPublisher:
                     ApprovalItem(
                         approval_id=ticket.approval_id,
                         run_id=ticket.draft.run_id,
-                        capability=ticket.draft.capability,
+                        topic=ticket.draft.topic,
                         task=ticket.draft.task,
                         content=ticket.draft.content,
                         tools=list(ticket.draft.tools),
@@ -101,18 +101,26 @@ class BusEventPublisher:
             )
         )
 
-    def done(self, message_id: str, messages: Sequence[ReplyMessage]) -> None:
+    def done(
+        self, message_id: str, messages: Sequence[ReplyMessage], notices: Sequence[str] = ()
+    ) -> None:
         self._bus.publish(
             ChatDoneEvent(
                 message_id=message_id,
                 text=joined_text(messages),
                 sources=[source_out(source) for message in messages for source in message.sources],
                 messages=[reply_message_out(message) for message in messages],
+                notices=list(notices),
             )
         )
 
     def proactive_message(
-        self, message_id: str, messages: Sequence[ReplyMessage], topic: str, at: datetime
+        self,
+        message_id: str,
+        messages: Sequence[ReplyMessage],
+        topic: str,
+        at: datetime,
+        notices: Sequence[str] = (),
     ) -> None:
         self._bus.publish(
             ProactiveMessageEvent(
@@ -121,6 +129,7 @@ class BusEventPublisher:
                 topic=topic,
                 at=at,
                 messages=[reply_message_out(message) for message in messages],
+                notices=list(notices),
             )
         )
 

@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -17,14 +18,18 @@ FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
 PLAN_MIN_ITEMS = 1
 PLAN_MAX_ITEMS = 3
+PLAN_FIELD_MAX_CHARS = 200
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_REJECTED = "rejected"
 ERROR_REJECTED = "rejected"
 ERROR_READ_ONLY = "read_only_denied"
+ERROR_UNKNOWN_SKILL = "unknown_skill"
 READ_ONLY_REASON = "主动对话只允许查询，不能写入"
-CHECKPOINT_TAG = "[finished_plan]"
+NATURAL_SKILL = "natural"
 VALID_PHASES = frozenset({PHASE_DRAFT, PHASE_EXECUTE})
+
+logger = logging.getLogger("pet.agent.orchestrator")
 
 
 class PlanError(Exception):
@@ -48,14 +53,14 @@ class AgentRunStore(Protocol):
 
 @dataclass(frozen=True)
 class PlanStep:
-    capability: str
+    topic: str
     task: str
 
 
 @dataclass(frozen=True)
 class Checkpoint:
     run_id: str
-    capability: str
+    topic: str
     ok: bool
     text: str
     output: str | None = None
@@ -85,28 +90,16 @@ def read_only_tools(skill: Skill) -> tuple[str, ...]:
     return tuple(name for name in skill.tools if name in READ_ONLY_TOOLS)
 
 
-def _read_only_denial(skill: Skill) -> str | None:
-    """主动轮只接受全部工具都是只读的能力；写入型与混合能力整项拒绝。"""
-    blocked = [name for name in skill.tools if name not in READ_ONLY_TOOLS]
-    if blocked:
-        return f"{READ_ONLY_REASON}：能力「{skill.name}」包含非只读工具 {', '.join(blocked)}"
-    if not skill.tools:
-        return f"{READ_ONLY_REASON}：能力「{skill.name}」没有可用的只读工具"
-    return None
+def _read_only_denial(declared: Sequence[str]) -> str | None:
+    """主动轮逐工具判定：任务实际声明的工具里有非只读项就拒绝（D-25）。"""
+    blocked = [name for name in declared if name not in READ_ONLY_TOOLS]
+    if not blocked:
+        return None
+    return f"{READ_ONLY_REASON}：任务声明了非只读工具 {', '.join(blocked)}"
 
 
 def _declared_tools(skill: Skill, names: Sequence[str]) -> tuple[str, ...]:
     return tuple(name for name in names if name in skill.tools)
-
-
-def checkpoint_block(plan_id: str, checkpoint: Checkpoint) -> str:
-    payload: dict[str, Any] = {
-        "plan_id": plan_id,
-        "capability": checkpoint.capability,
-        "status": checkpoint.status,
-        "output": checkpoint.output if checkpoint.ok else (checkpoint.error or ""),
-    }
-    return f"{CHECKPOINT_TAG}{json.dumps(payload, ensure_ascii=False)}"
 
 
 def parse_plan(text: str) -> list[PlanStep]:
@@ -118,6 +111,16 @@ def parse_plan(text: str) -> list[PlanStep]:
     return parse_plan_data(data)
 
 
+def _plan_text(item: dict[str, Any], key: str, index: int, label: str) -> str:
+    value = item.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise PlanError(f"第 {index} 步缺少{label}")
+    text = value.strip()
+    if len(text) > PLAN_FIELD_MAX_CHARS:
+        raise PlanError(f"第 {index} 步的{label}超过 {PLAN_FIELD_MAX_CHARS} 字")
+    return text
+
+
 def parse_plan_data(data: Any) -> list[PlanStep]:
     if not isinstance(data, list):
         raise PlanError("执行计划必须是 JSON 数组")
@@ -127,13 +130,13 @@ def parse_plan_data(data: Any) -> list[PlanStep]:
     for index, item in enumerate(data, start=1):
         if not isinstance(item, dict):
             raise PlanError(f"第 {index} 步必须是 JSON 对象")
-        capability = item.get("capability")
-        task = item.get("task")
-        if not isinstance(capability, str) or not capability.strip():
-            raise PlanError(f"第 {index} 步缺少能力名")
-        if not isinstance(task, str) or not task.strip():
-            raise PlanError(f"第 {index} 步缺少任务描述")
-        steps.append(PlanStep(capability=capability.strip(), task=task.strip()))
+        extra = sorted(set(item) - {"topic", "task"})
+        if extra:
+            # 旧格式残留的 capability 等字段一律忽略，不参与路由（D-29）。
+            logger.warning("派发计划第 %s 步含多余字段 %s，已忽略", index, extra)
+        topic = _plan_text(item, "topic", index, "任务主题")
+        task = _plan_text(item, "task", index, "任务描述")
+        steps.append(PlanStep(topic=topic, task=task))
     return steps
 
 
@@ -194,7 +197,7 @@ class Orchestrator:
 
     def dispatch(
         self,
-        capability: str,
+        topic: str,
         task: str,
         *,
         gate: ApprovalGate,
@@ -202,7 +205,7 @@ class Orchestrator:
         turn_id: str | None = None,
     ) -> Checkpoint:
         return self.run_plan(
-            [PlanStep(capability=capability, task=task)],
+            [PlanStep(topic=topic, task=task)],
             gate=gate,
             read_only=read_only,
             turn_id=turn_id,
@@ -218,11 +221,12 @@ class Orchestrator:
         turn_id: str | None = None,
     ) -> list[Checkpoint]:
         items = [self._open(step, read_only=read_only, turn_id=turn_id) for step in plan]
-        if read_only:
-            self._reject_non_read_only(items)
         self._in_parallel(
             lambda item: self._draft(item, turn_id), [item for item in items if item.done is None]
         )
+        if read_only:
+            # 只读边界按草案实际声明的工具判定，起草完成后再拒绝（D-25/D-28）。
+            self._reject_non_read_only(items)
         waiting = [item for item in items if item.done is None]
         # 主动轮只读派发自动放行，不请求任何审批。
         if waiting and not read_only:
@@ -237,11 +241,12 @@ class Orchestrator:
     ) -> _Item:
         run_id = uuid4().hex
         started = self._clock(self._timezone)
+        skill = self._skills.route(step.task)
         self._runs.insert(
             AgentRunRecord(
                 id=run_id,
                 session_id=started.date().isoformat(),
-                capability=step.capability,
+                skill=skill.name if skill is not None else NATURAL_SKILL,
                 instruction=step.task,
                 steps="[]",
                 output=None,
@@ -252,29 +257,24 @@ class Orchestrator:
                 turn_id=turn_id,
             )
         )
-        item = _Item(
-            run_id=run_id,
-            step=step,
-            skill=self._skills.get(step.capability),
-            read_only=read_only,
-        )
+        item = _Item(run_id=run_id, step=step, skill=skill, read_only=read_only)
         if item.skill is None:
             item.done = self._close(
                 item,
                 SubAgentResult(
                     ok=False,
                     output=None,
-                    error_code="unknown_capability",
-                    error=f"未知能力：{step.capability}",
+                    error_code=ERROR_UNKNOWN_SKILL,
+                    error="没有找到能执行这项任务的方法",
                 ),
             )
         return item
 
     def _reject_non_read_only(self, items: Sequence[_Item]) -> None:
         for item in items:
-            if item.done is not None or item.skill is None:
+            if item.done is not None or item.draft is None:
                 continue
-            reason = _read_only_denial(item.skill)
+            reason = _read_only_denial(item.draft.tools)
             if reason is None:
                 continue
             item.done = self._close(
@@ -287,6 +287,7 @@ class Orchestrator:
         assert item.skill is not None
         draft = self._subagent.draft(
             item.skill,
+            item.step.topic,
             item.step.task,
             item.run_id,
             tools=read_only_tools(item.skill),
@@ -324,6 +325,7 @@ class Orchestrator:
             tools = tuple(name for name in tools if name in READ_ONLY_TOOLS)
         result = self._subagent.run(
             item.skill,
+            item.step.topic,
             item.step.task,
             item.run_id,
             tools=tools,
@@ -365,9 +367,9 @@ class Orchestrator:
         )
         return Checkpoint(
             run_id=item.run_id,
-            capability=item.step.capability,
+            topic=item.step.topic,
             ok=result.ok,
-            text=_checkpoint_text(item.step.capability, result),
+            text=_checkpoint_text(item.step.topic, result),
             output=result.output,
             error=result.error,
             steps=tuple(recorded),
@@ -380,7 +382,7 @@ class Orchestrator:
         draft = item.draft
         return ApprovalDraft(
             run_id=item.run_id,
-            capability=item.step.capability,
+            topic=item.step.topic,
             task=item.step.task,
             content=(draft.content or "") if draft is not None else "",
             tools=draft.tools if draft is not None else (),
@@ -408,9 +410,9 @@ def _rejected(item: _Item, reason: str | None) -> SubAgentResult:
     )
 
 
-def _checkpoint_text(capability: str, result: SubAgentResult) -> str:
+def _checkpoint_text(topic: str, result: SubAgentResult) -> str:
     if result.ok:
-        return f"执行：{capability}\n{result.output}"
+        return f"执行：{topic}\n{result.output}"
     if result.error_code in (ERROR_REJECTED, ERROR_READ_ONLY):
-        return f"执行：{capability}\n拒绝：{result.error}"
-    return f"执行：{capability}\n失败：{result.error}"
+        return f"执行：{topic}\n拒绝：{result.error}"
+    return f"执行：{topic}\n失败：{result.error}"

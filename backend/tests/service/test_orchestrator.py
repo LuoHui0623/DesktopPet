@@ -139,9 +139,9 @@ def setup(tmp_path: Path):
             "# 写笔记\n\n> 把用户给的内容记到便签上。\n", encoding="utf-8"
         )
         skills = SkillRegistry(skills_dir)
-        skills.register(SkillSpec("写笔记", "note", ("write_note",)))
-        skills.register(SkillSpec("查笔记", "note", ("read",)))
-        skills.register(SkillSpec("混合笔记", "note", ("read", "write_note")))
+        skills.register(SkillSpec("写笔记", "note", ("write_note",), ("记下",)))
+        skills.register(SkillSpec("查笔记", "note", ("read",), ("查一下",)))
+        skills.register(SkillSpec("混合笔记", "note", ("read", "write_note"), ("读一下",)))
         return Orchestrator(
             SubAgent(llm, [write_note, read_note]),
             DbAgentRuns(db_file),
@@ -159,7 +159,7 @@ def rows(db_file: Path) -> list[tuple]:
         return [
             tuple(row)
             for row in conn.execute(
-                "SELECT id, capability, instruction, status, error_code, output, steps "
+                "SELECT id, skill, instruction, status, error_code, output, steps "
                 "FROM agent_run ORDER BY started_at, id"
             )
         ]
@@ -175,14 +175,14 @@ def test_dispatch_writes_one_run_row_and_returns_checkpoint(setup):
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     stored = rows(setup["db_file"])
     assert len(stored) == 1
-    run_id, capability, instruction, status, error_code, output, steps = stored[0]
+    run_id, skill, instruction, status, error_code, output, steps = stored[0]
     assert run_id == checkpoint.run_id
-    assert (capability, instruction, status, error_code) == (
+    assert (skill, instruction, status, error_code) == (
         "写笔记",
-        "记一下牛奶",
+        "记下牛奶",
         "succeeded",
         None,
     )
@@ -190,7 +190,7 @@ def test_dispatch_writes_one_run_row_and_returns_checkpoint(setup):
     assert [step["action"] for step in json.loads(steps)] == ["draft", "tool", "finish"]
 
 
-def test_checkpoint_has_capability_and_output_only(setup):
+def test_checkpoint_has_topic_and_output_only(setup):
     orchestrator = setup["build"](
         [
             draft_reply("记下牛奶", ["write_note"]),
@@ -198,7 +198,7 @@ def test_checkpoint_has_capability_and_output_only(setup):
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     assert checkpoint.ok is True
     assert checkpoint.status == "succeeded"
     assert checkpoint.text == "执行：写笔记\n已记下牛奶"
@@ -213,7 +213,7 @@ def test_failed_dispatch_is_recorded_and_reported(setup):
             *(['{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}'] * 8),
         ]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     assert checkpoint.ok is False
     assert checkpoint.text.startswith("执行：写笔记\n失败：")
     assert "超过最大步数" in checkpoint.text
@@ -228,12 +228,12 @@ def test_execute_only_sees_the_declared_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "run",
-        lambda skill, task, run_id, *, tools, draft, turn_id=None: (
+        lambda skill, topic, task, run_id, *, tools, draft, turn_id=None: (
             seen.update(tools=tools, draft=draft),
             SubAgentResult(True, "好", None, None, []),
         )[1],
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     assert checkpoint.ok is True
     assert seen == {"tools": (), "draft": "直接作答"}
 
@@ -244,19 +244,19 @@ def test_draft_only_sees_the_read_only_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "draft",
-        lambda skill, task, run_id, *, tools, turn_id=None: (
+        lambda skill, topic, task, run_id, *, tools, turn_id=None: (
             seen.update(tools=tools),
             SubAgentDraft(False, error_code="stop", error="停"),
         )[1],
     )
-    orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     assert seen == {"tools": ()}
 
 
 def test_invalid_draft_marks_the_item_failed_without_approval(setup):
     gate = FakeGate()
     orchestrator = setup["build"](["不是动作"] * 8)
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=gate)
     assert checkpoint.ok is False
     assert checkpoint.status == "failed"
     assert "失败：" in checkpoint.text
@@ -270,7 +270,7 @@ def test_invalid_draft_marks_the_item_failed_without_approval(setup):
 def test_rejected_dispatch_never_runs_the_agent(setup):
     gate = FakeGate(approved=False)
     orchestrator = setup["build"]([draft_reply("记下牛奶", ["write_note"])])
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=gate)
     assert checkpoint.ok is False
     assert checkpoint.status == "rejected"
     assert checkpoint.text == "执行：写笔记\n拒绝：用户拒绝执行"
@@ -280,14 +280,15 @@ def test_rejected_dispatch_never_runs_the_agent(setup):
     )
 
 
-def test_unknown_capability_still_writes_one_row(setup):
+def test_unknown_skill_still_writes_one_row(setup):
     orchestrator = setup["build"]([])
-    checkpoint = orchestrator.dispatch("不存在", "任务", gate=GATE)
+    checkpoint = orchestrator.dispatch("不存在", "随便说点什么", gate=GATE)
     assert checkpoint.ok is False
-    assert checkpoint.text == "执行：不存在\n失败：未知能力：不存在"
+    assert checkpoint.text == "执行：不存在\n失败：没有找到能执行这项任务的方法"
     stored = rows(setup["db_file"])
     assert len(stored) == 1
-    assert (stored[0][3], stored[0][4]) == ("failed", "unknown_capability")
+    assert stored[0][1] == "natural"
+    assert (stored[0][3], stored[0][4]) == ("failed", "unknown_skill")
 
 
 def test_read_only_dispatch_auto_approves_without_requesting_approval(setup):
@@ -299,50 +300,60 @@ def test_read_only_dispatch_auto_approves_without_requesting_approval(setup):
             '{"action": "finish", "output": "查到：喜欢美式"}',
         ]
     )
-    checkpoint = orchestrator.dispatch("查笔记", "查咖啡偏好", gate=gate, read_only=True)
+    checkpoint = orchestrator.dispatch("查笔记", "查一下咖啡偏好", gate=gate, read_only=True)
     assert checkpoint.ok is True
     assert checkpoint.output == "查到：喜欢美式"
     assert gate.calls == []
 
 
-def test_read_only_dispatch_rejects_write_capabilities_before_drafting(setup, monkeypatch):
+def test_read_only_dispatch_rejects_a_draft_that_declares_write_tools(setup):
     gate = FakeGate()
     orchestrator = setup["build"]([])
-    started: list[str] = []
-    monkeypatch.setattr(
-        orchestrator._subagent, "draft", lambda *args, **kwargs: started.append("draft")
+    orchestrator._subagent.draft = lambda *args, **kwargs: SubAgentDraft(
+        True, content="记下牛奶", tools=("write_note",), steps=[]
     )
-    checkpoint = orchestrator.dispatch("写笔记", "记一下牛奶", gate=gate, read_only=True)
+    checkpoint = orchestrator.dispatch("写笔记", "记下牛奶", gate=gate, read_only=True)
     assert checkpoint.ok is False
     assert checkpoint.status == "rejected"
     assert checkpoint.error_code == "read_only_denied"
     assert checkpoint.text.startswith("执行：写笔记\n拒绝：")
     assert "只允许查询" in checkpoint.error
-    assert started == []
     assert gate.calls == []
     stored = rows(setup["db_file"])
     assert (stored[0][3], stored[0][4]) == ("rejected", "read_only_denied")
 
 
-def test_read_only_dispatch_rejects_a_mixed_capability_entirely(setup):
+def test_read_only_dispatch_allows_a_pure_read_task_in_a_mixed_skill(setup):
     gate = FakeGate()
-    orchestrator = setup["build"]([])
+    orchestrator = setup["build"](
+        [
+            draft_reply("先读一下", ["read"]),
+            '{"action": "finish", "output": "查到：喜欢美式"}',
+        ]
+    )
     checkpoint = orchestrator.dispatch("混合笔记", "读一下再写", gate=gate, read_only=True)
-    assert checkpoint.status == "rejected"
-    assert checkpoint.error_code == "read_only_denied"
+    assert checkpoint.ok is True
+    assert checkpoint.output == "查到：喜欢美式"
     assert gate.calls == []
+
+
+class PerTaskDraftChat:
+    """按任务内容返回草案，使并行起草时工具归属可判定。"""
+
+    def invoke(self, messages, config=None, **kwargs):
+        prompt = messages[0].content
+        if DRAFT_MARK in prompt:
+            if "记下" in prompt:
+                return AIMessage(content=draft_reply("记下牛奶", ["write_note"]))
+            return AIMessage(content=draft_reply("读一下", ["read"]))
+        return AIMessage(content='{"action": "finish", "output": "查到：喜欢美式"}')
 
 
 def test_read_only_plan_runs_read_items_and_rejects_write_items(setup):
     gate = FakeGate()
-    orchestrator = setup["build"](
-        [
-            draft_reply("读一下", ["read"]),
-            '{"action": "finish", "output": "查到：喜欢美式"}',
-        ]
-    )
+    orchestrator = setup["build"]([], chat=PerTaskDraftChat())
     checkpoints = orchestrator.run_plan(
-        [PlanStep("查笔记", "查咖啡偏好"), PlanStep("写笔记", "记下牛奶")],
+        [PlanStep("查笔记", "查一下咖啡偏好"), PlanStep("写笔记", "记下牛奶")],
         gate=gate,
         read_only=True,
     )
@@ -352,8 +363,8 @@ def test_read_only_plan_runs_read_items_and_rejects_write_items(setup):
     assert gate.calls == []
 
 
-def test_read_only_execution_never_passes_write_tools_to_the_subagent(setup, monkeypatch):
-    seen: dict[str, tuple[str, ...]] = {}
+def test_read_only_rejected_write_tool_is_never_executed(setup, monkeypatch):
+    seen: list[str] = []
     orchestrator = setup["build"]([])
     monkeypatch.setattr(
         orchestrator._subagent,
@@ -365,24 +376,23 @@ def test_read_only_execution_never_passes_write_tools_to_the_subagent(setup, mon
     monkeypatch.setattr(
         orchestrator._subagent,
         "run",
-        lambda skill, task, run_id, *, tools, draft, turn_id=None: (
-            seen.update(tools=tools),
-            SubAgentResult(True, "好", None, None, []),
-        )[1],
+        lambda *args, **kwargs: seen.append("run"),
     )
-    checkpoint = orchestrator.dispatch("查笔记", "任务", gate=FakeGate(), read_only=True)
-    assert checkpoint.ok is True
-    assert seen["tools"] == ()
+    checkpoint = orchestrator.dispatch("查笔记", "查一下任务", gate=FakeGate(), read_only=True)
+    assert checkpoint.error_code == "read_only_denied"
+    assert seen == []
 
 
 class TaskEchoChat:
-    """按提示词里的「当前任务」作答，使并行结果可判定归属。"""
+    """按提示词里的任务行作答，使并行结果可判定归属。"""
 
     def invoke(self, messages, config=None, **kwargs):
         prompt = messages[0].content
         task = ""
-        if "当前任务：" in prompt:
-            task = prompt.split("当前任务：", 1)[1].splitlines()[0].strip()
+        if "本次任务：" in prompt:
+            request = prompt.split("本次任务：", 1)[1].strip().splitlines()
+            if len(request) > 1:
+                task = request[1].strip()
         if DRAFT_MARK in prompt:
             return AIMessage(content=draft_reply(f"方案 {task}"))
         payload = {"action": "finish", "output": f"完成 {task}"}
@@ -392,24 +402,24 @@ class TaskEchoChat:
 def test_run_plan_keeps_plan_order(setup):
     orchestrator = setup["build"]([], chat=TaskEchoChat())
     checkpoints = orchestrator.run_plan(
-        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")],
+        [PlanStep("写笔记", "记下一"), PlanStep("写笔记", "记下二"), PlanStep("写笔记", "记下三")],
         gate=GATE,
     )
     assert [checkpoint.text for checkpoint in checkpoints] == [
-        "执行：写笔记\n完成 一",
-        "执行：写笔记\n完成 二",
-        "执行：写笔记\n完成 三",
+        "执行：写笔记\n完成 记下一",
+        "执行：写笔记\n完成 记下二",
+        "执行：写笔记\n完成 记下三",
     ]
     stored = rows(setup["db_file"])
     assert len(stored) == 3
-    assert {row[2] for row in stored} == {"一", "二", "三"}
+    assert {row[2] for row in stored} == {"记下一", "记下二", "记下三"}
 
 
 def test_run_plan_dispatches_in_parallel(setup):
     chat = BarrierChat(3)
     orchestrator = setup["build"]([], chat=chat)
     checkpoints = orchestrator.run_plan(
-        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二"), PlanStep("写笔记", "三")],
+        [PlanStep("写笔记", "记下一"), PlanStep("写笔记", "记下二"), PlanStep("写笔记", "记下三")],
         gate=GATE,
     )
     assert chat.reached == 6
@@ -420,12 +430,13 @@ def test_run_plan_approves_every_draft_in_one_request(setup):
     gate = FakeGate()
     orchestrator = setup["build"]([], chat=TaskEchoChat())
     orchestrator.run_plan(
-        [PlanStep("写笔记", "一"), PlanStep("写笔记", "二")], gate=gate, plan_id="p-1"
+        [PlanStep("写笔记", "记下一"), PlanStep("写笔记", "记下二")], gate=gate, plan_id="p-1"
     )
     assert [call[0] for call in gate.calls] == ["p-1"]
     drafts = gate.calls[0][1]
-    assert [draft.task for draft in drafts] == ["一", "二"]
-    assert [draft.content for draft in drafts] == ["方案 一", "方案 二"]
+    assert [draft.topic for draft in drafts] == ["写笔记", "写笔记"]
+    assert [draft.task for draft in drafts] == ["记下一", "记下二"]
+    assert [draft.content for draft in drafts] == ["方案 记下一", "方案 记下二"]
 
 
 def test_run_plan_accepts_empty_plan(setup):
@@ -447,7 +458,7 @@ def test_invalid_subagent_result_becomes_failed_checkpoint(setup, monkeypatch):
             steps=[{"step": 1, "phase": "execute", "action": "finish"}],
         ),
     )
-    checkpoint = orchestrator.dispatch("写笔记", "任务", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下任务", gate=GATE)
     assert checkpoint.ok is False
     assert checkpoint.text == "执行：写笔记\n失败：子 agent 输出不合法：成功的结果缺少 output"
     stored = rows(setup["db_file"])
@@ -462,14 +473,14 @@ def test_steps_carry_both_phases(setup):
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    orchestrator.dispatch("写笔记", "记一下牛奶", gate=GATE)
+    orchestrator.dispatch("写笔记", "记下牛奶", gate=GATE)
     stored = rows(setup["db_file"])
     assert [step["phase"] for step in json.loads(stored[0][6])] == ["draft", "execute", "execute"]
 
 
 def test_model_usage_links_to_the_dispatched_run(setup):
     orchestrator = setup["build"]([draft_reply("直接作答"), '{"action": "finish", "output": "好"}'])
-    checkpoint = orchestrator.dispatch("写笔记", "任务", gate=GATE)
+    checkpoint = orchestrator.dispatch("写笔记", "记下任务", gate=GATE)
     conn = connect(setup["db_file"])
     try:
         run_ids = [row[0] for row in conn.execute("SELECT run_id FROM llm_call")]
@@ -479,8 +490,14 @@ def test_model_usage_links_to_the_dispatched_run(setup):
 
 
 def test_parse_plan_accepts_json_array_in_fence():
-    steps = parse_plan('```json\n[{"capability": "写笔记", "task": "记一下牛奶"}]\n```')
-    assert steps == [PlanStep(capability="写笔记", task="记一下牛奶")]
+    steps = parse_plan('```json\n[{"topic": "写笔记", "task": "记一下牛奶"}]\n```')
+    assert steps == [PlanStep(topic="写笔记", task="记一下牛奶")]
+
+
+def test_parse_plan_ignores_leftover_capability_and_logs(caplog):
+    steps = parse_plan('[{"topic": "写笔记", "task": "记一下牛奶", "capability": "写笔记"}]')
+    assert steps == [PlanStep(topic="写笔记", task="记一下牛奶")]
+    assert "capability" in caplog.text
 
 
 def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
@@ -491,7 +508,7 @@ def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
             '{"action": "finish", "output": "已记下牛奶"}',
         ]
     )
-    orchestrator.run_plan([PlanStep("写笔记", "记一下牛奶")], gate=GATE, turn_id="turn-7")
+    orchestrator.run_plan([PlanStep("写笔记", "记下牛奶")], gate=GATE, turn_id="turn-7")
     conn = connect(setup["db_file"])
     try:
         run_turns = [row[0] for row in conn.execute("SELECT turn_id FROM agent_run")]
@@ -507,12 +524,16 @@ def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
     [
         "不是 JSON",
         "[]",
-        '{"capability": "写笔记"}',
-        '[{"capability": "写笔记"}]',
+        '{"topic": "写笔记", "task": "记一下"}',
+        '[{"topic": "写笔记"}]',
         '[{"task": "记一下"}]',
-        '[{"capability": "", "task": "记一下"}]',
-        '[{"capability": "写笔记", "task": "一"}, {"capability": "写笔记", "task": "二"}, '
-        '{"capability": "写笔记", "task": "三"}, {"capability": "写笔记", "task": "四"}]',
+        '[{"capability": "写笔记", "task": "记一下"}]',
+        '[{"topic": "写笔记"}]',
+        '[{"topic": "", "task": "记一下"}]',
+        '[{"topic": "写笔记", "task": ""}]',
+        '[{"topic": "' + "长" * 201 + '", "task": "记一下"}]',
+        '[{"topic": "写笔记", "task": "一"}, {"topic": "写笔记", "task": "二"}, '
+        '{"topic": "写笔记", "task": "三"}, {"topic": "写笔记", "task": "四"}]',
     ],
 )
 def test_parse_plan_rejects_invalid_plans(text: str):

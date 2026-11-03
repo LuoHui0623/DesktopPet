@@ -4,7 +4,6 @@ from pathlib import Path
 
 from infra.store.db import connect, transaction
 from module.memory.contracts import DailyLogRecord, DailyLogRow
-from service.store import insert_many
 
 COLUMNS = "id, event_time, role, content, persona_id, created_at"
 INSERT_SQL = (
@@ -14,21 +13,22 @@ INSERT_SQL = (
 DAY = "substr(event_time, 1, 10)"
 
 
-def insert(conn: sqlite3.Connection, records: Sequence[DailyLogRecord]) -> None:
-    insert_many(
-        conn,
-        INSERT_SQL,
-        [
+def insert(conn: sqlite3.Connection, records: Sequence[DailyLogRecord]) -> list[int]:
+    """逐条写入并回传自增 id，保证调用方拿到的是这一条记录的身份。"""
+    ids: list[int] = []
+    for record in records:
+        cursor = conn.execute(
+            INSERT_SQL,
             (
                 record.event_time,
                 record.role,
                 record.content,
                 record.persona_id,
                 record.created_at,
-            )
-            for record in records
-        ],
-    )
+            ),
+        )
+        ids.append(int(cursor.lastrowid))
+    return ids
 
 
 def by_date(
@@ -111,11 +111,11 @@ class DbDailyLog:
     def __init__(self, db_file: Path) -> None:
         self._db_file = db_file
 
-    def append(self, records: Sequence[DailyLogRecord]) -> None:
+    def append(self, records: Sequence[DailyLogRecord]) -> list[int]:
         conn = connect(self._db_file)
         try:
             with transaction(conn):
-                insert(conn, records)
+                return insert(conn, records)
         finally:
             conn.close()
 

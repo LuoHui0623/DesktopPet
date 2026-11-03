@@ -9,15 +9,15 @@
 - 如果上一次回复被判为无效，下一次只输出一个完整的 JSON 对象即可，不要道歉也不要解释。
 
 正确示例（一次回复一个对象）：
-{"action": "tool", "tool": "read", "args": {"resource": "skill", "name": "当前能力名"}}
+{"action": "tool", "tool": "read", "args": {"resource": "skill", "name": "说明书名"}}
 
 错误示例（同一条回复里写了两个对象，只会被当成一个动作执行，不会按两步展开）：
-{"action": "tool", "tool": "read", "args": {"resource": "skill", "name": "当前能力名"}}
+{"action": "tool", "tool": "read", "args": {"resource": "skill", "name": "说明书名"}}
 {"action": "draft", "content": "……"}
 
 ## 工作方式
-先观察，再起草：先用 index（resource 为 skill）查看能力清单，
-再用 read（resource 为 skill，name 为当前能力名）打开当前能力的技能说明书，
+先观察，再起草：先用 index（resource 为 skill）查看说明书清单，
+挑出与本次主题和任务最相关的一份，再用 read（resource 为 skill，name 为说明书名）打开，
 按说明书里的流程确认现状，最后给出方案。
 这一阶段不会产生任何写入，也不允许请求写入工具。
 
@@ -31,10 +31,8 @@ content 必须是自然语言的完整方案，说清楚要做什么、为什么
 tools 只能取自“可声明的工具”，执行阶段也只会提供这些工具。
 最多执行 $max_steps 步。
 
-当前能力：$capability_name
-$capability_description
-
-当前任务：$task
+本次任务：
+$request
 
 可声明的工具：
 $declarable

@@ -11,7 +11,6 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from module.agent.approval import AutoApprovalGate
-from module.agent.skills import MEMORY_RETRIEVE_CAPABILITY
 from module.memory.contracts import DailyLogEntry
 from module.memory.daily_log_service import DailyLogService
 from module.persona.persona_service import PersonaSnapshot
@@ -23,6 +22,7 @@ FAILURE_PREFIX = "回忆生成失败："
 NO_HISTORY_REASON = "昨天没有聊天，也没有更早的聊天记录可以回忆。"
 CHAT_SIDES = frozenset({"master", "me"})
 RECALL_HINT = "请用第一人称写一段一到三句话的回忆，只使用当前人设在那一天的记录。"
+RECOLLECTION_TOPIC = "回忆"
 
 
 def _iso(day: date | str) -> str:
@@ -56,16 +56,9 @@ class _InFlight:
 
 
 class RecollectionService:
-    def __init__(
-        self,
-        orchestrator,
-        daily: DailyLogService,
-        *,
-        capability: str = MEMORY_RETRIEVE_CAPABILITY,
-    ) -> None:
+    def __init__(self, orchestrator, daily: DailyLogService) -> None:
         self._orchestrator = orchestrator
         self._daily = daily
-        self._capability = capability
         self._lock = threading.Lock()
         self._inflight: dict[tuple[str, str], _InFlight] = {}
 
@@ -139,7 +132,7 @@ class RecollectionService:
 
     def _dispatch(self, day: str, is_yesterday: bool, turn_id: str | None):
         return self._orchestrator.dispatch(
-            self._capability,
+            RECOLLECTION_TOPIC,
             _task_for(day, is_yesterday=is_yesterday),
             gate=AutoApprovalGate(),
             read_only=True,

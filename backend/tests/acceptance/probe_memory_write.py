@@ -119,7 +119,7 @@ def build() -> tuple[SubAgent, _LoggingLlm, Path, Any]:
 def main() -> int:
     task = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TASK
     subagent, llm, structured_file, skill = build()
-    result = subagent.draft(skill, task, "probe-memory-write")
+    result = subagent.draft(skill, "记忆写入", task, "probe-memory-write")
     print(
         json.dumps(
             {

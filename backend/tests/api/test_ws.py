@@ -75,6 +75,7 @@ def test_events_arrive_in_publish_order():
             "text": "你好呀",
             "sources": [],
             "messages": [],
+            "notices": [],
         }
 
 

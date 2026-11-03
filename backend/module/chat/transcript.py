@@ -15,14 +15,23 @@ class ChatLine:
     message: BaseMessage
     is_reply: bool = False
     role: str | None = None
+    # 写入 daily_log 后回填的自增身份；装配时按它定位本轮记录，不比较正文。
+    record_id: int | None = None
+    # 记录所属自然日；跨零点读回时用于固定整轮「当天」口径。
+    record_day: date | None = None
+
+
+def _order(line: ChatLine) -> tuple[datetime, int]:
+    """同一时刻按 daily_log 自增 id 作次级键（D-18）。"""
+    return line.at, line.record_id if line.record_id is not None else -1
 
 
 class TranscriptReader(Protocol):
-    def lines(self) -> Sequence[ChatLine]: ...
+    def lines(self, day: date | None = None) -> Sequence[ChatLine]: ...
 
 
 class ChatTranscript:
-    """当天对话时间线：正文来自 daily_log，事件/感知备注只活在本次会话内存里。"""
+    """当天对话时间线：正文来自 daily_log，读取日期由调用方给定。"""
 
     def __init__(
         self,
@@ -36,33 +45,14 @@ class ChatTranscript:
         self._loader = loader
         self._persona_id = persona_id
         self._lock = threading.Lock()
-        self._day: date | None = None
-        self._notes: list[ChatLine] = []
 
     def set_persona(self, persona_id: str) -> None:
         with self._lock:
-            if persona_id == self._persona_id:
-                return
             self._persona_id = persona_id
-            self._notes.clear()
 
-    def lines(self) -> tuple[ChatLine, ...]:
+    def lines(self, day: date | None = None) -> tuple[ChatLine, ...]:
         with self._lock:
-            self._roll()
-            assert self._day is not None
-            loaded = list(self._loader(self._day, self._persona_id)) if self._loader else []
-            merged = [*loaded, *self._notes]
-            merged.sort(key=lambda line: line.at)
-            return tuple(merged)
-
-    def add_note(self, line: ChatLine) -> None:
-        with self._lock:
-            self._roll()
-            self._notes.append(line)
-
-    def _roll(self) -> None:
-        today = self._clock(self._timezone).date()
-        if self._day == today:
-            return
-        self._day = today
-        self._notes.clear()
+            target = day or self._clock(self._timezone).date()
+            loaded = list(self._loader(target, self._persona_id)) if self._loader else []
+            loaded.sort(key=_order)
+            return tuple(loaded)

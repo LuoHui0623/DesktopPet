@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class AgentRunRecord:
     id: str
     session_id: str
-    capability: str
+    skill: str
     instruction: str
     steps: str
     output: str | None

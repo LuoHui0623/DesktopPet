@@ -7,18 +7,26 @@ from config.persona import parse_persona
 from constants.path import PROMPTS_DIR
 from module.agent.chat_system_prompt import (
     ACTION_RULES_BODY,
+    CATEGORY_BEHAVIOR,
+    CATEGORY_CAPABILITY,
+    CATEGORY_IDENTITY,
+    CATEGORY_ORDER,
     CONSTRAINTS_BODY,
+    SEPARATOR_WIDTH,
     TOPIC_BODIES,
-    TOPIC_ORDER,
     TOPIC_PERSONA,
+    TOPIC_REGISTRY,
+    Topic,
 )
 from module.agent.prompt import (
     NO_CAPABILITIES,
     NO_RESOURCES,
+    TEMPLATE_CONTEXT,
     CapabilityDescription,
     PromptError,
     ResourceItem,
     build_system_prompt,
+    category_marker,
     compose_chat_prompt,
     default_resources,
     load_capabilities,
@@ -59,7 +67,7 @@ def build(templates, **overrides):
 
 
 def composed() -> str:
-    return compose_chat_prompt(order=TOPIC_ORDER, bodies=TOPIC_BODIES)
+    return compose_chat_prompt(TEMPLATE_CONTEXT)
 
 
 def test_role_is_filled_into_its_sentence_and_extras_follow():
@@ -83,15 +91,33 @@ def test_missing_optional_theme_has_no_block():
     assert render_persona(persona) == "你的名字是小桌。陪伴"
 
 
-def test_composition_follows_topic_order_with_blank_lines_between_blocks():
-    expected = "\n\n".join(f"【{topic}】\n{TOPIC_BODIES[topic]}" for topic in TOPIC_ORDER)
-    assert composed() == expected
+def test_composition_groups_topics_by_category_with_blank_lines_between_blocks():
+    blocks: list[str] = []
+    for category in CATEGORY_ORDER:
+        blocks.append(category_marker(category))
+        blocks.extend(
+            f"【{topic.id}】\n{TOPIC_BODIES[topic.id]}"
+            for topic in TOPIC_REGISTRY
+            if topic.category == category
+        )
+    assert composed() == "\n\n".join(blocks)
 
 
-def test_sections_follow_fixed_order(templates):
+def test_sections_follow_category_order_then_registration_order(templates):
     text = build(templates).text
-    positions = [text.index(f"【{topic}】") for topic in TOPIC_ORDER]
-    assert positions == sorted(positions)
+    topic_positions = [text.index(f"【{topic.id}】") for topic in TOPIC_REGISTRY]
+    category_positions = [text.index(category_marker(item)) for item in CATEGORY_ORDER]
+    assert topic_positions == sorted(topic_positions)
+    assert category_positions == sorted(category_positions)
+    assert category_positions[0] < topic_positions[0]
+
+
+def test_category_markers_share_the_separator_width():
+    for category in CATEGORY_ORDER:
+        marker = category_marker(category)
+        assert len(marker) == SEPARATOR_WIDTH
+        assert marker.count(category) == 1
+        assert set(marker) == {"=", *category}
 
 
 def test_sections_keep_their_body_verbatim(templates):
@@ -102,7 +128,7 @@ def test_sections_keep_their_body_verbatim(templates):
 
 def test_action_rules_describe_the_chat_output_format(templates):
     text = build(templates).text
-    rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
+    rules = text[text.index("【行动规则】") : text.index("【发言规则】")]
     assert '{"type": "chat", "text": ["要说给主人的话"]}' in rules
     assert "最多说四句话" in rules
     assert '"type" 必须是第一个字段' in text
@@ -110,7 +136,7 @@ def test_action_rules_describe_the_chat_output_format(templates):
 
 def test_action_rules_group_details_under_chat_and_dispatch(templates):
     text = build(templates).text
-    rules = text[text.index("【行动规则】") : text.index("【可用能力】")]
+    rules = text[text.index("【行动规则】") : text.index("【发言规则】")]
     chat_at = rules.index("一、对话")
     dispatch_at = rules.index("二、派发任务")
     assert chat_at < dispatch_at
@@ -122,7 +148,7 @@ def test_capabilities_note_is_its_own_line_under_the_heading(templates):
     text = build(templates).text
     section = text[text.index("【可用能力】") : text.index("【可用资源】")]
     lines = section.splitlines()
-    assert lines[1] == "只提供能力名，具体做法由执行者自行查阅说明书。"
+    assert lines[1] == "下面是你可以交办的事项；派发时按任务内容描述，不必指定名称。"
     assert lines[2] == "- 打开网址: 打开白名单内的网址"
 
 
@@ -244,28 +270,60 @@ def test_digest_hashes_the_composed_prompt(templates):
     assert templates.digest == sha256(composed().encode("utf-8")).hexdigest()
 
 
-def test_digest_changes_when_a_body_changes(monkeypatch):
-    before = load_templates().digest
-    bodies = {**TOPIC_BODIES, TOPIC_PERSONA: "$persona_section 补一句。"}
+def test_load_templates_rejects_registry_and_body_drift(monkeypatch):
+    bodies = {**TOPIC_BODIES}
+    bodies.pop(TOPIC_PERSONA.id)
     monkeypatch.setattr("module.agent.prompt.TOPIC_BODIES", bodies)
-    assert load_templates().digest != before
+    with pytest.raises(PromptError, match="覆盖"):
+        load_templates()
 
 
-def test_composition_rejects_a_topic_without_body():
-    with pytest.raises(PromptError, match="缺少正文"):
-        compose_chat_prompt(order=(TOPIC_PERSONA, "不存在"), bodies={TOPIC_PERSONA: "正文"})
-
-
-def test_composition_rejects_an_empty_body():
-    with pytest.raises(PromptError, match="正文为空"):
-        compose_chat_prompt(order=(TOPIC_PERSONA,), bodies={TOPIC_PERSONA: " \n "})
-
-
-def test_composition_rejects_placeholder_mismatch():
+def test_load_templates_rejects_placeholder_mismatch(monkeypatch):
+    bodies = {**TOPIC_BODIES, TOPIC_PERSONA.id: "$persona_section $extra"}
+    monkeypatch.setattr("module.agent.prompt.TOPIC_BODIES", bodies)
     with pytest.raises(PromptError, match="占位符"):
-        compose_chat_prompt(
-            order=(TOPIC_PERSONA,), bodies={TOPIC_PERSONA: "$persona_section $extra"}
-        )
+        load_templates()
+
+
+def test_composition_rejects_an_empty_rendered_body():
+    topic = Topic(id="空主题", category=CATEGORY_IDENTITY, render=lambda context: " \n ")
+    with pytest.raises(PromptError, match="正文为空"):
+        compose_chat_prompt(TEMPLATE_CONTEXT, topics=(topic,))
+
+
+def test_composition_rejects_a_missing_context_value():
+    topic = Topic(
+        id="缺占位符",
+        category=CATEGORY_IDENTITY,
+        render=lambda context: context.as_mapping()["extra"],
+    )
+    with pytest.raises(PromptError, match="缺占位符"):
+        compose_chat_prompt(TEMPLATE_CONTEXT, topics=(topic,))
+
+
+def test_composition_rejects_duplicate_topic_ids():
+    topics = (
+        Topic(id="重复", category=CATEGORY_IDENTITY, render=lambda context: "一"),
+        Topic(id="重复", category=CATEGORY_BEHAVIOR, render=lambda context: "二"),
+    )
+    with pytest.raises(PromptError, match="重复"):
+        compose_chat_prompt(TEMPLATE_CONTEXT, topics=topics)
+
+
+def test_composition_rejects_an_unknown_category():
+    topic = Topic(id="未知", category="其它", render=lambda context: "正文")  # type: ignore[arg-type]
+    with pytest.raises(PromptError, match="范畴"):
+        compose_chat_prompt(TEMPLATE_CONTEXT, topics=(topic,))
+
+
+def test_composition_orders_categories_by_contract_not_registration():
+    topics = (
+        Topic(id="行为主题", category=CATEGORY_BEHAVIOR, render=lambda context: "行为正文"),
+        Topic(id="身份主题", category=CATEGORY_IDENTITY, render=lambda context: "身份正文"),
+        Topic(id="能力主题", category=CATEGORY_CAPABILITY, render=lambda context: "能力正文"),
+    )
+    text = compose_chat_prompt(TEMPLATE_CONTEXT, topics=topics)
+    assert text.index("身份主题") < text.index("能力主题") < text.index("行为主题")
 
 
 def test_unknown_role_is_error(templates):

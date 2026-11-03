@@ -40,6 +40,8 @@ class DailyLogEntry:
     content: str
     created_at: datetime
     persona_id: str = DEFAULT_PERSONA_ID
+    # 写入后由存储层回填的自增身份；读回的行同样携带它，供上下文按身份定位。
+    id: int | None = None
 
 
 class DailyLogView(BaseModel):

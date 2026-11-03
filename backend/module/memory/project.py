@@ -25,6 +25,7 @@ def from_row(row: DailyLogRow) -> DailyLogEntry:
         content=row.content,
         created_at=datetime.fromisoformat(row.created_at),
         persona_id=row.persona_id,
+        id=row.id,
     )
 
 

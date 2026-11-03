@@ -17,15 +17,17 @@ class Skill:
     name: str
     description: str
     tools: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class SkillSpec:
-    """代码侧登记的技能骨架：能力名、说明书文件名、可用工具。"""
+    """代码侧登记的技能骨架：技能名、说明书文件名、可用工具与路由关键词。"""
 
     name: str
     file: str
     tools: tuple[str, ...] = ()
+    keywords: tuple[str, ...] = ()
 
 
 class SkillRegistry:
@@ -36,12 +38,33 @@ class SkillRegistry:
 
     def register(self, spec: SkillSpec) -> None:
         if not spec.name:
-            raise ValueError("能力名不能为空")
+            raise ValueError("技能名不能为空")
         if spec.name in self._skills:
-            raise ValueError(f"能力 {spec.name} 已注册")
+            raise ValueError(f"技能 {spec.name} 已注册")
         path = self._directory / f"{spec.file}.md"
-        self._skills[spec.name] = Skill(spec.name, parse_head_note(path), spec.tools)
+        self._skills[spec.name] = Skill(spec.name, parse_head_note(path), spec.tools, spec.keywords)
         self._files[spec.name] = path
+
+    def route(self, task: str) -> Skill | None:
+        """按任务内容挑选技能；topic 不参与路由（D-23）。"""
+        text = task.strip()
+        if not text:
+            return None
+        best: tuple[int, int, Skill] | None = None
+        for order, skill in enumerate(self._skills.values()):
+            score = sum(len(keyword) for keyword in skill.keywords if keyword and keyword in text)
+            if score == 0:
+                continue
+            candidate = (score, -order, skill)
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+        if best is not None:
+            return best[2]
+        # 任务里直接点名技能时兜底；关键词优先，避免名字里常见的字压过意图。
+        for skill in self._skills.values():
+            if skill.name and skill.name in text:
+                return skill
+        return None
 
     def get(self, name: str) -> Skill | None:
         return self._skills.get(name)
@@ -92,9 +115,9 @@ def parse_head_note(path: Path) -> str:
     return note
 
 
-MEMORY_WRITE_CAPABILITY = "记忆写入"
-MEMORY_RETRIEVE_CAPABILITY = "记忆检索"
-DRAFT_NOTE_CAPABILITY = "自记笔记"
+MEMORY_WRITE_SKILL = "记忆写入"
+MEMORY_RETRIEVE_SKILL = "记忆检索"
+DRAFT_NOTE_SKILL = "自记笔记"
 MEMORY_WRITE_TOOLS = (
     "index",
     "read",
@@ -116,15 +139,52 @@ DRAFT_NOTE_TOOLS = (
     "replace",
     "delete",
 )
+MEMORY_WRITE_KEYWORDS = (
+    "记住",
+    "记下",
+    "记录下来",
+    "写入记忆",
+    "保存记忆",
+    "更新记忆",
+    "存入记忆",
+    "记到记忆",
+)
+MEMORY_RETRIEVE_KEYWORDS = (
+    "回忆",
+    "检索",
+    "查找",
+    "查一下",
+    "查询",
+    "搜索",
+    "记得",
+    "以前",
+    "之前",
+    "历史",
+    "说过",
+    "聊过",
+    "偏好",
+)
+DRAFT_NOTE_KEYWORDS = (
+    "记一下",
+    "笔记",
+    "便签",
+    "备忘",
+    "待办",
+    "提醒",
+    "清单",
+    "日程",
+)
 
 
 def memory_write_skill() -> SkillSpec:
-    return SkillSpec(MEMORY_WRITE_CAPABILITY, "memory_write", MEMORY_WRITE_TOOLS)
+    return SkillSpec(MEMORY_WRITE_SKILL, "memory_write", MEMORY_WRITE_TOOLS, MEMORY_WRITE_KEYWORDS)
 
 
 def memory_retrieve_skill() -> SkillSpec:
-    return SkillSpec(MEMORY_RETRIEVE_CAPABILITY, "memory_retrieve", MEMORY_RETRIEVE_TOOLS)
+    return SkillSpec(
+        MEMORY_RETRIEVE_SKILL, "memory_retrieve", MEMORY_RETRIEVE_TOOLS, MEMORY_RETRIEVE_KEYWORDS
+    )
 
 
 def draft_note_skill() -> SkillSpec:
-    return SkillSpec(DRAFT_NOTE_CAPABILITY, "draft_note", DRAFT_NOTE_TOOLS)
+    return SkillSpec(DRAFT_NOTE_SKILL, "draft_note", DRAFT_NOTE_TOOLS, DRAFT_NOTE_KEYWORDS)

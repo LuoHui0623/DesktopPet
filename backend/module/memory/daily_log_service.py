@@ -1,4 +1,5 @@
 from collections.abc import Callable, Sequence
+from dataclasses import replace
 from datetime import date, datetime, tzinfo
 from sqlite3 import IntegrityError
 from typing import Protocol
@@ -18,7 +19,7 @@ from module.memory.project import from_row, to_record, to_view
 
 
 class DailyLogStore(Protocol):
-    def append(self, records: Sequence[DailyLogRecord]) -> None: ...
+    def append(self, records: Sequence[DailyLogRecord]) -> list[int]: ...
 
     def by_date(self, day: str, *, persona_id: str | None = None) -> list[DailyLogRow]: ...
 
@@ -100,9 +101,21 @@ class DailyLogService:
 
     def record_user(
         self, text: str, *, at: datetime | None = None, persona_id: str | None = None
-    ) -> bool:
+    ) -> DailyLogEntry:
+        """写入本轮输入并回传带自增 id 的记录，供上下文按身份定位。"""
         now = at or self._clock(self._timezone)
-        return self._record_single("master", text, now, persona_id)
+        [entry] = self._append(
+            [
+                DailyLogEntry(
+                    event_time=now,
+                    role="master",
+                    content=text,
+                    created_at=now,
+                    persona_id=self._persona(persona_id),
+                )
+            ]
+        )
+        return entry
 
     def record_reply(
         self,
@@ -164,7 +177,7 @@ class DailyLogService:
             persona_id=persona,
         )
         try:
-            self._append([entry])
+            [entry] = self._append([entry])
         except IntegrityError:
             # 并发下唯一索引兜底：读回先落库的那一条。
             winner = self.read_recollection(iso, persona_id=persona)
@@ -221,11 +234,6 @@ class DailyLogService:
         )
         return [to_view(row) for row in rows]
 
-    def _record_single(
-        self, role: DailyLogRole, text: str, at: datetime, persona_id: str | None
-    ) -> bool:
-        return self._record_many(role, (text,), at, persona_id)
-
     def _record_many(
         self,
         role: DailyLogRole,
@@ -251,8 +259,10 @@ class DailyLogService:
     def _persona(self, persona_id: str | None) -> str:
         return persona_id or self.active_persona()
 
-    def _append(self, entries: Sequence[DailyLogEntry]) -> None:
-        self._store.append([to_record(entry) for entry in entries])
+    def _append(self, entries: Sequence[DailyLogEntry]) -> list[DailyLogEntry]:
+        """写入记录并回填自增身份；顺序与入参一一对应。"""
+        ids = self._store.append([to_record(entry) for entry in entries])
+        return [replace(entry, id=identity) for entry, identity in zip(entries, ids, strict=True)]
 
 
 def _utterances(assistant_text: str | Sequence[str]) -> tuple[str, ...]:

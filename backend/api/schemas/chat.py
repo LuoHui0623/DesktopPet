@@ -33,6 +33,7 @@ class ChatReplyResponse(BaseModel):
     recorded: bool
     sources: list[SourceOut] = Field(default_factory=list)
     messages: list[ReplyMessageOut] = Field(default_factory=list)
+    notices: list[str] = Field(default_factory=list)
 
 
 class ChatHistoryResponse(BaseModel):

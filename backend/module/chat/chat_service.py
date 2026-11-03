@@ -1,6 +1,6 @@
 import json
 import logging
-import re
+import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, tzinfo
@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
-from constants.speech import REPLY_MAX_ITEMS, SENTENCE_MAX_WIDTH, visible_width
+from constants.speech import SENTENCE_MAX_WIDTH, visible_width
 from infra.llm.tokens import TokenCountError
 from infra.llm.usage import TrackedChatModel, UsageSample, UsageSink, usage_scope
 from module.agent.approval import (
@@ -22,15 +22,18 @@ from module.agent.approval import (
     ApprovalTicket,
     AutoApprovalGate,
 )
+from module.agent.chat_output import (
+    ChatOutput,
+    DispatchRejectedError,
+    ModelOutputError,
+    _extract_json,
+    parse_chat_output,
+)
 from module.agent.orchestrator import (
     ERROR_REJECTED,
     STATUS_REJECTED,
     Checkpoint,
     Orchestrator,
-    PlanError,
-    PlanStep,
-    checkpoint_block,
-    parse_plan_data,
 )
 from module.agent.prompt import (
     CapabilityDescription,
@@ -40,12 +43,17 @@ from module.agent.prompt import (
 )
 from module.chat.activity import ChatActivity
 from module.chat.citations import CitedSource, resolve_sources, split_citations
-from module.chat.context import AssembledContext, ContextBuilder, MemoryFragment, PerceptionReader
+from module.chat.context import (
+    AssembledContext,
+    ContextBuilder,
+    MemoryFragment,
+    PerceptionReader,
+    visible_notices,
+)
 from module.chat.transcript import ChatLine, ChatTranscript
 from module.interaction.contracts import InteractionReader
 from module.llm import LlmService, LlmUnavailableError, UsageService
 from module.memory.contracts import DailyLogView
-from module.memory.daily_events import encode_event, event_text
 from module.memory.daily_log_service import DailyLogService
 from module.memory.memory_service import StructuredMemoryDoc
 from module.memory.recollection_service import RecollectionService
@@ -55,27 +63,20 @@ logger = logging.getLogger("pet")
 
 SENTENCE_ENDS = frozenset("。！？!?…")
 NEWLINE = "\n"
-FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
-JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
-TIMELINE_PREFIX = re.compile(r"^\[(?:master|me|assistant|system)\]\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
 # 英文缩写后的点不收句，其余英文句号按句末处理。
 ABBREVIATIONS = frozenset(
     {"mr", "mrs", "ms", "dr", "prof", "st", "jr", "sr", "vs", "etc", "e.g", "i.e"}
 )
 MAX_ATTEMPTS = 2
 DEFAULT_TIMEZONE = ZoneInfo("Asia/Shanghai")
-UNSPECIFIED_CAPABILITY = "（未指定）"
+UNSPECIFIED_TOPIC = "（未指定）"
 CONTEXT_OVERFLOW_MARKERS = (
     "maximum context length",
     "context length exceeded",
     "context window",
     "too many tokens",
 )
-CHECKPOINT_INTRO = (
-    "派发已执行完毕，下面是本次的检查点，每行一个 JSON，只供本轮使用：\n"
-    "{blocks}\n"
-    "现在只输出一条 chat 回复，把结果告诉主人。不要再派发，也不要复述 JSON。"
-)
+FOLLOW_UP_PROMPT = "本次派发已执行完毕。现在只用一条 chat 回复主人，把结果告诉主人；不要再派发。"
 
 PetState = Literal["idle", "thinking", "speaking", "executing", "sleeping"]
 
@@ -93,7 +94,9 @@ class ChatEvents(Protocol):
 
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None: ...
 
-    def done(self, message_id: str, messages: Sequence["ReplyMessage"]) -> None: ...
+    def done(
+        self, message_id: str, messages: Sequence["ReplyMessage"], notices: Sequence[str] = ()
+    ) -> None: ...
 
 
 class NoChatEvents:
@@ -106,7 +109,9 @@ class NoChatEvents:
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
         return None
 
-    def done(self, message_id: str, messages: Sequence["ReplyMessage"]) -> None:
+    def done(
+        self, message_id: str, messages: Sequence["ReplyMessage"], notices: Sequence[str] = ()
+    ) -> None:
         return None
 
 
@@ -149,6 +154,8 @@ class ChatReply:
     message_id: str
     messages: tuple[ReplyMessage, ...] = ()
     recorded: bool = True
+    # 用户可见的系统提示 code；只有 memory_unloaded 会经此通道出现（D-30）。
+    notices: tuple[str, ...] = ()
 
     @property
     def text(self) -> str:
@@ -237,121 +244,18 @@ def _text_of(content: Any) -> str:
     return ""
 
 
-class ModelOutputError(Exception):
-    pass
-
-
-class DispatchRejectedError(ModelOutputError):
-    pass
-
-
-@dataclass(frozen=True)
-class ChatOutput:
-    kind: Literal["chat", "dispatch"]
-    texts: tuple[str, ...] = ()
-    plan: tuple[PlanStep, ...] = ()
-
-    @property
-    def text(self) -> str:
-        return "\n".join(self.texts)
-
-
-def _reply_texts(value: Any) -> tuple[str, ...]:
-    """归一化模型给出的发言：接受旧的单字符串，也接受 1–4 项的数组。"""
-    if isinstance(value, str):
-        raw: list[Any] = [value]
-    elif isinstance(value, list):
-        raw = value
-    else:
-        raise ModelOutputError("text 必须是字符串或字符串数组")
-    if not raw:
-        raise ModelOutputError("text 至少要有 1 条发言")
-    if len(raw) > REPLY_MAX_ITEMS:
-        raise ModelOutputError(f"text 最多 {REPLY_MAX_ITEMS} 条发言")
-    texts: list[str] = []
-    for item in raw:
-        if not isinstance(item, str) or not item.strip():
-            raise ModelOutputError("text 数组的每一项都必须是非空字符串")
-        text = item.strip()
-        if not split_citations(text)[0]:
-            raise ModelOutputError("text 为空，只有引用标记")
-        texts.append(text)
-    return tuple(texts)
-
-
-def _extract_json(content: str) -> str:
-    """模型偶尔把 JSON 包进代码块或夹在说明文字里，取最外层对象再交给 json 解析。"""
-    text = FENCE.sub("", content.strip()).strip()
-    match = JSON_OBJECT.search(text)
-    return match.group(0) if match else text
-
-
-def _plain_reply_texts(content: str) -> tuple[str, ...]:
-    """兜底解析模型直接说的人话：按空行分段，去掉它抄来的时间线前缀。"""
-    items: list[str] = []
-    current: list[str] = []
-
-    def flush() -> None:
-        if current:
-            items.append("\n".join(current))
-            current.clear()
-
-    for raw in _extract_json(content).splitlines():
-        if not raw.strip():
-            flush()
-            continue
-        line, prefixed = TIMELINE_PREFIX.subn("", raw)
-        if prefixed:
-            flush()
-        if line.strip():
-            current.append(line.strip())
-    flush()
-    if len(items) > REPLY_MAX_ITEMS:
-        items[REPLY_MAX_ITEMS - 1 :] = ["\n".join(items[REPLY_MAX_ITEMS - 1 :])]
-    return tuple(items)
-
-
-def parse_chat_output(content: str) -> ChatOutput:
-    try:
-        data = json.loads(_extract_json(content))
-    except ValueError as exc:
-        if "{" in content or "}" in content:
-            raise ModelOutputError("回复不是合法的 JSON") from exc
-        texts = _plain_reply_texts(content)
-        if not texts:
-            raise ModelOutputError("回复不是合法的 JSON") from exc
-        return ChatOutput(kind="chat", texts=_reply_texts(list(texts)))
-    if not isinstance(data, dict) or not data:
-        raise ModelOutputError("回复必须是 JSON 对象")
-    if next(iter(data)) != "type":
-        raise ModelOutputError("type 必须是第一个字段")
-    if data["type"] == "dispatch":
-        if set(data) != {"type", "plan"}:
-            raise DispatchRejectedError("dispatch 只能包含 type 与 plan 两个字段")
-        try:
-            plan = parse_plan_data(data["plan"])
-        except PlanError as exc:
-            raise DispatchRejectedError(f"派发计划不合法：{exc}") from exc
-        return ChatOutput(kind="dispatch", plan=tuple(plan))
-    if data["type"] != "chat":
-        raise ModelOutputError(f"type 不合法：{data['type']}")
-    if set(data) != {"type", "text"}:
-        raise ModelOutputError("chat 只能包含 type 与 text 两个字段")
-    return ChatOutput(kind="chat", texts=_reply_texts(data["text"]))
-
-
-def _attempted_capability(content: str) -> str:
+def _attempted_topic(content: str) -> str:
     try:
         data = json.loads(_extract_json(content))
     except ValueError:
-        return UNSPECIFIED_CAPABILITY
+        return UNSPECIFIED_TOPIC
     plan = data.get("plan") if isinstance(data, dict) else None
     if isinstance(plan, list):
         for item in plan:
-            capability = item.get("capability") if isinstance(item, dict) else None
-            if isinstance(capability, str) and capability.strip():
-                return capability.strip()
-    return UNSPECIFIED_CAPABILITY
+            topic = item.get("topic") if isinstance(item, dict) else None
+            if isinstance(topic, str) and topic.strip():
+                return topic.strip()
+    return UNSPECIFIED_TOPIC
 
 
 def _prompt_digest(template_digest: str, persona_id: str, persona_version: int) -> str:
@@ -404,6 +308,8 @@ class ChatService:
         self._interactions = interactions
         self._usage = usage
         self._recollection = recollection
+        # 被动 query 的 session 级占位：同一时刻只处理一个用户回合（D-22）。
+        self._turn_slot = threading.Lock()
         self._transcript = ChatTranscript(
             self._timezone, clock=self._clock, loader=self._restore_lines
         )
@@ -418,6 +324,17 @@ class ChatService:
         return EventApprovalGate(events, self._approvals)
 
     def chat(self, request: ChatRequest) -> ChatReply:
+        # 主动轮不绑定用户输入，不占位、不受串行约束（Q-16）。
+        if request.user_text is not None:
+            if not self._turn_slot.acquire(blocking=False):
+                raise ChatError("session_busy", "上一轮对话还在处理中")
+            try:
+                return self._with_activity(request)
+            finally:
+                self._turn_slot.release()
+        return self._with_activity(request)
+
+    def _with_activity(self, request: ChatRequest) -> ChatReply:
         if self._activity is None:
             return self._run(request)
         with self._activity:
@@ -448,11 +365,17 @@ class ChatService:
         snapshot = self._current_persona()
         self._transcript.set_persona(snapshot.id)
         # 先把主人这句落库：回忆要读当天聊天记录，模型不可用时这句也不能丢。
-        persisted = True
+        current_record = None
         if user_text is not None:
-            persisted = self._daily_log.record_user(
-                user_text, at=received_at, persona_id=snapshot.id
-            )
+            try:
+                current_record = self._daily_log.record_user(
+                    user_text, at=received_at, persona_id=snapshot.id
+                )
+            except Exception as exc:
+                # 落库是回复的必要条件：失败即终止本轮，不调模型、不回复（D-21）。
+                logger.exception("本轮输入落库失败")
+                raise ChatError("record_failed", "本轮输入没能存下来") from exc
+        persisted = user_text is None or current_record is not None
         # 回忆可能等待较久，落库之后、拼上下文之前等，跨零点则给新的一天补一次。
         recollection = self._await_recollection(snapshot, turn_id)
         # 先构建 chat 系统提示词，再交给上下文构建器拼装历史与记忆（D2、Q4）。
@@ -475,7 +398,6 @@ class ChatService:
             transcript=self._transcript,
             base_prompt=prompt,
             recollection=recollection,
-            skip_recorded_input=user_text is not None,
         )
         assembled = builder.build(
             user_text,
@@ -483,6 +405,7 @@ class ChatService:
             trigger_reason=trigger_reason,
             interaction_lines=self._interaction_lines(user_text is not None),
             received_at=received_at,
+            current_record=current_record,
         )
         messages = assembled.messages
         digest = _prompt_digest(assembled.template_digest, snapshot.id, snapshot.version)
@@ -564,7 +487,6 @@ class ChatService:
         recorded = persisted and self._daily_log.record_reply(
             replies, at=replied_at, persona_id=persona_id
         )
-        self._remember(assembled.notes)
         message_id = uuid4().hex
         messages = tuple(
             ReplyMessage(
@@ -575,11 +497,15 @@ class ChatService:
             )
             for reply, cited in zip(replies, citations, strict=True)
         )
+        # 记忆降级不占用回复正文，经系统状态通道告诉用户（D-30）。
+        notices = visible_notices(assembled.warnings)
         events.status("speaking")
         for segment in split_segments("\n".join(replies)):
             events.chunk(message_id, segment)
-        events.done(message_id, messages)
-        return ChatReply(message_id=message_id, messages=messages, recorded=recorded)
+        events.done(message_id, messages, notices)
+        return ChatReply(
+            message_id=message_id, messages=messages, recorded=recorded, notices=notices
+        )
 
     def _reply_from_dispatch(
         self,
@@ -608,33 +534,16 @@ class ChatService:
             turn_id=turn_id,
         )
         self._record_rejections(checkpoints)
-        self._record_assistant_backfill(checkpoints, persona_id=persona_id)
-        blocks = "\n".join(checkpoint_block(plan_id, item) for item in checkpoints)
-        follow_up = [
-            *messages,
-            AIMessage(
-                content=json.dumps(
-                    {
-                        "type": "dispatch",
-                        "plan": [
-                            {"capability": step.capability, "task": step.task}
-                            for step in output.plan
-                        ],
-                    },
-                    ensure_ascii=False,
-                )
-            ),
-            HumanMessage(content=CHECKPOINT_INTRO.format(blocks=blocks)),
-        ]
+        merged = self._record_assistant_backfill(checkpoints, persona_id=persona_id)
+        follow_up = [*messages]
+        if merged:
+            follow_up.append(AIMessage(content=merged))
+        follow_up.append(HumanMessage(content=FOLLOW_UP_PROMPT))
         events.status("thinking")
         generated = self._generate(client, follow_up, digest, allow_dispatch=False, turn_id=turn_id)
         return self._finish_reply(
             generated.texts, assembled, events, persona_id=persona_id, persisted=persisted
         )
-
-    def _remember(self, notes: Sequence[ChatLine]) -> None:
-        for note in notes:
-            self._transcript.add_note(note)
 
     def _restore_lines(self, day: date, persona_id: str) -> list[ChatLine]:
         """把当天已落库的聊天行还原成带角色的时间线，事件与系统消息不进入上下文。"""
@@ -646,6 +555,8 @@ class ChatService:
                         at=entry.created_at,
                         message=HumanMessage(content=entry.content),
                         role="master",
+                        record_id=entry.id,
+                        record_day=entry.event_time.date(),
                     )
                 )
             else:
@@ -655,6 +566,8 @@ class ChatService:
                         message=AIMessage(content=entry.content),
                         is_reply=True,
                         role=entry.role,
+                        record_id=entry.id,
+                        record_day=entry.event_time.date(),
                     )
                 )
         return lines
@@ -753,16 +666,22 @@ class ChatService:
 
     def _record_assistant_backfill(
         self, checkpoints: Sequence[Checkpoint], *, persona_id: str
-    ) -> None:
-        """每个子代理一条 assistant 行；存结果正文，不存检查点包装与通用提示。"""
-        texts: list[str] = []
-        for item in checkpoints:
-            body = ((item.output if item.ok else item.error) or "").strip()
-            if body:
-                texts.append(body)
-        if not texts:
-            return
-        self._daily_log.record_assistant(texts, at=self._now(), persona_id=persona_id)
+    ) -> str:
+        """本轮所有子代理结果（含失败/拒绝原因）合并成一条 assistant 行并回传正文。
+
+        回注与落库共用这一份正文：后续回合读到的记录就是二次生成收到的内容（D-24/D-27）。
+        存结果正文，不存检查点包装、plan_id 或通用提示。
+        """
+        merged = "\n".join(
+            body
+            for body in (
+                ((item.output if item.ok else item.error) or "").strip() for item in checkpoints
+            )
+            if body
+        )
+        if merged:
+            self._daily_log.record_assistant(merged, at=self._now(), persona_id=persona_id)
+        return merged
 
     def _record_rejections(self, checkpoints: Sequence[Checkpoint]) -> None:
         for checkpoint in checkpoints:
@@ -773,7 +692,7 @@ class ChatService:
             try:
                 self._remember_event(
                     "approval_rejected",
-                    capability=checkpoint.capability,
+                    topic=checkpoint.topic,
                     reason=checkpoint.error or "",
                 )
             except Exception:
@@ -783,22 +702,15 @@ class ChatService:
         try:
             self._remember_event(
                 "dispatch_failed",
-                capability=_attempted_capability(content),
+                topic=_attempted_topic(content),
                 reason=reason,
             )
         except Exception:
             logger.exception("派发失败事件写入失败")
 
     def _remember_event(self, event_type: str, **fields: str) -> None:
-        content = encode_event(event_type, **fields)
-        if not self._daily_log.record_event(event_type, **fields):
-            return
-        self._transcript.add_note(
-            ChatLine(
-                at=self._now(),
-                message=AIMessage(content=f"[事件] {event_text(content)}"),
-            )
-        )
+        """诊断事件只写审计行，永不进入模型上下文（D-24/T-06）。"""
+        self._daily_log.record_event(event_type, **fields)
 
     def _now(self) -> datetime:
         clock = self._clock or (lambda zone: datetime.now(zone))

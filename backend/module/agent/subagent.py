@@ -25,13 +25,9 @@ from module.agent.skills import Skill
 from module.llm import LlmService, LlmUnavailableError
 
 SUBAGENT_TEMPLATE = "subagent.md"
-SUBAGENT_PLACEHOLDERS = frozenset(
-    {"capability_name", "capability_description", "task", "tools", "max_steps", "draft"}
-)
+SUBAGENT_PLACEHOLDERS = frozenset({"request", "tools", "max_steps", "draft"})
 SUBAGENT_DRAFT_TEMPLATE = "subagent_draft.md"
-SUBAGENT_DRAFT_PLACEHOLDERS = frozenset(
-    {"capability_name", "capability_description", "task", "tools", "declarable", "max_steps"}
-)
+SUBAGENT_DRAFT_PLACEHOLDERS = frozenset({"request", "tools", "declarable", "max_steps"})
 ACTIONS = ("tool", "finish", "draft")
 INVALID_HINT = "回复不是合法的JSON格式：请只输出一个标准 JSON 对象"
 NO_DRAFT = "（本次没有草案，按任务本身执行）"
@@ -101,6 +97,11 @@ def _clean_reply(text: str) -> str:
 
 def _clip_log(text: str) -> str:
     return text if len(text) <= LOG_TEXT_LIMIT else text[:LOG_TEXT_LIMIT] + "…"
+
+
+def render_request(topic: str, task: str) -> str:
+    """主代理派发的统一渲染：主题行包在【】里，下一行是任务本身，原样嵌入不转义（D-08/D-23）。"""
+    return f"【{topic}】\n{task}"
 
 
 def _text_of(content: Any) -> str:
@@ -189,6 +190,7 @@ class SubAgent:
     def draft(
         self,
         skill: Skill,
+        topic: str,
         task: str,
         run_id: str,
         *,
@@ -206,9 +208,10 @@ class SubAgent:
         except LlmUnavailableError as exc:
             return SubAgentDraft(False, error_code="model_unavailable", error=str(exc))
         declarable = tuple(name for name in skill.tools if name not in names)
+        request = render_request(topic, task)
         messages: list[BaseMessage] = [
-            SystemMessage(content=self._draft_prompt(skill, task, picked, declarable)),
-            HumanMessage(content=task),
+            SystemMessage(content=self._draft_prompt(skill, request, picked, declarable)),
+            HumanMessage(content=request),
         ]
         loop = self._react(
             client=client,
@@ -220,7 +223,7 @@ class SubAgent:
             phase=PHASE_DRAFT,
             accept=lambda action: _accept_draft(action, skill),
             invalid_limit=DRAFT_INVALID_LIMIT,
-            capability=skill.name,
+            topic=topic,
         )
         if loop.error_code is not None:
             return SubAgentDraft(
@@ -237,6 +240,7 @@ class SubAgent:
     def run(
         self,
         skill: Skill,
+        topic: str,
         task: str,
         run_id: str,
         *,
@@ -252,9 +256,10 @@ class SubAgent:
             client = self._llm.client_for("consolidate")
         except LlmUnavailableError as exc:
             return SubAgentResult(False, None, "model_unavailable", str(exc))
+        request = render_request(topic, task)
         messages: list[BaseMessage] = [
-            SystemMessage(content=self._execute_prompt(skill, task, picked, draft)),
-            HumanMessage(content=task),
+            SystemMessage(content=self._execute_prompt(skill, request, picked, draft)),
+            HumanMessage(content=request),
         ]
         loop = self._react(
             client=client,
@@ -266,7 +271,7 @@ class SubAgent:
             phase=PHASE_EXECUTE,
             accept=_accept_finish,
             invalid_limit=self._max_steps,
-            capability=skill.name,
+            topic=topic,
         )
         if loop.error_code is not None:
             return SubAgentResult(False, None, loop.error_code, loop.error, loop.steps)
@@ -285,7 +290,7 @@ class SubAgent:
         phase: str,
         accept: Accept,
         invalid_limit: int,
-        capability: str,
+        topic: str,
     ) -> _Loop:
         steps: list[dict[str, Any]] = []
         invalid = 0
@@ -300,8 +305,8 @@ class SubAgent:
                     response = client.invoke(messages)
             except Exception as exc:
                 logger.error(
-                    "模型调用失败：能力=%s 阶段=%s 第%d步 错误=%s",
-                    capability,
+                    "模型调用失败：主题=%s 阶段=%s 第%d步 错误=%s",
+                    topic,
                     phase,
                     number,
                     exc,
@@ -316,8 +321,8 @@ class SubAgent:
                 hint = accept(action)
             if hint is not None:
                 logger.warning(
-                    "动作无效：能力=%s 阶段=%s 第%d步 原因=%s 回复=%s",
-                    capability,
+                    "动作无效：主题=%s 阶段=%s 第%d步 原因=%s 回复=%s",
+                    topic,
                     phase,
                     number,
                     hint,
@@ -328,8 +333,8 @@ class SubAgent:
                 invalid += 1
                 if invalid >= invalid_limit:
                     logger.error(
-                        "放弃执行：能力=%s 阶段=%s 连续 %d 次动作无效，最后原因=%s",
-                        capability,
+                        "放弃执行：主题=%s 阶段=%s 连续 %d 次动作无效，最后原因=%s",
+                        topic,
                         phase,
                         invalid,
                         hint,
@@ -356,7 +361,7 @@ class SubAgent:
                 }
             )
             messages.append(HumanMessage(content=_observation(result)))
-        logger.error("超过最大步数：能力=%s 阶段=%s 步数=%d", capability, phase, self._max_steps)
+        logger.error("超过最大步数：主题=%s 阶段=%s 步数=%d", topic, phase, self._max_steps)
         return _Loop(
             steps,
             error_code="max_steps",
@@ -384,12 +389,10 @@ class SubAgent:
         return result
 
     def _execute_prompt(
-        self, skill: Skill, task: str, tools: Sequence[BaseTool], draft: str
+        self, skill: Skill, request: str, tools: Sequence[BaseTool], draft: str
     ) -> str:
         return self._template.substitute(
-            capability_name=skill.name,
-            capability_description=skill.description,
-            task=task,
+            request=request,
             tools=_tool_lines(tools),
             max_steps=str(self._max_steps),
             draft=draft.strip() or NO_DRAFT,
@@ -398,14 +401,12 @@ class SubAgent:
     def _draft_prompt(
         self,
         skill: Skill,
-        task: str,
+        request: str,
         tools: Sequence[BaseTool],
         declarable: Sequence[str],
     ) -> str:
         return self._draft_template.substitute(
-            capability_name=skill.name,
-            capability_description=skill.description,
-            task=task,
+            request=request,
             tools=_tool_lines(tools),
             declarable=", ".join(declarable) or NO_DECLARABLE,
             max_steps=str(self._max_steps),

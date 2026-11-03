@@ -13,11 +13,15 @@ from module.chat.context import (
     CURRENT_SEPARATOR,
     KIND_DAILY,
     PROACTIVE_TRIGGER,
+    WARNING_FRAGMENTS_DROPPED,
+    WARNING_MEMORY_UNLOADED,
     ContextBuilder,
     MemoryFragment,
     day_marker,
+    visible_notices,
 )
 from module.chat.transcript import ChatLine
+from module.memory.contracts import DailyLogEntry
 from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 from service.perception.events import PerceptionEvent, PerceptionEventKind
 
@@ -29,16 +33,47 @@ def at(hour: int, minute: int = 0, day: int = 18, second: int = 0) -> datetime:
     return datetime(2026, 10, day, hour, minute, second, tzinfo=TZ)
 
 
-def master(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=HumanMessage(content=text), role="master")
+def master(moment: datetime, text: str, identity: int | None = None) -> ChatLine:
+    return ChatLine(
+        at=moment,
+        message=HumanMessage(content=text),
+        role="master",
+        record_id=identity,
+        record_day=moment.date(),
+    )
 
 
-def me(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=AIMessage(content=text), is_reply=True, role="me")
+def me(moment: datetime, text: str, identity: int | None = None) -> ChatLine:
+    return ChatLine(
+        at=moment,
+        message=AIMessage(content=text),
+        is_reply=True,
+        role="me",
+        record_id=identity,
+        record_day=moment.date(),
+    )
 
 
-def assistant(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=AIMessage(content=text), is_reply=True, role="assistant")
+def assistant(moment: datetime, text: str, identity: int | None = None) -> ChatLine:
+    return ChatLine(
+        at=moment,
+        message=AIMessage(content=text),
+        is_reply=True,
+        role="assistant",
+        record_id=identity,
+        record_day=moment.date(),
+    )
+
+
+def record(moment: datetime, text: str, identity: int) -> DailyLogEntry:
+    return DailyLogEntry(
+        event_time=moment,
+        role="master",
+        content=text,
+        created_at=moment,
+        persona_id="小桌",
+        id=identity,
+    )
 
 
 def expects(moment: datetime, role: str, text: str) -> str:
@@ -58,13 +93,11 @@ class Reader:
 
     def __init__(self, lines: list[ChatLine]) -> None:
         self._lines = lines
+        self.days: list[object] = []
 
-    def lines(self) -> tuple[ChatLine, ...]:
+    def lines(self, day: object = None) -> tuple[ChatLine, ...]:
+        self.days.append(day)
         return tuple(self._lines)
-
-
-def note(moment: datetime, text: str) -> ChatLine:
-    return ChatLine(at=moment, message=AIMessage(content=text))
 
 
 class Clock:
@@ -153,8 +186,8 @@ def test_proactive_build_appends_trigger_block_and_skips_perception(parts):
     assert result.messages[-1] == HumanMessage(
         content=PROACTIVE_TRIGGER.format(reason="使用 code 已 3 分钟", time="21:30:00")
     )
-    assert result.notes == ()
-    assert all("[感知" not in message.content for message in result.messages)
+    assert result.warnings == ()
+    assert all("[event]" not in message.content for message in result.messages)
 
 
 def test_structured_block_is_omitted_when_document_is_empty(parts):
@@ -170,7 +203,7 @@ def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch
     monkeypatch.setattr(parts["structured"], "lines", explode)
     result = parts["builder"]().build("你好")
     assert "【结构化记忆】" not in result.messages[0].content
-    assert any("结构化记忆无法读取" in warning for warning in result.warnings)
+    assert [warning.code for warning in result.warnings] == [WARNING_MEMORY_UNLOADED]
 
 
 def test_structured_memory_is_injected_in_full_without_truncation(parts):
@@ -316,34 +349,6 @@ def test_base_prompt_built_by_the_service_is_used_as_is(parts):
     assert text.endswith(day_marker(at(21, 30)))
 
 
-def test_appended_event_lines_stay_assistant_messages(parts):
-    lines = (
-        master(at(9), "一"),
-        me(at(9), "二"),
-        note(at(9, 5), "[事件] 派发失败：记忆检索，超时"),
-        master(at(9, 10), "三"),
-    )
-    messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("你好").messages
-    assert [type(message) for message in messages[1:-1]] == [
-        HumanMessage,
-        AIMessage,
-        AIMessage,
-        AIMessage,
-        HumanMessage,
-    ]
-    assert messages[3].content == CURRENT_SEPARATOR
-    assert messages[4].content == "[事件] 派发失败：记忆检索，超时"
-
-
-def test_event_before_any_message_is_kept(parts):
-    lines = (note(at(9), "[事件] 审批被拒绝：记忆写入，未确认"),)
-    messages = parts["builder"](transcript_=parts["transcript"](*lines)).build("你好").messages
-    assert [message.content for message in messages[1:-1]] == [
-        "[事件] 审批被拒绝：记忆写入，未确认"
-    ]
-    assert isinstance(messages[1], AIMessage)
-
-
 def test_standalone_me_and_consecutive_roles_are_kept(parts):
     lines = (
         me(at(9), "先开口"),
@@ -376,7 +381,7 @@ def test_full_transcript_is_kept_without_trimming(parts):
     result = parts["builder"](transcript_=parts["transcript"](*lines)).build("现在")
     assert any("第0轮" in message.content for message in result.messages)
     assert any("第19轮" in message.content for message in result.messages)
-    assert not any("已裁剪" in warning for warning in result.warnings)
+    assert result.warnings == ()
 
 
 def test_fragments_over_budget_are_dropped_and_counted(parts, monkeypatch):
@@ -384,7 +389,24 @@ def test_fragments_over_budget_are_dropped_and_counted(parts, monkeypatch):
     fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
     result = parts["builder"]().build("你好", fragments)
     assert result.dropped_fragments > 0
-    assert any("已舍弃" in warning for warning in result.warnings)
+    assert [warning.code for warning in result.warnings] == [WARNING_FRAGMENTS_DROPPED]
+
+
+def test_only_memory_unload_is_mapped_to_a_user_notice(parts, monkeypatch):
+    def explode() -> list[str]:
+        raise MemoryReadError("坏了")
+
+    monkeypatch.setattr(parts["structured"], "lines", explode)
+    result = parts["builder"]().build("你好")
+    assert visible_notices(result.warnings) == (WARNING_MEMORY_UNLOADED,)
+
+
+def test_dropped_fragments_stay_warnings_without_user_notices(parts, monkeypatch):
+    monkeypatch.setattr(context_module, "FRAGMENT_TOKEN_BUDGET", 40)
+    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
+    result = parts["builder"]().build("你好", fragments)
+    assert [warning.code for warning in result.warnings] == [WARNING_FRAGMENTS_DROPPED]
+    assert visible_notices(result.warnings) == ()
 
 
 def test_result_reports_template_digest_and_size(parts):
@@ -418,7 +440,7 @@ def test_citation_rule_is_omitted_when_nothing_is_injected(parts):
     assert context_module.CITATION_RULE not in result.messages[0].content
 
 
-def test_perception_after_last_reply_is_injected_after_separator(parts):
+def test_perception_events_are_standalone_assistant_messages_in_current(parts):
     lines = (master(at(9), "一"), me(at(9, 1), "二"))
     perception = FakePerception(
         [
@@ -439,18 +461,19 @@ def test_perception_after_last_reply_is_injected_after_separator(parts):
         AIMessage,
     ]
     assert messages[3].content == CURRENT_SEPARATOR
-    assert messages[4].content == "[感知 09:30] 使用 code 已 5 分钟"
-    assert messages[5].content == "[感知 09:40] 离开 12 分钟后回来"
+    assert messages[4].content == "[event][09:30:00]使用 code 已 5 分钟"
+    assert messages[5].content == "[event][09:40:00]离开 12 分钟后回来"
 
 
-def test_perception_notes_are_returned_for_the_transcript(parts):
-    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 9, 30, exe="code", minutes=5)])
-    result = parts["builder"](perception=perception).build("你好")
-    assert [line.message.content for line in result.notes] == ["[感知 09:30] 使用 code 已 5 分钟"]
-    assert result.notes[0].at == at(9, 30)
+def test_perception_events_precede_the_input_even_when_they_happen_later(parts):
+    """current 区顺序固定：感知事件在前，本轮输入最后（D-12）。"""
+    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 21, 40, exe="code", minutes=5)])
+    messages = parts["builder"](perception=perception).build("你好").messages
+    assert messages[-2].content == "[event][21:40:00]使用 code 已 5 分钟"
+    assert messages[-1].content == "[master][21:30:00]你好"
 
 
-def test_perception_injection_is_capped_at_three(parts):
+def test_perception_injection_is_capped_at_five(parts):
     perception = FakePerception(
         [
             pe(PerceptionEventKind.APP_IN_USE, 8, 0, exe="a", minutes=3),
@@ -458,28 +481,39 @@ def test_perception_injection_is_capped_at_three(parts):
             pe(PerceptionEventKind.APP_IN_USE, 8, 20, exe="c", minutes=3),
             pe(PerceptionEventKind.APP_IN_USE, 8, 30, exe="d", minutes=3),
             pe(PerceptionEventKind.APP_IN_USE, 8, 40, exe="e", minutes=3),
+            pe(PerceptionEventKind.APP_IN_USE, 8, 50, exe="f", minutes=3),
         ]
     )
     messages = parts["builder"](perception=perception).build("你好").messages
-    notes = [message.content for message in messages if "[感知" in message.content]
-    assert len(notes) == 3
-    assert "使用 e" in notes[-1]
+    events = [message.content for message in messages if "[event]" in message.content]
+    assert len(events) == 5
+    assert "使用 b" in events[0]
+    assert "使用 f" in events[-1]
 
 
-def test_perception_note_from_an_earlier_turn_stays_in_history(parts):
-    lines = (
-        master(at(9), "一"),
-        note(at(9, 2), "[感知 09:01] 打开 vscode"),
-        me(at(9, 5), "二"),
-    )
+def test_perception_read_failure_is_silent(parts, monkeypatch):
     perception = FakePerception([])
-    messages = (
-        parts["builder"](transcript_=parts["transcript"](*lines), perception=perception)
-        .build("你好")
-        .messages
-    )
-    assert messages[2].content == "[感知 09:01] 打开 vscode"
-    assert messages[-2].content == CURRENT_SEPARATOR
+
+    def explode(limit: int) -> tuple[PerceptionEvent, ...]:
+        raise OSError("采集器不可用")
+
+    monkeypatch.setattr(perception, "recent_context_events", explode)
+    result = parts["builder"](perception=perception).build("你好")
+    assert not any("[event]" in message.content for message in result.messages)
+    assert all(warning.code != WARNING_MEMORY_UNLOADED for warning in result.warnings)
+
+
+def test_previous_turn_events_are_not_carried_into_this_turn(parts):
+    """感知只临时注入本轮，下一回合不会自动带入（D-04）。"""
+    first = parts["builder"](
+        perception=FakePerception(
+            [pe(PerceptionEventKind.APP_IN_USE, 9, 30, exe="code", minutes=5)]
+        )
+    ).build("你好")
+    assert any("[event]" in message.content for message in first.messages)
+
+    second = parts["builder"](perception=FakePerception([])).build("再见")
+    assert not any("[event]" in message.content for message in second.messages)
 
 
 def test_no_reply_yet_means_everything_is_current(parts):
@@ -505,4 +539,84 @@ def test_perception_from_another_day_is_ignored(parts):
         ]
     )
     messages = parts["builder"](perception=perception).build("你好").messages
-    assert not any("[感知" in message.content for message in messages)
+    assert not any("[event]" in message.content for message in messages)
+
+
+def test_current_record_is_excluded_by_identity_not_by_text(parts):
+    """历史里同文的另一条记录不能被误删，本轮记录按身份剔除（T-03）。"""
+    lines = (
+        master(at(9), "在吗", identity=1),
+        me(at(9, 1), "在的", identity=2),
+        master(at(10), "在吗", identity=3),
+    )
+    current = record(at(10), "在吗", identity=4)
+    messages = (
+        parts["builder"](transcript_=parts["transcript"](*lines))
+        .build("在吗", current_record=current)
+        .messages
+    )
+    # 第一条「在吗」保留在历史；本轮记录由读回内容作为最后一条输入。
+    assert messages[1].content == "[master][09:00:00]在吗"
+    assert messages[-1].content == "[master][10:00:00]在吗"
+    assert [message.content for message in messages].count("[master][10:00:00]在吗") == 1
+
+
+def test_current_record_is_not_readded_from_raw_input(parts):
+    """本轮输入使用读回记录，不从原始入参再追加一份（D-03）。"""
+    current = record(at(21, 30), "  你好  ", identity=7)
+    messages = parts["builder"]().build("  你好  ", current_record=current).messages
+    assert messages[-1].content == "[master][21:30:00]  你好  "
+    assert len(messages) == 2
+
+
+def test_adjacent_identical_query_is_dropped_only_for_model_context(parts):
+    lines = (
+        master(at(9), "在吗", identity=1),
+        me(at(9, 1), "在的", identity=2),
+        master(at(10), "在吗", identity=3),
+        me(at(10, 1), "又在？", identity=4),
+    )
+    current = record(at(11), "在吗", identity=5)
+    messages = (
+        parts["builder"](transcript_=parts["transcript"](*lines))
+        .build("在吗", current_record=current)
+        .messages
+    )
+    assert "[master][10:00:00]在吗" not in [message.content for message in messages]
+    assert "[master][09:00:00]在吗" in [message.content for message in messages]
+    assert messages[-1].content == "[master][11:00:00]在吗"
+    assert "[me][10:01:00]又在？" in [message.content for message in messages]
+
+
+def test_a_b_a_keeps_both_queries(parts):
+    lines = (
+        master(at(9), "A", identity=1),
+        me(at(9, 1), "答一", identity=2),
+        master(at(10), "B", identity=3),
+        me(at(10, 1), "答二", identity=4),
+    )
+    current = record(at(11), "A", identity=5)
+    messages = (
+        parts["builder"](transcript_=parts["transcript"](*lines))
+        .build("A", current_record=current)
+        .messages
+    )
+    contents = [message.content for message in messages if message.content.endswith("A")]
+    assert contents == [
+        "[master][09:00:00]A",
+        "[master][11:00:00]A",
+    ]
+
+
+def test_invisible_current_record_does_not_delete_the_previous_query(parts):
+    """本轮记录读不回来时，不能因正文相同误删上一轮（T-04）。"""
+    lines = (
+        master(at(9), "在吗", identity=1),
+        me(at(9, 1), "在的", identity=2),
+    )
+    messages = (
+        parts["builder"](transcript_=parts["transcript"](*lines))
+        .build("在吗", current_record=None)
+        .messages
+    )
+    assert "[master][09:00:00]在吗" in [message.content for message in messages]

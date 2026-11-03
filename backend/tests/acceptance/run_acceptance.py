@@ -344,17 +344,14 @@ def _run(api: Api, tap: EventTap, port: int) -> None:
     fired = tap.wait_for_approvals(approvals_before + 1)
     tap.wait_until_idle_after(mark)
     fresh = tap.events[mark:]
-    capabilities = [a["item"].get("capability") for a in tap.approvals[approvals_before:]]
+    topics = [a["item"].get("topic") for a in tap.approvals[approvals_before:]]
     structured_after = api.call("GET", "/api/memories").json()["structured"]
     record(
         "subagent",
         "POST /api/chat 触发记忆写入 → 审批 → 校验 structured.md",
         "推送记忆写入审批、审批后写入合成事实",
-        f"{actual}; 审批={capabilities}, 含青柚-7={'青柚-7' in structured_after},"
-        f" 回复={write_reply!r}",
-        "通过"
-        if fired and "记忆写入" in capabilities and "青柚-7" in structured_after
-        else "未通过",
+        f"{actual}; 审批={topics}, 含青柚-7={'青柚-7' in structured_after}, 回复={write_reply!r}",
+        "通过" if fired and any(topics) and "青柚-7" in structured_after else "未通过",
         f"status={[e.get('state') for e in fresh if e.get('type') == 'status']}",
     )
 
@@ -365,13 +362,13 @@ def _run(api: Api, tap: EventTap, port: int) -> None:
     retrieve_reply = response.json().get("text", "") if response.status_code == 200 else ""
     fired = tap.wait_for_approvals(approvals_before + 1)
     tap.wait_until_idle_after(mark)
-    capabilities = [a["item"].get("capability") for a in tap.approvals[approvals_before:]]
+    topics = [a["item"].get("topic") for a in tap.approvals[approvals_before:]]
     record(
         "subagent",
         "POST /api/chat 触发记忆检索 → 审批 → 校验回复",
         "推送记忆检索审批，回复带出合成事实",
-        f"{actual}; 审批={capabilities}, 回复={retrieve_reply!r}",
-        "通过" if fired and "记忆检索" in capabilities and "青柚-7" in retrieve_reply else "未通过",
+        f"{actual}; 审批={topics}, 回复={retrieve_reply!r}",
+        "通过" if fired and any(topics) and "青柚-7" in retrieve_reply else "未通过",
     )
 
     # 6. 设置、形象、菜单、互动

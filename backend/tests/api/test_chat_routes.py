@@ -19,6 +19,7 @@ from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.contracts import DailyLogRecord, DailyLogRole
 from module.memory.daily_log_service import DailyLogService
+from module.memory.memory_service import MemoryReadError
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
 from module.persona.repository import DbPersonaVersions
@@ -86,7 +87,7 @@ class FakeChat:
         return AIMessage(content=outcome)
 
 
-def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None):
+def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None, structured=None):
     db_file = tmp_path / "pet.db"
     conn = connect(db_file)
     migrate(conn)
@@ -111,6 +112,7 @@ def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None):
         load_templates(),
         db_usage_sink(db_file),
         BusEventPublisher(bus),
+        structured=structured,
     )
     app = create_app(TOKEN, llm_service=llm, event_bus=bus, chat_service=chat)
     return TestClient(app)
@@ -124,6 +126,7 @@ def test_send_chat_returns_final_reply_and_logs_turn(tmp_path: Path):
     assert body["text"] == "你好呀。"
     assert body["recorded"] is True
     assert body["sources"] == []
+    assert body["notices"] == []
     assert len(body["message_id"]) == 32
 
     history = client.get("/api/chat/history", headers=AUTH).json()
@@ -207,6 +210,33 @@ def test_chat_done_event_carries_every_utterance_of_the_turn(tmp_path: Path):
     assert done["text"] == "第一句。\n第二句！"
     assert [item["text"] for item in done["messages"]] == ["第一句。", "第二句！"]
     assert done["messages"] == response.json()["messages"]
+
+
+class BrokenStructured:
+    """模拟结构化记忆读取失败。"""
+
+    def lines(self) -> list[str]:
+        raise MemoryReadError("坏了")
+
+
+def test_memory_read_failure_keeps_the_reply_and_reports_a_notice(tmp_path: Path):
+    client = make_client(tmp_path, ["你好呀。"], structured=BrokenStructured())
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
+        response = client.post("/api/chat", headers=AUTH, json={"text": "你好"})
+        assert response.status_code == 200
+        events = []
+        while True:
+            event = websocket.receive_json()
+            events.append(event)
+            if event["type"] == "status" and event["state"] == "idle":
+                break
+
+    assert response.json()["text"] == "你好呀。"
+    assert response.json()["notices"] == ["memory_unloaded"]
+    done = next(event for event in events if event["type"] == "chat.done")
+    assert done["notices"] == ["memory_unloaded"]
 
 
 def test_model_unavailable_maps_to_503(tmp_path: Path):

@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field
 class ApprovalItem(BaseModel):
     approval_id: str
     run_id: str
-    capability: str
+    topic: str
     task: str
     content: str
     tools: list[str] = Field(default_factory=list)

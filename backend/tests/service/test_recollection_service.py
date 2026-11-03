@@ -87,10 +87,10 @@ class FakeOrchestrator:
         self.results = list(results or [])
         self.calls: list[dict] = []
 
-    def dispatch(self, capability, task, *, gate, read_only=False, turn_id=None):
+    def dispatch(self, topic, task, *, gate, read_only=False, turn_id=None):
         self.calls.append(
             {
-                "capability": capability,
+                "topic": topic,
                 "task": task,
                 "gate": gate,
                 "read_only": read_only,
@@ -101,9 +101,9 @@ class FakeOrchestrator:
             return self.results.pop(0)
         return Checkpoint(
             run_id=f"run-{len(self.calls)}",
-            capability=capability,
+            topic=topic,
             ok=True,
-            text=f"执行：{capability}",
+            text=f"执行：{topic}",
             output=RECALL_OUTPUT,
         )
 
@@ -111,9 +111,9 @@ class FakeOrchestrator:
 def failing(error: str = "检索超时", code: str = "failed") -> Checkpoint:
     return Checkpoint(
         run_id="run-failed",
-        capability="记忆检索",
+        topic="回忆",
         ok=False,
-        text="执行：记忆检索",
+        text="执行：回忆",
         output=None,
         error=error,
         error_code=code,
@@ -132,8 +132,8 @@ def test_dispatch_asks_for_yesterday_with_a_read_only_auto_approved_plan(tmp_pat
 
     result = service.ensure(TODAY, persona=snapshot(), turn_id="turn-1")
 
-    # dispatch 等价于单步 plan：{"type": "dispatch", "plan": [{"capability": ..., "task": ...}]}
-    assert [call["capability"] for call in orchestrator.calls] == ["记忆检索"]
+    # dispatch 等价于单步 plan：{"type": "dispatch", "plan": [{"topic": ..., "task": ...}]}
+    assert [call["topic"] for call in orchestrator.calls] == ["回忆"]
     assert YESTERDAY in tasks(orchestrator)[0]
     assert "（昨天）" in tasks(orchestrator)[0]
     assert orchestrator.calls[0]["read_only"] is True
@@ -253,7 +253,7 @@ def test_a_retry_succeeds_within_the_shared_budget(tmp_path: Path):
 def test_an_empty_output_counts_as_a_failure(tmp_path: Path):
     env = make_env(tmp_path)
     seed_chat(env.daily, YESTERDAY)
-    empty = Checkpoint(run_id="run-empty", capability="记忆检索", ok=True, text="执行", output="  ")
+    empty = Checkpoint(run_id="run-empty", topic="回忆", ok=True, text="执行", output="  ")
     orchestrator = FakeOrchestrator([empty, empty])
     service = RecollectionService(orchestrator, env.daily)
 
@@ -310,10 +310,10 @@ class BlockingOrchestrator(FakeOrchestrator):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def dispatch(self, capability, task, *, gate, read_only=False, turn_id=None):
+    def dispatch(self, topic, task, *, gate, read_only=False, turn_id=None):
         self.entered.set()
         assert self.release.wait(5)
-        return super().dispatch(capability, task, gate=gate, read_only=read_only, turn_id=turn_id)
+        return super().dispatch(topic, task, gate=gate, read_only=read_only, turn_id=turn_id)
 
 
 def test_concurrent_calls_share_one_generation(tmp_path: Path):

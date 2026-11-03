@@ -20,14 +20,14 @@ EVENT_TYPES: dict[str, EventSpec] = {
         template="切换人设为{persona}，新会话开始",
     ),
     "dispatch_failed": EventSpec(
-        fields=("capability", "reason"),
+        fields=("topic", "reason"),
         in_context=True,
-        template="派发失败：{capability}，{reason}",
+        template="派发失败：{topic}，{reason}",
     ),
     "approval_rejected": EventSpec(
-        fields=("capability", "reason"),
+        fields=("topic", "reason"),
         in_context=True,
-        template="审批被拒绝：{capability}，{reason}",
+        template="审批被拒绝：{topic}，{reason}",
     ),
 }
 

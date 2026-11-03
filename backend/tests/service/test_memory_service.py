@@ -180,8 +180,8 @@ def test_events_are_rendered_as_text_and_kept_in_memory():
     records = [
         record("master", "你好"),
         record("event", encode_event("session_boundary", persona="小桌")),
-        record("event", encode_event("dispatch_failed", capability="记忆检索", reason="超时")),
+        record("event", encode_event("dispatch_failed", topic="回忆", reason="超时")),
     ]
     assert render_daily_turns(records) == [
-        "用户：你好 / 事件：切换人设为小桌，新会话开始 / 事件：派发失败：记忆检索，超时"
+        "用户：你好 / 事件：切换人设为小桌，新会话开始 / 事件：派发失败：回忆，超时"
     ]

@@ -12,7 +12,7 @@ from module.agent.approval import ApprovalRegistry
 from module.agent.orchestrator import Orchestrator
 from module.agent.prompt import load_templates
 from module.agent.repository import DbAgentRuns
-from module.agent.skills import MEMORY_WRITE_CAPABILITY, SkillRegistry, memory_write_skill
+from module.agent.skills import SkillRegistry, memory_write_skill
 from module.agent.subagent import SubAgent
 from module.agent.tools.files import make_file_tools
 from module.chat.chat_service import ChatRequest, ChatService
@@ -66,7 +66,10 @@ DEFAULT_CONSOLIDATE_MODEL=deepseek-flash
 
 def dispatch(task: str) -> str:
     return json.dumps(
-        {"type": "dispatch", "plan": [{"capability": MEMORY_WRITE_CAPABILITY, "task": task}]},
+        {
+            "type": "dispatch",
+            "plan": [{"topic": "记住主人的喜好", "task": f"记下：{task}"}],
+        },
         ensure_ascii=False,
     )
 
@@ -132,8 +135,8 @@ class RecordingEvents:
     def chunk(self, message_id, text):
         self.log.append(("chunk", message_id, text))
 
-    def done(self, message_id, messages):
-        self.log.append(("done", message_id, [item.text for item in messages]))
+    def done(self, message_id, messages, notices=()):
+        self.log.append(("done", message_id, [item.text for item in messages], tuple(notices)))
 
     def approval_request(self, plan_id, tickets):
         self.plan_ids.append(plan_id)

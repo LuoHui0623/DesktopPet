@@ -17,7 +17,7 @@ RESOLVE_CLOSED = "closed"
 @dataclass(frozen=True)
 class ApprovalDraft:
     run_id: str
-    capability: str
+    topic: str
     task: str
     content: str
     tools: tuple[str, ...] = ()

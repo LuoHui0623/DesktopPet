@@ -2,11 +2,11 @@ import pytest
 
 from module.agent.orchestrator import read_only_tools
 from module.agent.skills import (
-    DRAFT_NOTE_CAPABILITY,
+    DRAFT_NOTE_SKILL,
     DRAFT_NOTE_TOOLS,
-    MEMORY_RETRIEVE_CAPABILITY,
+    MEMORY_RETRIEVE_SKILL,
     MEMORY_RETRIEVE_TOOLS,
-    MEMORY_WRITE_CAPABILITY,
+    MEMORY_WRITE_SKILL,
     MEMORY_WRITE_TOOLS,
     Skill,
     SkillError,
@@ -34,7 +34,7 @@ def make_registry(tmp_path) -> SkillRegistry:
     )
     write_manual(tmp_path, "browse", "# 翻阅\n\n> 查看历史记录。\n")
     registry = SkillRegistry(tmp_path)
-    registry.register(SkillSpec("写笔记", "note", ("note",)))
+    registry.register(SkillSpec("写笔记", "note", ("note",), ("记下",)))
     registry.register(SkillSpec("翻阅", "browse"))
     return registry
 
@@ -110,26 +110,26 @@ def test_head_note_stops_at_first_body_line(tmp_path):
 
 def test_memory_write_skill_declares_write_tools():
     spec = memory_write_skill()
-    assert spec.name == MEMORY_WRITE_CAPABILITY
+    assert spec.name == MEMORY_WRITE_SKILL
     assert spec.file == "memory_write"
     assert spec.tools == MEMORY_WRITE_TOOLS
 
 
 def test_draft_note_skill_declares_file_tools():
     spec = draft_note_skill()
-    assert spec.name == DRAFT_NOTE_CAPABILITY
+    assert spec.name == DRAFT_NOTE_SKILL
     assert spec.file == "draft_note"
     assert spec.tools == DRAFT_NOTE_TOOLS
 
 
 def test_draft_note_allows_reading_while_drafting():
-    skill = Skill(DRAFT_NOTE_CAPABILITY, "便签", DRAFT_NOTE_TOOLS)
+    skill = Skill(DRAFT_NOTE_SKILL, "便签", DRAFT_NOTE_TOOLS)
     assert read_only_tools(skill) == ("index", "read", "grep")
 
 
 def test_memory_retrieve_skill_is_read_only():
     spec = memory_retrieve_skill()
-    assert spec.name == MEMORY_RETRIEVE_CAPABILITY
+    assert spec.name == MEMORY_RETRIEVE_SKILL
     assert spec.file == "memory_retrieve"
     assert spec.tools == MEMORY_RETRIEVE_TOOLS
 
@@ -140,10 +140,39 @@ def test_shipped_manuals_parse():
     registry.register(memory_retrieve_skill())
     registry.register(draft_note_skill())
     assert registry.names() == (
-        MEMORY_WRITE_CAPABILITY,
-        MEMORY_RETRIEVE_CAPABILITY,
-        DRAFT_NOTE_CAPABILITY,
+        MEMORY_WRITE_SKILL,
+        MEMORY_RETRIEVE_SKILL,
+        DRAFT_NOTE_SKILL,
     )
     for name in registry.names():
         assert registry.get(name).description
         assert "## 执行流程" in registry.read(name)
+
+
+def test_route_matches_task_keywords_not_topic(tmp_path):
+    registry = SkillRegistry()
+    registry.register(memory_write_skill())
+    registry.register(memory_retrieve_skill())
+    registry.register(draft_note_skill())
+
+    assert registry.route("记住主人喜欢美式咖啡") == registry.get(MEMORY_WRITE_SKILL)
+    assert registry.route("回忆一下上次聊过的咖啡") == registry.get(MEMORY_RETRIEVE_SKILL)
+    assert registry.route("把明天要买的东西记一下") == registry.get(DRAFT_NOTE_SKILL)
+
+
+def test_route_prefers_the_longer_keyword(tmp_path):
+    write_manual(tmp_path, "short", "# 短词\n\n> 短词。\n")
+    write_manual(tmp_path, "long", "# 长词\n\n> 长词。\n")
+    registry = SkillRegistry(tmp_path)
+    registry.register(SkillSpec("短词", "short", (), ("查",)))
+    registry.register(SkillSpec("长词", "long", (), ("查一下",)))
+    assert registry.route("帮我查一下") == registry.get("长词")
+
+
+def test_route_returns_none_when_nothing_matches(tmp_path):
+    assert make_registry(tmp_path).route("随便说点什么") is None
+
+
+def test_route_falls_back_to_the_skill_name(tmp_path):
+    registry = make_registry(tmp_path)
+    assert registry.route("帮我翻阅") == registry.get("翻阅")

@@ -1,4 +1,5 @@
 import json
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -37,6 +38,7 @@ from module.interaction.interaction_service import InteractionService
 from module.llm import DbUsageReader, LlmService, UsageService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
+from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 from module.memory.recollection_service import FAILURE_PREFIX, Recollection
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
@@ -128,6 +130,7 @@ class Harness:
         counter_factory=None,
         trace=None,
         recollection=None,
+        structured=None,
     ):
         self.db_file = tmp_path / "pet.db"
         self.tmp_path = tmp_path
@@ -157,6 +160,7 @@ class Harness:
         self.events = events
         self.orchestrator = orchestrator
         self.interactions = interactions
+        self.structured = structured
         self.recollection = (
             recollection(self.daily, trace) if callable(recollection) else recollection
         )
@@ -180,6 +184,7 @@ class Harness:
             interactions=self.interactions,
             usage=UsageService(DbUsageReader(self.db_file)),
             recollection=self.recollection,
+            structured=self.structured,
         )
 
     def query(self, sql: str) -> list[tuple]:
@@ -209,6 +214,44 @@ def test_system_prompt_comes_first_and_contains_persona(tmp_path: Path):
     first = harness.fake.calls[0][0]
     assert isinstance(first, SystemMessage)
     assert "你的名字是小桌" in first.content
+
+
+class BrokenStructured:
+    """模拟结构化记忆读取失败。"""
+
+    def lines(self) -> list[str]:
+        raise MemoryReadError("坏了")
+
+
+def test_empty_structured_memory_adds_no_notice(tmp_path: Path):
+    events = RecordingEvents()
+    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
+    harness = Harness(tmp_path, [SHORT], events=events, structured=structured)
+    result = ask(harness.chat, "你好")
+
+    assert result.notices == ()
+    assert next(entry for entry in events.log if entry[0] == "done")[3] == ()
+
+
+def test_structured_memory_failure_keeps_the_reply_and_reports_a_notice(tmp_path: Path):
+    events = RecordingEvents()
+    harness = Harness(tmp_path, [SHORT], events=events, structured=BrokenStructured())
+    result = ask(harness.chat, "你好")
+
+    assert result.text == SHORT
+    assert result.recorded is True
+    assert result.notices == ("memory_unloaded",)
+    done = next(entry for entry in events.log if entry[0] == "done")
+    assert done[3] == ("memory_unloaded",)
+
+
+def test_dropped_fragments_do_not_become_user_notices(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("module.chat.context.FRAGMENT_TOKEN_BUDGET", 40)
+    harness = Harness(tmp_path, [SHORT])
+    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
+    result = ask(harness.chat, "你好", fragments)
+
+    assert result.notices == ()
 
 
 def test_multiple_utterances_are_returned_and_logged_in_order(tmp_path: Path):
@@ -410,7 +453,7 @@ def test_chat_output_accepts_only_type_and_text():
 def test_dispatch_plan_is_parsed():
     output = parse_chat_output(
         json.dumps(
-            {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下主人喜欢猫"}]},
+            {"type": "dispatch", "plan": [{"topic": "记忆写入", "task": "记下主人喜欢猫"}]},
             ensure_ascii=False,
         )
     )
@@ -424,7 +467,7 @@ def test_dispatch_plan_must_be_one_to_three_items():
     with pytest.raises(DispatchRejectedError, match="1–3"):
         parse_chat_output(
             json.dumps(
-                {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下"}] * 4},
+                {"type": "dispatch", "plan": [{"topic": "记忆写入", "task": "记下"}] * 4},
                 ensure_ascii=False,
             )
         )
@@ -436,7 +479,7 @@ def test_dispatch_accepts_only_type_and_plan():
             json.dumps(
                 {
                     "type": "dispatch",
-                    "plan": [{"capability": "记忆写入", "task": "记下"}],
+                    "plan": [{"topic": "记忆写入", "task": "记下"}],
                     "extra": "x",
                 },
                 ensure_ascii=False,
@@ -448,7 +491,7 @@ def test_dispatch_step_fields_are_validated():
     with pytest.raises(DispatchRejectedError, match="缺少任务描述"):
         parse_chat_output(
             json.dumps(
-                {"type": "dispatch", "plan": [{"capability": "记忆写入"}]},
+                {"type": "dispatch", "plan": [{"topic": "记忆写入"}]},
                 ensure_ascii=False,
             )
         )
@@ -476,7 +519,7 @@ def test_output_with_surrounding_prose_is_extracted():
 
 def test_fenced_dispatch_is_parsed():
     payload = json.dumps(
-        {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下主人喜欢猫"}]},
+        {"type": "dispatch", "plan": [{"topic": "记忆写入", "task": "记下主人喜欢猫"}]},
         ensure_ascii=False,
     )
     output = parse_chat_output(f"```json\n{payload}\n```")
@@ -598,7 +641,7 @@ def test_proactive_request_can_disable_dispatch(tmp_path: Path):
 
 def test_proactive_dispatch_is_requested_in_read_only_mode(tmp_path: Path):
     plan = json.dumps(
-        {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查咖啡偏好"}]},
+        {"type": "dispatch", "plan": [{"topic": "记忆检索", "task": "查咖啡偏好"}]},
         ensure_ascii=False,
     )
     orchestrator = FakeOrchestrator(outputs={"记忆检索": "查到：主人喜欢美式。"})
@@ -674,8 +717,8 @@ class RecordingEvents:
     def chunk(self, message_id, text):
         self.log.append(("chunk", message_id, text))
 
-    def done(self, message_id, messages):
-        self.log.append(("done", message_id, list(messages)))
+    def done(self, message_id, messages, notices=()):
+        self.log.append(("done", message_id, list(messages), tuple(notices)))
 
 
 def test_events_follow_thinking_speaking_chunks_done_idle(tmp_path: Path):
@@ -844,7 +887,7 @@ def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
 
 
 DISPATCH = json.dumps(
-    {"type": "dispatch", "plan": [{"capability": "记忆写入", "task": "记下主人喜欢猫"}]},
+    {"type": "dispatch", "plan": [{"topic": "记忆写入", "task": "记下主人喜欢猫"}]},
     ensure_ascii=False,
 )
 
@@ -872,9 +915,9 @@ class FakeOrchestrator:
         drafts = [
             ApprovalDraft(
                 run_id=f"run-{index}",
-                capability=step.capability,
+                topic=step.topic,
                 task=step.task,
-                content=f"草案：{step.capability}",
+                content=f"草案：{step.topic}",
                 tools=("append",),
             )
             for index, step in enumerate(steps, start=1)
@@ -884,11 +927,11 @@ class FakeOrchestrator:
         return [
             Checkpoint(
                 run_id=f"run-{index}",
-                capability=step.capability,
+                topic=step.topic,
                 ok=self.ok,
-                text=f"执行：{step.capability}",
-                output=self.outputs.get(step.capability, "已写入") if self.ok else None,
-                error=None if self.ok else self.errors.get(step.capability, "写入失败"),
+                text=f"执行：{step.topic}",
+                output=self.outputs.get(step.topic, "已写入") if self.ok else None,
+                error=None if self.ok else self.errors.get(step.topic, "写入失败"),
                 error_code=None if self.ok else "failed",
                 status="succeeded" if self.ok else "failed",
             )
@@ -910,9 +953,9 @@ class RejectingOrchestrator(FakeOrchestrator):
         drafts = [
             ApprovalDraft(
                 run_id=f"run-{index}",
-                capability=step.capability,
+                topic=step.topic,
                 task=step.task,
-                content=f"草案：{step.capability}",
+                content=f"草案：{step.topic}",
                 tools=("append",),
             )
             for index, step in enumerate(steps, start=1)
@@ -921,9 +964,9 @@ class RejectingOrchestrator(FakeOrchestrator):
         return [
             Checkpoint(
                 run_id=f"run-{index}",
-                capability=step.capability,
+                topic=step.topic,
                 ok=False,
-                text=f"执行：{step.capability}",
+                text=f"执行：{step.topic}",
                 output=None,
                 error="用户拒绝执行",
                 error_code="rejected",
@@ -933,16 +976,9 @@ class RejectingOrchestrator(FakeOrchestrator):
         ]
 
 
-def checkpoint_payloads(messages) -> list[dict]:
-    payloads: list[dict] = []
-    for message in messages:
-        content = message.content
-        if not isinstance(content, str):
-            continue
-        for line in content.splitlines():
-            if line.startswith("[finished_plan]"):
-                payloads.append(json.loads(line[len("[finished_plan]") :]))
-    return payloads
+def backfill_messages(messages) -> list[str]:
+    """二次生成里承担回注的 assistant 消息正文。"""
+    return [message.content for message in messages if isinstance(message, AIMessage)]
 
 
 def test_dispatch_runs_the_plan_then_answers_with_chat(tmp_path: Path):
@@ -976,7 +1012,7 @@ def test_direct_chat_does_not_dispatch_even_when_an_orchestrator_is_available(tm
     assert orchestrator.plans == []
 
 
-def test_each_subagent_result_is_persisted_as_its_own_assistant_row(tmp_path: Path):
+def test_multiple_subagent_results_are_merged_into_one_assistant_row(tmp_path: Path):
     orchestrator = FakeOrchestrator(
         outputs={
             "记忆检索": "查到：主人喜欢美式。反馈：可以放心推荐。",
@@ -987,8 +1023,8 @@ def test_each_subagent_result_is_persisted_as_its_own_assistant_row(tmp_path: Pa
         {
             "type": "dispatch",
             "plan": [
-                {"capability": "记忆检索", "task": "找咖啡偏好"},
-                {"capability": "记忆写入", "task": "记下今天喝了咖啡"},
+                {"topic": "记忆检索", "task": "找咖啡偏好"},
+                {"topic": "记忆写入", "task": "记下今天喝了咖啡"},
             ],
         },
         ensure_ascii=False,
@@ -996,16 +1032,15 @@ def test_each_subagent_result_is_persisted_as_its_own_assistant_row(tmp_path: Pa
     harness = Harness(tmp_path, [Raw(plan), "都做完了。"], orchestrator=orchestrator)
     ask(harness.chat, "帮我处理一下")
 
+    merged = "查到：主人喜欢美式。反馈：可以放心推荐。\n已写入：咖啡偏好"
     rows = harness.query("SELECT content FROM daily_log WHERE role = 'assistant' ORDER BY id")
-    assert rows == [
-        ("查到：主人喜欢美式。反馈：可以放心推荐。",),
-        ("已写入：咖啡偏好",),
-    ]
+    assert rows == [(merged,)]
+    assert backfill_messages(harness.fake.calls[1]) == [merged]
 
 
 def dispatch_harness(tmp_path: Path, body: str, outcomes: list | None = None, clock=None) -> tuple:
     plan = json.dumps(
-        {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查咖啡偏好"}]},
+        {"type": "dispatch", "plan": [{"topic": "记忆检索", "task": "查咖啡偏好"}]},
         ensure_ascii=False,
     )
     orchestrator = FakeOrchestrator(outputs={"记忆检索": body})
@@ -1024,8 +1059,7 @@ def test_query_content_without_feedback_is_logged_verbatim(tmp_path: Path):
     ask(harness.chat, "查一下我喝什么")
 
     assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [(body,)]
-    payload = checkpoint_payloads(harness.fake.calls[1])[0]
-    assert payload["output"] == body
+    assert backfill_messages(harness.fake.calls[1]) == [body]
 
 
 def test_empty_query_result_is_backfilled_and_visible_to_the_main_agent(tmp_path: Path):
@@ -1064,7 +1098,7 @@ def test_failed_subagent_error_is_logged_without_the_checkpoint_wrapper(tmp_path
 def test_retrieval_limit_error_is_backfilled_and_shown_to_the_main_agent(tmp_path: Path):
     reason = "永久记忆读取超过模型上限"
     plan = json.dumps(
-        {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查咖啡偏好"}]},
+        {"type": "dispatch", "plan": [{"topic": "记忆检索", "task": "查咖啡偏好"}]},
         ensure_ascii=False,
     )
     orchestrator = FakeOrchestrator(ok=False, errors={"记忆检索": reason})
@@ -1072,16 +1106,13 @@ def test_retrieval_limit_error_is_backfilled_and_shown_to_the_main_agent(tmp_pat
     ask(harness.chat, "查一下我喝什么")
 
     assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [(reason,)]
-    payload = checkpoint_payloads(harness.fake.calls[1])[0]
-    assert payload["capability"] == "记忆检索"
-    assert payload["status"] == "failed"
-    assert payload["output"] == reason
+    assert backfill_messages(harness.fake.calls[1]) == [reason]
 
 
 def test_final_chat_failure_keeps_user_input_and_backfill_for_restore(tmp_path: Path):
     body = "查到：主人喜欢美式。"
     plan = json.dumps(
-        {"type": "dispatch", "plan": [{"capability": "记忆检索", "task": "查咖啡偏好"}]},
+        {"type": "dispatch", "plan": [{"topic": "记忆检索", "task": "查咖啡偏好"}]},
         ensure_ascii=False,
     )
     orchestrator = FakeOrchestrator(outputs={"记忆检索": body})
@@ -1107,44 +1138,54 @@ def test_final_chat_failure_keeps_user_input_and_backfill_for_restore(tmp_path: 
     assert any(text.endswith("]后来呢") for text in contents)
 
 
-def test_checkpoints_are_injected_into_the_second_call(tmp_path: Path):
+def test_second_generation_receives_the_persisted_backfill_without_plan_structures(
+    tmp_path: Path,
+):
     orchestrator = FakeOrchestrator()
     harness = Harness(tmp_path, [Raw(DISPATCH), "记好啦。"], orchestrator=orchestrator)
     ask(harness.chat, "记一下我喜欢猫")
-    payloads = checkpoint_payloads(harness.fake.calls[1])
-    assert len(payloads) == 1
-    assert payloads[0]["capability"] == "记忆写入"
-    assert payloads[0]["status"] == "succeeded"
-    assert payloads[0]["output"] == "已写入"
-    assert payloads[0]["plan_id"]
+
+    assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [("已写入",)]
+    follow_up = harness.fake.calls[1]
+    assert backfill_messages(follow_up) == ["已写入"]
+    # 系统提示词里的派发规则不算二次生成携带的结构，只看对话消息。
+    block = "\n".join(
+        str(message.content) for message in follow_up if not isinstance(message, SystemMessage)
+    )
+    for marker in ("[finished_plan]", "plan_id", '"type": "dispatch"', "检查点"):
+        assert marker not in block
 
 
-def test_checkpoints_share_one_plan_id_and_keep_plan_order(tmp_path: Path):
-    orchestrator = FakeOrchestrator()
+def test_merged_backfill_keeps_plan_order(tmp_path: Path):
+    orchestrator = FakeOrchestrator(outputs={"记忆检索": "找到了", "记忆写入": "写好了"})
     plan = json.dumps(
         {
             "type": "dispatch",
             "plan": [
-                {"capability": "记忆检索", "task": "找咖啡偏好"},
-                {"capability": "记忆写入", "task": "记下今天喝了咖啡"},
+                {"topic": "记忆检索", "task": "找咖啡偏好"},
+                {"topic": "记忆写入", "task": "记下今天喝了咖啡"},
             ],
         },
         ensure_ascii=False,
     )
     harness = Harness(tmp_path, [Raw(plan), "都做完了。"], orchestrator=orchestrator)
     ask(harness.chat, "帮我处理一下")
-    payloads = checkpoint_payloads(harness.fake.calls[1])
-    assert [payload["capability"] for payload in payloads] == ["记忆检索", "记忆写入"]
-    assert len({payload["plan_id"] for payload in payloads}) == 1
+
+    assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [
+        ("找到了\n写好了",)
+    ]
+    assert backfill_messages(harness.fake.calls[1]) == ["找到了\n写好了"]
 
 
-def test_failed_checkpoint_reports_the_error_as_output(tmp_path: Path):
+def test_failed_checkpoint_reports_the_error_as_the_only_backfill(tmp_path: Path):
     orchestrator = FakeOrchestrator(ok=False)
     harness = Harness(tmp_path, [Raw(DISPATCH), "没成功。"], orchestrator=orchestrator)
     ask(harness.chat, "记一下我喜欢猫")
-    payload = checkpoint_payloads(harness.fake.calls[1])[0]
-    assert payload["status"] == "failed"
-    assert payload["output"] == "写入失败"
+
+    assert harness.query("SELECT content FROM daily_log WHERE role = 'assistant'") == [
+        ("写入失败",)
+    ]
+    assert backfill_messages(harness.fake.calls[1]) == ["写入失败"]
 
 
 def test_second_dispatch_in_the_same_turn_is_rejected(tmp_path: Path):
@@ -1169,13 +1210,16 @@ def test_rejected_dispatch_writes_an_approval_event(tmp_path: Path):
     assert len(events) == 1
     assert json.loads(events[0][0]) == {
         "type": "approval_rejected",
-        "capability": "记忆写入",
+        "topic": "记忆写入",
         "reason": "用户拒绝执行",
     }
 
     ask(harness.chat, "再来")
     contents = [message.content for message in harness.fake.calls[2]]
-    assert "[事件] 审批被拒绝：记忆写入，用户拒绝执行" in contents
+    assert "[assistant][" in contents[2]
+    assert contents[2].endswith("]用户拒绝执行")
+    assert not any(text.startswith("[事件]") for text in contents)
+    assert not any("approval_rejected" in text for text in contents)
 
 
 def test_rejected_subagent_reason_is_logged_as_the_assistant_body(tmp_path: Path):
@@ -1203,7 +1247,8 @@ def test_invalid_dispatch_writes_an_event_then_regenerates(tmp_path: Path):
 
     ask(harness.chat, "再说一句")
     contents = [message.content for message in harness.fake.calls[2]]
-    assert any(text.startswith("[事件] 派发失败：") for text in contents)
+    assert not any(text.startswith("[事件]") for text in contents)
+    assert not any("dispatch_failed" in text for text in contents)
 
 
 def test_dispatch_without_an_orchestrator_is_a_failure(tmp_path: Path):
@@ -1462,3 +1507,116 @@ def test_failed_recollection_is_not_injected_and_loses_nothing(tmp_path: Path):
         ("回忆", f"{FAILURE_PREFIX}子代理超时"),
         ("me", SHORT),
     ]
+
+
+def test_record_failure_stops_the_turn_before_calling_the_model(tmp_path: Path, monkeypatch):
+    """落库是回复的必要条件：失败即 record_failed，不调模型、不回复（D-21）。"""
+    harness = Harness(tmp_path, [SHORT])
+
+    def explode(text, *, at=None, persona_id=None):
+        raise OSError("磁盘满了")
+
+    monkeypatch.setattr(harness.daily, "record_user", explode)
+    with pytest.raises(ChatError) as exc:
+        ask(harness.chat, "你好")
+    assert exc.value.code == "record_failed"
+    assert harness.fake.calls == []
+    assert harness.query("SELECT role FROM daily_log") == []
+
+
+def test_second_query_while_a_turn_is_running_gets_session_busy(tmp_path: Path):
+    """session 占位期间第二个被动 query 直接拒绝、不排队（D-22）。"""
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingChat(FakeChat):
+        def invoke(self, messages, config=None, **kwargs):
+            if not self.calls:
+                entered.set()
+                assert release.wait(timeout=5)
+            return super().invoke(messages, config=config, **kwargs)
+
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    harness.fake = BlockingChat([SHORT, SHORT])
+    harness.chat = harness.new_chat()
+
+    first: dict[str, object] = {}
+
+    def run_first() -> None:
+        try:
+            first["reply"] = ask(harness.chat, "第一句")
+        except Exception as exc:  # pragma: no cover - 失败时给主线程断言用
+            first["error"] = exc
+
+    worker = threading.Thread(target=run_first)
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        with pytest.raises(ChatError) as exc:
+            ask(harness.chat, "第二句")
+        assert exc.value.code == "session_busy"
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert first.get("reply") is not None
+    assert harness.query("SELECT role, content FROM daily_log ORDER BY id") == [
+        ("master", "第一句"),
+        ("me", SHORT),
+    ]
+
+
+def test_proactive_turn_is_not_blocked_by_a_running_query_slot(tmp_path: Path):
+    """主动轮不绑定用户输入，不占位（Q-16）。"""
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    harness.chat._turn_slot.acquire()
+    try:
+        reply = harness.chat.chat(ChatRequest(trigger_reason="使用 code 已 3 分钟"))
+    finally:
+        harness.chat._turn_slot.release()
+    assert reply.text == SHORT
+
+
+def test_consecutive_identical_queries_are_deduped_only_in_model_context(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT, SHORT])
+    ask(harness.chat, "在吗")
+    ask(harness.chat, "在吗")
+
+    contents = contents_of(harness.fake.calls[1])
+    assert len([text for text in contents if text.endswith("]在吗")]) == 1
+    assert harness.query("SELECT role, content FROM daily_log ORDER BY id") == [
+        ("master", "在吗"),
+        ("me", SHORT),
+        ("master", "在吗"),
+        ("me", SHORT),
+    ]
+
+
+def test_a_b_a_keeps_both_identical_queries_in_context(tmp_path: Path):
+    harness = Harness(tmp_path, [SHORT, SHORT, SHORT])
+    ask(harness.chat, "A")
+    ask(harness.chat, "B")
+    ask(harness.chat, "A")
+
+    contents = contents_of(harness.fake.calls[2])
+    assert len([text for text in contents if text.endswith("]A")]) == 2
+
+
+def test_whole_turn_keeps_the_received_day_across_midnight(tmp_path: Path):
+    """处理过程跨零点也固定使用 received_at 的日期（D-07）。"""
+    clock = MutableClock(datetime(2026, 10, 18, 23, 59, 58, tzinfo=ZoneInfo("Asia/Shanghai")))
+    harness = Harness(tmp_path, [SHORT], clock=clock)
+    original = harness.fake.invoke
+
+    def advance(messages, config=None, **kwargs):
+        clock.moment = datetime(2026, 10, 19, 0, 0, 3, tzinfo=ZoneInfo("Asia/Shanghai"))
+        return original(messages, config=config, **kwargs)
+
+    harness.fake.invoke = advance  # type: ignore[method-assign]
+    ask(harness.chat, "还没睡")
+
+    prompt = harness.fake.calls[0][0]
+    assert "2026/10/18" in prompt.content
+    assert "2026/10/19" not in prompt.content
+    assert harness.fake.calls[0][-1].content == "[master][23:59:58]还没睡"
+    rows = harness.query("SELECT role, substr(event_time, 1, 10) FROM daily_log ORDER BY id")
+    assert rows == [("master", "2026-10-18"), ("me", "2026-10-19")]

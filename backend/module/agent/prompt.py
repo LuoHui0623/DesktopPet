@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -9,7 +9,15 @@ from config.persona import THEME_SPECS, FieldsSpec, FieldsTheme, ListSpec, ListT
 from constants.files import RESOURCE_ORDER, RESOURCES
 from constants.path import CAPABILITIES_FILE
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS, SENTENCE_MAX_WIDTH
-from module.agent.chat_system_prompt import CHAT_PLACEHOLDERS, TOPIC_BODIES, TOPIC_ORDER
+from module.agent.chat_system_prompt import (
+    CATEGORY_ORDER,
+    CHAT_PLACEHOLDERS,
+    SEPARATOR_WIDTH,
+    TOPIC_BODIES,
+    TOPIC_REGISTRY,
+    Topic,
+    TopicContext,
+)
 
 AgentRole = Literal["chat"]
 
@@ -35,7 +43,7 @@ class ResourceItem:
 
 @dataclass(frozen=True)
 class PromptTemplates:
-    chat: Template
+    topics: tuple[Topic, ...]
     digest: str
 
 
@@ -43,6 +51,18 @@ class PromptTemplates:
 class SystemPrompt:
     text: str
     template_digest: str
+
+
+# 占位值保持为 `$名称`，这样拼出的骨架仍可用 Template 校验占位符集合，
+# 也能让 digest 只反映主题正文与范畴布局，而不随人设或能力清单变化。
+TEMPLATE_CONTEXT = TopicContext(
+    persona_section="$persona_section",
+    capabilities="$capabilities",
+    resources="$resources",
+    sentence_max_chars="$sentence_max_chars",
+    sentence_max_width="$sentence_max_width",
+    persona_hint_chars="$persona_hint_chars",
+)
 
 
 def load_capabilities(path: Path = CAPABILITIES_FILE) -> tuple[CapabilityDescription, ...]:
@@ -78,36 +98,79 @@ def default_resources() -> tuple[ResourceItem, ...]:
     return tuple(ResourceItem(RESOURCES[key].label, key) for key in RESOURCE_ORDER)
 
 
-def compose_chat_prompt(
-    order: Sequence[str] | None = None,
-    bodies: Mapping[str, str] | None = None,
-) -> str:
-    """把有序主题拼成系统提示词：每段包成「【主题】\\n正文」，段间空一行。"""
-    topics = TOPIC_ORDER if order is None else order
-    contents = TOPIC_BODIES if bodies is None else bodies
-    blocks: list[str] = []
+def category_marker(category: str) -> str:
+    """范畴分隔线：先格式化成范畴名再居中，宽度与日期线、current 线一致。"""
+    return category.center(SEPARATOR_WIDTH, "=")
+
+
+def _validate_topics(topics: Sequence[Topic]) -> set[str]:
+    seen: set[str] = set()
     for topic in topics:
-        body = contents.get(topic)
-        if body is None:
-            raise PromptError(f"系统提示词缺少正文：{topic}")
-        if not body.strip():
-            raise PromptError(f"系统提示词正文为空：{topic}")
-        blocks.append(f"【{topic}】\n{body}")
-    text = "\n\n".join(blocks)
-    try:
-        found = frozenset(Template(text).get_identifiers())
-    except ValueError as exc:
-        raise PromptError(f"系统提示词占位符不合法：{exc}") from exc
+        if not topic.id.strip():
+            raise PromptError("系统提示词主题 ID 不能为空")
+        if topic.id in seen:
+            raise PromptError(f"系统提示词主题 ID 重复：{topic.id}")
+        if topic.category not in CATEGORY_ORDER:
+            raise PromptError(f"系统提示词主题 {topic.id} 的范畴不合法：{topic.category}")
+        seen.add(topic.id)
+    return seen
+
+
+def _validate_bodies(topics: Sequence[Topic]) -> None:
+    registered = _validate_topics(topics)
+    if set(TOPIC_BODIES) != registered:
+        raise PromptError(
+            f"系统提示词正文覆盖的主题应为 {sorted(registered)}，实际为 {sorted(TOPIC_BODIES)}"
+        )
+    found: set[str] = set()
+    for topic in topics:
+        try:
+            found.update(Template(TOPIC_BODIES[topic.id]).get_identifiers())
+        except ValueError as exc:
+            raise PromptError(f"系统提示词主题 {topic.id} 的占位符不合法：{exc}") from exc
     if found != CHAT_PLACEHOLDERS:
         raise PromptError(
             f"系统提示词的占位符应为 {sorted(CHAT_PLACEHOLDERS)}，实际为 {sorted(found)}"
         )
-    return text
+
+
+def _grouped_topics(topics: Sequence[Topic]) -> list[tuple[str, list[Topic]]]:
+    """按固定范畴顺序分组；组内沿用注册表的相对顺序。"""
+    groups: list[tuple[str, list[Topic]]] = []
+    for category in CATEGORY_ORDER:
+        members = [topic for topic in topics if topic.category == category]
+        if members:
+            groups.append((category, members))
+    return groups
+
+
+def compose_chat_prompt(
+    context: TopicContext,
+    topics: Sequence[Topic] = TOPIC_REGISTRY,
+) -> str:
+    """按范畴顺序装配系统提示词：范畴线、主题标题、主题正文，段间空一行。"""
+    _validate_topics(topics)
+    blocks: list[str] = []
+    for category, members in _grouped_topics(topics):
+        blocks.append(category_marker(category))
+        for topic in members:
+            try:
+                body = topic.render(context)
+            except (KeyError, ValueError) as exc:
+                raise PromptError(f"系统提示词主题 {topic.id} 渲染失败：{exc}") from exc
+            if not body.strip():
+                raise PromptError(f"系统提示词正文为空：{topic.id}")
+            blocks.append(f"【{topic.id}】\n{body}")
+    return "\n\n".join(blocks)
 
 
 def load_templates() -> PromptTemplates:
-    text = compose_chat_prompt(order=TOPIC_ORDER, bodies=TOPIC_BODIES)
-    return PromptTemplates(chat=Template(text), digest=sha256(text.encode("utf-8")).hexdigest())
+    _validate_bodies(TOPIC_REGISTRY)
+    text = compose_chat_prompt(TEMPLATE_CONTEXT, TOPIC_REGISTRY)
+    return PromptTemplates(
+        topics=TOPIC_REGISTRY,
+        digest=sha256(text.encode("utf-8")).hexdigest(),
+    )
 
 
 def read_template(directory: Path, name: str, placeholders: frozenset[str]) -> str:
@@ -172,15 +235,15 @@ def _build_chat(
     capabilities: Sequence[CapabilityDescription],
     resources: Sequence[ResourceItem],
 ) -> SystemPrompt:
-    persona_section = render_persona(persona)
-    text = templates.chat.substitute(
-        persona_section=persona_section,
+    context = TopicContext(
+        persona_section=render_persona(persona),
         capabilities=_render_capabilities(capabilities),
         resources=_render_resources(resources),
         sentence_max_chars=str(SENTENCE_MAX_CHARS),
         sentence_max_width=str(SENTENCE_MAX_WIDTH),
         persona_hint_chars=str(PERSONA_HINT_CHARS),
     )
+    text = compose_chat_prompt(context, templates.topics)
     return SystemPrompt(text=text, template_digest=templates.digest)
 
 

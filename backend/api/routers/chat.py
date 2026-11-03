@@ -11,6 +11,8 @@ router = APIRouter(prefix="/api", tags=["chat"])
 
 CHAT_ERROR_STATUS = {
     "empty_input": 422,
+    "session_busy": 409,
+    "record_failed": 500,
     "model_unavailable": 503,
     "model_failed": 502,
     "sentence_too_long": 502,
@@ -52,6 +54,7 @@ def send_chat(request: Request, body: ChatRequest) -> Response | ChatReplyRespon
         recorded=reply.recorded,
         sources=[source_out(source) for source in reply.sources],
         messages=[reply_message_out(message) for message in reply.messages],
+        notices=list(reply.notices),
     )
 
 

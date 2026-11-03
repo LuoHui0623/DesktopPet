@@ -29,7 +29,12 @@ class SentLedger(Protocol):
 
 class ProactivePublisher(Protocol):
     def proactive_message(
-        self, message_id: str, messages: Sequence[ReplyMessage], topic: str, at: datetime
+        self,
+        message_id: str,
+        messages: Sequence[ReplyMessage],
+        topic: str,
+        at: datetime,
+        notices: Sequence[str] = (),
     ) -> None: ...
 
 
@@ -48,7 +53,9 @@ class ProactiveEvents:
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
         return None
 
-    def done(self, message_id: str, messages: Sequence[ReplyMessage]) -> None:
+    def done(
+        self, message_id: str, messages: Sequence[ReplyMessage], notices: Sequence[str] = ()
+    ) -> None:
         return None
 
 
@@ -91,7 +98,9 @@ class ProactivePipeline:
             at = self._now()
             self._record_sent(topic, at)
             try:
-                self._publisher.proactive_message(reply.message_id, reply.messages, topic, at)
+                self._publisher.proactive_message(
+                    reply.message_id, reply.messages, topic, at, reply.notices
+                )
             except Exception:
                 logger.exception("主动消息推送失败：%s", topic)
                 return ProactiveResult(False, topic, reply.message_id, "ws_failed")

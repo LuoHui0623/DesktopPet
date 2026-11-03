@@ -1,6 +1,7 @@
+import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from datetime import datetime, tzinfo
+from datetime import date, datetime, tzinfo
 from typing import Protocol
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -16,14 +17,21 @@ from module.agent.prompt import (
     build_system_prompt,
 )
 from module.chat.transcript import ChatLine, TranscriptReader
+from module.memory.contracts import DailyLogEntry
 from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
 from service.perception.constants import CONTEXT_EVENT_LIMIT
 from service.perception.events import PerceptionEvent
+
+logger = logging.getLogger("pet")
 
 KIND_STRUCTURED = "结构化记忆"
 KIND_DAILY = "每日对话"
 # 两条分隔线同宽，让界面上下的分节视觉一致（D5）。
 CURRENT_SEPARATOR = "current".center(SEPARATOR_WIDTH, "=")
+
+# 上下文降级告警的稳定 code；only memory_unloaded 会被映射为用户可见 notices（D-30）。
+WARNING_MEMORY_UNLOADED = "memory_unloaded"
+WARNING_FRAGMENTS_DROPPED = "fragments_dropped"
 
 
 def day_marker(moment: datetime) -> str:
@@ -32,6 +40,7 @@ def day_marker(moment: datetime) -> str:
 
 
 USER_ROLE = "master"
+EVENT_ROLE = "event"
 CITATION_RULE = (
     "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
     "日期取自对应条目的日期。只引用上面列出的内容，不要编造日期。"
@@ -55,14 +64,26 @@ class MemoryFragment:
 
 
 @dataclass(frozen=True)
+class ContextWarning:
+    """上下文降级告警：用 code 区分语义，message 供开发态诊断。"""
+
+    code: str
+    message: str
+
+
+def visible_notices(warnings: Sequence[ContextWarning]) -> tuple[str, ...]:
+    """把告警映射成用户可见的系统提示：只有 memory_unloaded 会打扰用户（D-30）。"""
+    return tuple(warning.code for warning in warnings if warning.code == WARNING_MEMORY_UNLOADED)
+
+
+@dataclass(frozen=True)
 class AssembledContext:
     messages: list[BaseMessage]
     template_digest: str
     chars: int
     dropped_fragments: int
-    warnings: tuple[str, ...]
+    warnings: tuple[ContextWarning, ...]
     injected: tuple[MemoryFragment, ...] = ()
-    notes: tuple[ChatLine, ...] = ()
 
 
 def _flatten(text: str) -> str:
@@ -79,14 +100,19 @@ def render_fragment(fragment: MemoryFragment) -> str:
     return f"[{' · '.join(tags)}] {_flatten(fragment.text)}"
 
 
-def _drop_recorded_input(timeline: list[ChatLine], user_text: str | None) -> list[ChatLine]:
-    """本次输入已先落库再拼上下文，这里丢掉时间线里的那一份，避免同一句出现两次。"""
-    if not user_text:
-        return timeline
+def _drop_adjacent_query(timeline: list[ChatLine], current_text: str) -> list[ChatLine]:
+    """连续两轮相同 query 只在模型上下文里保留较新一条（D-06/D-20）。
+
+    只与最近一条主人发言比较；中间隔着助手回复或感知事件不影响「相邻」判定。
+    """
+    target = current_text.strip()
     for index in range(len(timeline) - 1, -1, -1):
         line = timeline[index]
-        if line.role == USER_ROLE and line.message.content == user_text:
+        if line.role != USER_ROLE:
+            continue
+        if line.message.content.strip() == target:
             return [*timeline[:index], *timeline[index + 1 :]]
+        return timeline
     return timeline
 
 
@@ -105,7 +131,6 @@ class ContextBuilder:
         transcript: TranscriptReader | None = None,
         base_prompt: SystemPrompt | None = None,
         recollection: str | None = None,
-        skip_recorded_input: bool = False,
     ) -> None:
         self._persona = persona
         self._templates = templates
@@ -120,8 +145,6 @@ class ContextBuilder:
         self._base_prompt = base_prompt
         # 回忆正文由 chat 服务等出来再交进来，注入位置固定在日期分隔线之后。
         self._recollection = recollection
-        # 本次输入先落库再拼上下文时，时间线里的那一份要丢掉。
-        self._skip_recorded_input = skip_recorded_input
 
     def build(
         self,
@@ -131,6 +154,7 @@ class ContextBuilder:
         trigger_reason: str | None = None,
         interaction_lines: Sequence[str] = (),
         received_at: datetime | None = None,
+        current_record: DailyLogEntry | None = None,
     ) -> AssembledContext:
         prompt = self._base_prompt or build_system_prompt(
             "chat",
@@ -139,8 +163,9 @@ class ContextBuilder:
             capabilities=self._capabilities,
             resources=self._resources,
         )
-        warnings: list[str] = []
+        warnings: list[ContextWarning] = []
         moment = (received_at or self._clock(self._timezone)).astimezone(self._timezone)
+        today = moment.date()
 
         # 日期分隔符紧跟基础提示词：全局只出现这一次，之前是注入段落。
         system_text = prompt.text + "\n\n" + day_marker(moment)
@@ -154,7 +179,12 @@ class ContextBuilder:
 
         kept, dropped = self._fit_fragments(fragments)
         if dropped:
-            warnings.append(f"检索到的记忆超出预算，已舍弃 {dropped} 条")
+            warnings.append(
+                ContextWarning(
+                    WARNING_FRAGMENTS_DROPPED,
+                    f"检索到的记忆超出预算，已舍弃 {dropped} 条",
+                )
+            )
         if kept:
             fragment_block = "\n".join(render_fragment(fragment) for fragment in kept)
             system_text += f"\n\n【检索到的记忆】\n{fragment_block}"
@@ -163,29 +193,29 @@ class ContextBuilder:
         if injected:
             system_text += f"\n\n{CITATION_RULE}"
 
-        timeline, notes = self._timeline(moment=moment, include_perception=user_text is not None)
-        if self._skip_recorded_input:
-            timeline = _drop_recorded_input(timeline, user_text)
-        boundary = (
-            max(
-                (index for index, line in enumerate(timeline) if line.is_reply),
-                default=-1,
-            )
-            + 1
-        )
+        # 历史只来自落库记录；本轮记录按身份从历史中剔除，再由读回内容作为 current 输入。
+        timeline = self._history(today, current_record)
+        if current_record is not None:
+            timeline = _drop_adjacent_query(timeline, current_record.content)
+
+        # 历史区：当天全部聊天记录，不按角色扫描分界（D-18）。
         messages: list[BaseMessage] = [SystemMessage(content=system_text)]
-        if boundary > 0:
-            messages.extend(self._render_line(line) for line in timeline[:boundary])
+        messages.extend(self._render_line(line) for line in timeline)
+        if timeline:
             messages.append(AIMessage(content=CURRENT_SEPARATOR))
-            messages.extend(self._render_line(line) for line in timeline[boundary:])
-        else:
-            messages.extend(self._render_line(line) for line in timeline)
+
+        # current 区：感知事件在前，本轮输入最后（D-12）。
+        if user_text is not None:
+            messages.extend(self._render_event(event) for event in self._current_events(today))
+
         clock = f"{moment:%H:%M:%S}"
         input_blocks: list[str] = []
         if trigger_reason:
             input_blocks.append(PROACTIVE_TRIGGER.format(reason=trigger_reason, time=clock))
         input_blocks.extend(interaction_lines)
-        if user_text:
+        if current_record is not None:
+            input_blocks.append(self._render_current_record(current_record))
+        elif user_text:
             input_blocks.append(_stamp(clock, user_text))
         if input_blocks:
             messages.append(HumanMessage(content="\n\n".join(input_blocks)))
@@ -196,11 +226,46 @@ class ContextBuilder:
             dropped_fragments=dropped,
             warnings=tuple(warnings),
             injected=injected,
-            notes=tuple(notes),
         )
 
+    def _history(self, day: date, current_record: DailyLogEntry | None) -> list[ChatLine]:
+        """按本轮固定日期读回历史，并按身份剔除本轮记录（D-03/D-07）。"""
+        if self._transcript is None:
+            return []
+        lines = list(self._transcript.lines(day))
+        if current_record is None or current_record.id is None:
+            return lines
+        return [line for line in lines if line.record_id != current_record.id]
+
+    def _current_events(self, today: date) -> tuple[tuple[datetime, str], ...]:
+        """本轮感知事件：当天、上限 5 条、按发生时间排序；读取失败静默跳过（D-19）。"""
+        if self._perception is None:
+            return ()
+        try:
+            events = self._perception.recent_context_events(CONTEXT_EVENT_LIMIT)
+        except Exception:
+            logger.exception("感知事件读取失败，本轮跳过")
+            return ()
+        picked: list[tuple[datetime, str]] = []
+        for event in events:
+            local = event.at.astimezone(self._timezone)
+            if local.date() != today:
+                continue
+            picked.append((event.at, event.summary))
+        picked.sort(key=lambda item: item[0])
+        return tuple(picked)
+
+    def _render_event(self, event: tuple[datetime, str]) -> BaseMessage:
+        at, summary = event
+        local = at.astimezone(self._timezone)
+        return AIMessage(content=_stamp(f"{local:%H:%M:%S}", summary, EVENT_ROLE))
+
+    def _render_current_record(self, record: DailyLogEntry) -> str:
+        moment = record.event_time.astimezone(self._timezone)
+        return _stamp(f"{moment:%H:%M:%S}", record.content)
+
     def _render_line(self, line: ChatLine) -> BaseMessage:
-        """带角色的历史行统一渲染为 `[role][HH:MM:SS]文本`；会话备注保持原样。"""
+        """带角色的历史行统一渲染为 `[role][HH:MM:SS]文本`。"""
         if line.role is None:
             return line.message
         moment = line.at.astimezone(self._timezone)
@@ -209,14 +274,14 @@ class ContextBuilder:
             return HumanMessage(content=text)
         return AIMessage(content=text)
 
-    def _structured_block(self, warnings: list[str]) -> str:
+    def _structured_block(self, warnings: list[ContextWarning]) -> str:
         """结构化记忆全文注入，不做预算裁剪：它是主人手写的大纲，删行会丢语义。"""
         if self._structured is None:
             return ""
         try:
             lines = self._structured.lines()
         except (MemoryReadError, OSError):
-            warnings.append("结构化记忆无法读取，已跳过")
+            warnings.append(ContextWarning(WARNING_MEMORY_UNLOADED, "结构化记忆无法读取，已跳过"))
             return ""
         return "\n".join(lines).strip()
 
@@ -232,24 +297,3 @@ class ContextBuilder:
             kept.append(fragment)
             used += size
         return kept, 0
-
-    def _timeline(
-        self, *, moment: datetime, include_perception: bool
-    ) -> tuple[list[ChatLine], list[ChatLine]]:
-        today = moment.date()
-        lines: list[ChatLine] = list(self._transcript.lines()) if self._transcript else []
-        notes: list[ChatLine] = []
-        if self._perception is not None and include_perception:
-            for event in self._perception.recent_context_events(CONTEXT_EVENT_LIMIT):
-                local = event.at.astimezone(self._timezone)
-                if local.date() != today:
-                    continue
-                notes.append(
-                    ChatLine(
-                        at=event.at,
-                        message=AIMessage(content=f"[感知 {local:%H:%M}] {event.summary}"),
-                    )
-                )
-        timeline = [*lines, *notes]
-        timeline.sort(key=lambda line: line.at)
-        return timeline, notes

@@ -134,14 +134,14 @@ def test_session_boundary_is_written_as_structured_event(db_file: Path):
 def test_invalid_event_is_rejected_and_nothing_is_written(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     with pytest.raises(EventError):
-        service.record_event("dispatch_failed", capability="记忆检索")
+        service.record_event("dispatch_failed", topic="回忆")
     assert service.read_day("2026-10-25") == []
 
 
 def test_event_is_still_written_with_the_legacy_temporary_setting(db_file: Path):
     SettingsService(db_file).put("memory.temporary_mode", "true")
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
-    assert service.record_event("dispatch_failed", capability="记忆检索", reason="超时") is True
+    assert service.record_event("dispatch_failed", topic="回忆", reason="超时") is True
     assert [r.role for r in service.read_day("2026-10-25")] == ["event"]
 
 
@@ -161,8 +161,20 @@ def test_search_uses_keyword_and_range(db_file: Path):
 
 def test_user_input_is_written_without_waiting_for_a_reply(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
-    assert service.record_user("只有输入") is True
+    entry = service.record_user("只有输入")
+    assert entry.content == "只有输入"
+    assert entry.id is not None
     assert [(r.role, r.content) for r in service.read_day("2026-10-25")] == [("master", "只有输入")]
+
+
+def test_identical_text_written_twice_gets_two_identities(db_file: Path):
+    """同样一句正文写两次仍是两条记录，身份不靠正文区分（T-03）。"""
+    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
+    first = service.record_user("在吗")
+    second = service.record_user("在吗")
+    assert first.id is not None and second.id is not None
+    assert first.id != second.id
+    assert [r.id for r in service.read_day("2026-10-25")] == [first.id, second.id]
 
 
 def test_master_assistant_and_me_are_written_independently(db_file: Path):
@@ -190,7 +202,7 @@ def test_read_day_uses_the_active_persona_by_default(db_file: Path):
 def test_restore_excludes_events_and_other_personas_but_keeps_order(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     service.record_user("第一句", persona_id="芙芙")
-    service.record_event("dispatch_failed", capability="记忆检索", reason="超时")
+    service.record_event("dispatch_failed", topic="回忆", reason="超时")
     service.record_assistant("查询结果", persona_id="芙芙")
     service.record_reply("第二句", persona_id="芙芙")
     service.record_user("别人的话", persona_id="小桌")
