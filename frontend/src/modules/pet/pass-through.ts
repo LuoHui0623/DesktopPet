@@ -1,25 +1,46 @@
-import type { Point } from "./avatar-layout";
+import type { LayoutSize, Point } from "./avatar-layout";
 
 export interface PassThroughWindow {
   cursorPosition: () => Promise<Point>;
   innerPosition: () => Promise<Point>;
-  scaleFactor: () => Promise<number>;
+  innerSize: () => Promise<LayoutSize>;
   setIgnoreCursorEvents: (ignore: boolean) => Promise<void>;
 }
 
 export const PASS_THROUGH_INTERVAL_MS = 16;
 
-/** 全局光标物理坐标 → 窗口内 CSS 坐标。 */
-export function physicalToWindowCss(cursor: Point, windowPosition: Point, scale: number): Point {
-  if (!Number.isFinite(scale) || scale <= 0) return { x: 0, y: 0 };
+/** 按窗口物理尺寸与 WebView CSS 视口的实际比例换算全局光标坐标。 */
+export function physicalToWindowCss(
+  cursor: Point,
+  windowPosition: Point,
+  physicalSize: LayoutSize,
+  viewportSize: LayoutSize,
+): Point | null {
+  if (
+    !Number.isFinite(cursor.x) ||
+    !Number.isFinite(cursor.y) ||
+    !Number.isFinite(windowPosition.x) ||
+    !Number.isFinite(windowPosition.y) ||
+    !Number.isFinite(physicalSize.width) ||
+    !Number.isFinite(physicalSize.height) ||
+    physicalSize.width <= 0 ||
+    physicalSize.height <= 0 ||
+    !Number.isFinite(viewportSize.width) ||
+    !Number.isFinite(viewportSize.height) ||
+    viewportSize.width <= 0 ||
+    viewportSize.height <= 0
+  ) {
+    return null;
+  }
   return {
-    x: (cursor.x - windowPosition.x) / scale,
-    y: (cursor.y - windowPosition.y) / scale,
+    x: ((cursor.x - windowPosition.x) * viewportSize.width) / physicalSize.width,
+    y: ((cursor.y - windowPosition.y) * viewportSize.height) / physicalSize.height,
   };
 }
 
 export interface PassThroughOptions {
   window: PassThroughWindow;
+  viewportSize: () => LayoutSize;
   resolve: (point: Point) => boolean;
   onInteractiveChange?: (interactive: boolean, point: Point) => void;
   intervalMs?: number;
@@ -117,12 +138,13 @@ export function createPassThroughController(options: PassThroughOptions): PassTh
       if (failed || frozen || ticking) return;
       ticking = true;
       try {
-        const [cursor, position, scale] = await Promise.all([
+        const [cursor, position, physicalSize] = await Promise.all([
           options.window.cursorPosition(),
           options.window.innerPosition(),
-          options.window.scaleFactor(),
+          options.window.innerSize(),
         ]);
-        const point = physicalToWindowCss(cursor, position, scale);
+        const point = physicalToWindowCss(cursor, position, physicalSize, options.viewportSize());
+        if (point === null) throw new Error("窗口物理尺寸或 WebView 视口尺寸无效");
         lastPoint = point;
         let next = true;
         try {
@@ -133,7 +155,7 @@ export function createPassThroughController(options: PassThroughOptions): PassTh
         }
         setInteractive(next, point);
       } catch (error: unknown) {
-        console.error("读取全局光标失败，按整窗可交互处理", error);
+        console.error("读取窗口指针坐标失败，按整窗可交互处理", error);
         setInteractive(true, lastPoint);
       } finally {
         ticking = false;

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, type RefObject } from "react";
 import type { InteractionKind } from "../../api/types";
 import type { LoadedAvatar } from "../../service/avatar.service";
 import type { AnimationResource } from "./animation-resource";
-import { containRect, offsetRect, transformOrigin } from "./avatar-layout";
+import { containRect, offsetRect, transformOrigin, type Point } from "./avatar-layout";
 import { isAvatarPixel, type FrameViewport } from "./avatar-hit";
 import { avatarStateKey, selectAvatarAnimation } from "./avatar-state";
 import { useAvatarFrame } from "./use-avatar-frame";
@@ -14,6 +14,20 @@ export type PetHitTest = (clientX: number, clientY: number) => boolean;
 
 /** 供穿透轮询读取当前帧掩码与绘制矩形；坐标均为窗口内 CSS 坐标。 */
 export type PetFrameProvider = () => FrameViewport | null;
+
+/**
+ * 画布在窗口内的未变换原点：反应动画的 transform 不计入，才能与绘制矩形的局部坐标对齐。
+ * 以 offsetParent（窗口根容器）的视口位置加 offsetLeft/Top 得到，offsetLeft/Top 不受 transform 影响。
+ */
+function untransformedOrigin(element: HTMLElement): Point {
+  const parent = element.offsetParent;
+  if (!(parent instanceof HTMLElement)) {
+    const rect = element.getBoundingClientRect();
+    return { x: rect.left, y: rect.top };
+  }
+  const base = parent.getBoundingClientRect();
+  return { x: base.left + element.offsetLeft, y: base.top + element.offsetTop };
+}
 
 const STATE_COLORS: Record<string, string> = {
   idle: "#8ec5ff",
@@ -93,10 +107,9 @@ export function PetView({
   const provider = useCallback((): FrameViewport | null => {
     const canvas = canvasRef.current;
     if (canvas === null || animation === null) return null;
-    const rect = canvas.getBoundingClientRect();
     return {
       mask: frame?.mask ?? null,
-      drawRect: offsetRect({ x: rect.left, y: rect.top }, drawRect),
+      drawRect: offsetRect(untransformedOrigin(canvas), drawRect),
       sourceWidth: animation.canvas.width,
       sourceHeight: animation.canvas.height,
     };
@@ -126,6 +139,13 @@ export function PetView({
     if (context === null) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
     if (frame === null || frame.image === null) return;
+    if (
+      typeof ImageBitmap !== "undefined" &&
+      frame.image instanceof ImageBitmap &&
+      (frame.image.width === 0 || frame.image.height === 0)
+    ) {
+      return;
+    }
     context.imageSmoothingEnabled = true;
     context.drawImage(frame.image, drawRect.left, drawRect.top, drawRect.width, drawRect.height);
   }, [drawRect, frame]);

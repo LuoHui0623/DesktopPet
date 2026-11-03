@@ -218,6 +218,7 @@ mod tests {
         "allow-get-backend-info",
         "allow-open-chat-window",
         "allow-open-status-window",
+        "allow-open-settings-window",
         "allow-show-context-menu",
         "allow-exit-app",
         "allow-start-perception",

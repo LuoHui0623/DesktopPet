@@ -16,6 +16,7 @@ pub fn create_pet_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .title("桌面宠物")
         .inner_size(PET_WINDOW_SIZE.0, PET_WINDOW_SIZE.1)
         .decorations(false)
+        .shadow(false)
         .transparent(true)
         .always_on_top(true)
         .resizable(false)

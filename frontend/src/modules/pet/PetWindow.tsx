@@ -146,14 +146,15 @@ export function PetWindow() {
   const stateKey = behavior({ connected, status });
 
   const passThrough = useMemo(() => {
-    const window = getCurrentWindow();
+    const petWindow = getCurrentWindow();
     return createPassThroughController({
       window: {
         cursorPosition: () => cursorPosition(),
-        innerPosition: () => window.innerPosition(),
-        scaleFactor: () => window.scaleFactor(),
-        setIgnoreCursorEvents: (ignore) => window.setIgnoreCursorEvents(ignore),
+        innerPosition: () => petWindow.innerPosition(),
+        innerSize: () => petWindow.innerSize(),
+        setIgnoreCursorEvents: (ignore) => petWindow.setIgnoreCursorEvents(ignore),
       },
+      viewportSize: () => ({ width: globalThis.innerWidth, height: globalThis.innerHeight }),
       resolve: (point) => isInteractiveAt(frameProviderRef.current?.() ?? null, uiRects(), point),
       onInteractiveChange: (interactive, point) => {
         if (!interactive) {
@@ -299,8 +300,8 @@ export function PetWindow() {
       }}
       style={{
         position: "relative",
-        width: 320,
-        height: 360,
+        width: "100vw",
+        height: "100vh",
         display: "flex",
         flexDirection: "column",
         overflow: "hidden",
