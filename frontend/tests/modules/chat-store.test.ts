@@ -118,6 +118,13 @@ describe("chat store: approvals", () => {
     task: "记住用户喜欢美式咖啡",
     content: "将写入一条偏好记忆：喜欢美式咖啡，不加糖",
     tools: ["memory_create"],
+    persona_id: null,
+    persona_version: null,
+    main_task_id: null,
+    subtask_id: null,
+    source: null,
+    previews: [],
+    model: null,
   };
 
   it("stores the drafts pushed by the approval request event", () => {
@@ -158,7 +165,7 @@ describe("chat store: approvals", () => {
     expect(store.getState().approvalError).toBe("审批已关闭");
   });
 
-  it("replaces stale cards when a new approval request arrives", () => {
+  it("keeps earlier tickets when another approval request arrives", () => {
     const store = createChatStore();
     store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
     store.getState().applyEvent({
@@ -166,8 +173,43 @@ describe("chat store: approvals", () => {
       plan_id: "plan_2",
       items: [{ ...item, approval_id: "ap_9", topic: "记忆写入" }],
     });
-    expect(store.getState().approvals.map((entry) => entry.approval_id)).toEqual(["ap_9"]);
-    expect(store.getState().approvals[0]?.planId).toBe("plan_2");
+    expect(store.getState().approvals.map((entry) => entry.approval_id)).toEqual(["ap_1", "ap_9"]);
+    expect(store.getState().approvals.map((entry) => entry.planId)).toEqual(["plan_1", "plan_2"]);
+  });
+
+  it("updates a repeated approval id in place without duplicating the card", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({ type: "approval.request", plan_id: "plan_1", items: [item] });
+    store.getState().applyEvent({
+      type: "approval.request",
+      plan_id: "plan_1",
+      items: [{ ...item, topic: "读取：world/笔记.md", action: "read", resource: "world" }],
+    });
+    expect(store.getState().approvals).toHaveLength(1);
+    expect(store.getState().approvals[0]?.topic).toBe("读取：world/笔记.md");
+    expect(store.getState().approvals[0]?.action).toBe("read");
+  });
+
+  it("merges one card per read call while a long task keeps several tickets open", () => {
+    const store = createChatStore();
+    store.getState().applyEvent({
+      type: "approval.request",
+      plan_id: "plan_1",
+      items: [
+        { ...item, approval_id: "read:1", action: "index", resource: "world" },
+        { ...item, approval_id: "read:2", action: "read", resource: "world", path: "笔记.md" },
+      ],
+    });
+    store.getState().applyEvent({
+      type: "approval.request",
+      plan_id: "plan_1",
+      items: [{ ...item, approval_id: "read:3", action: "grep", resource: "structured" }],
+    });
+    expect(store.getState().approvals.map((entry) => entry.approval_id)).toEqual([
+      "read:1",
+      "read:2",
+      "read:3",
+    ]);
   });
 });
 

@@ -198,10 +198,22 @@ export function createChatStore() {
       },
       applyEvent: (event) => {
         if (event.type === "approval.request") {
-          set({
-            approvals: event.items.map((item) => ({ ...item, planId: event.plan_id })),
-            approvalSubmitting: null,
-            approvalError: null,
+          // 读取审批一次一票，多个子代理会陆续推送；按 approval_id 合并，
+          // 不能整体替换，否则先前的挂起票据会消失。
+          set((state) => {
+            const merged = [...state.approvals];
+            const positions = new Map(merged.map((item, index) => [item.approval_id, index]));
+            for (const item of event.items) {
+              const entry = { ...item, planId: event.plan_id };
+              const index = positions.get(item.approval_id);
+              if (index === undefined) {
+                positions.set(item.approval_id, merged.length);
+                merged.push(entry);
+              } else {
+                merged[index] = entry;
+              }
+            }
+            return { approvals: merged, approvalError: null };
           });
           return;
         }

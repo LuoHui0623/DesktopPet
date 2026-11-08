@@ -216,6 +216,21 @@
       }
     },
     {
+      "operationId": "list_approvals",
+      "method": "GET",
+      "path": "/api/agent/approvals",
+      "tags": [
+        "agent"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/ApprovalList"
+        },
+        "503": null
+      }
+    },
+    {
       "operationId": "list_avatars",
       "method": "GET",
       "path": "/api/avatars",
@@ -687,6 +702,18 @@
       },
       "ApprovalItem": {
         "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Action"
+          },
           "approval_id": {
             "title": "Approval Id",
             "type": "string"
@@ -695,9 +722,136 @@
             "title": "Content",
             "type": "string"
           },
+          "main_task_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Main Task Id"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Model"
+          },
+          "parameters": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Parameters"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Path"
+          },
+          "persona_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Persona Id"
+          },
+          "persona_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Persona Version"
+          },
+          "plan_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plan Id"
+          },
+          "previews": {
+            "items": {
+              "$ref": "#/components/schemas/FilePreview"
+            },
+            "title": "Previews",
+            "type": "array"
+          },
+          "resource": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Resource"
+          },
           "run_id": {
             "title": "Run Id",
             "type": "string"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
+          },
+          "subtask_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subtask Id"
           },
           "task": {
             "title": "Task",
@@ -723,6 +877,19 @@
           "content"
         ],
         "title": "ApprovalItem",
+        "type": "object"
+      },
+      "ApprovalList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalItem"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "title": "ApprovalList",
         "type": "object"
       },
       "ApprovalRequestEvent": {
@@ -1087,6 +1254,63 @@
           "model"
         ],
         "title": "DefaultInfo",
+        "type": "object"
+      },
+      "FilePreview": {
+        "properties": {
+          "authors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Authors",
+            "type": "array"
+          },
+          "created": {
+            "default": false,
+            "title": "Created",
+            "type": "boolean"
+          },
+          "deleted": {
+            "default": false,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "folded": {
+            "default": false,
+            "title": "Folded",
+            "type": "boolean"
+          },
+          "hunk_count": {
+            "default": 0,
+            "title": "Hunk Count",
+            "type": "integer"
+          },
+          "hunks": {
+            "items": {
+              "$ref": "#/components/schemas/PreviewHunk"
+            },
+            "title": "Hunks",
+            "type": "array"
+          },
+          "op": {
+            "title": "Op",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "resource": {
+            "title": "Resource",
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource",
+          "path",
+          "op"
+        ],
+        "title": "FilePreview",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -1720,6 +1944,33 @@
           "personas"
         ],
         "title": "PersonasResponse",
+        "type": "object"
+      },
+      "PreviewHunk": {
+        "properties": {
+          "added": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Added",
+            "type": "array"
+          },
+          "header": {
+            "title": "Header",
+            "type": "string"
+          },
+          "removed": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Removed",
+            "type": "array"
+          }
+        },
+        "required": [
+          "header"
+        ],
+        "title": "PreviewHunk",
         "type": "object"
       },
       "ProactiveMessageEvent": {

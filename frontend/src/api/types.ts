@@ -15,6 +15,25 @@ export interface ReplyMessage {
   sources: MemorySourceRef[];
 }
 
+export interface PreviewHunk {
+  header: string;
+  removed: string[];
+  added: string[];
+}
+
+/** 一个文件的待审批净差异；文件过大时折叠，只保留改动数量。 */
+export interface FilePreview {
+  resource: string;
+  path: string;
+  op: string;
+  created: boolean;
+  deleted: boolean;
+  authors: string[];
+  hunk_count: number;
+  folded: boolean;
+  hunks: PreviewHunk[];
+}
+
 export interface ApprovalItem {
   approval_id: string;
   run_id: string;
@@ -22,6 +41,19 @@ export interface ApprovalItem {
   task: string;
   content: string;
   tools: string[];
+  persona_id: string | null;
+  persona_version: number | null;
+  main_task_id: string | null;
+  subtask_id: string | null;
+  source: string | null;
+  previews: FilePreview[];
+  model: string | null;
+  /** 读取票据：动作、目标与参数摘要；结算票据为空。 */
+  action?: string | null;
+  resource?: string | null;
+  path?: string | null;
+  parameters?: string | null;
+  plan_id?: string | null;
 }
 
 export interface ApprovalDecision {
