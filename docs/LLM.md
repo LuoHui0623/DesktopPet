@@ -1,11 +1,11 @@
 # 模型域设计
 
 > 职责：定义 provider/model 清单、能力映射、快照与热更、客户端装配与缓存、调用记录、不可用语义。
-> 依赖：`config/settings.py`（ModelSettings）、`infra/llm/`（范式与用量）、`app_setting`（当前模型）。
+> 依赖：`infra/llm/configuration.py`（配置解析与快照）、`infra/llm/client.py`（装配、缓存与热更）、`config/dotenv.py`（`.env` 读取）、`infra/llm/`（范式、token 计数与用量）、`config/settings.py`（进程级配置与兼容重导出）、`app_setting`（当前模型）。
 > 不回答：提示词、上下文、业务重试、句长校验（见 [CHAT.md](CHAT.md)）、主动判定（见 [OBSERVER.md](OBSERVER.md) / [PROACTIVE.md](PROACTIVE.md)）。
-> 状态：已实现（2026-11-01）。与现有 `module/llm` / `infra/llm` 一致。
+> 状态：已实现。配置解析、客户端装配与热更按「依赖与落点」落在 `infra/llm`，`module/llm/llm_service.py` 只保留能力选择。
 
-## 1. 定位
+## 定位
 
 模型域是**供应商**：它回答“有哪些模型、哪个能力用哪个、怎么装配、怎么记账、不可用时怎么表达”，不回答“拿模型做什么”。
 
@@ -17,7 +17,7 @@
 | 记录每次调用的用量 | 重试业务失败（chat / 管线做） |
 | 报告 provider 不可用及原因 | 保存密钥、写业务数据 |
 
-## 2. 概念定义
+## 概念定义
 
 - **Provider**：一个模型供应方，如 `deepseek`、`opencode`；有 `base_url`、可选的固定请求头、密钥环境变量。
 - **Model preset**：`llm.yaml` 中的模型条目，含标签 `name`、上游 `id`、接口范式 `api`、可用角色 `roles`、温度、最大 token、上下文窗口 `context_window` 与计数方式 `tokenizer`。
@@ -28,32 +28,41 @@
 - **UsageSample**：一次模型调用的记录，含轮次标识、结构化用量与完整请求/回复正文。
 - **TurnUsage**：一轮对话内全部模型调用的聚合，含 token 总量与完整性、模型耗时并集和明细。
 
-## 3. 依赖与落点
+## 依赖与落点
 
 | 组件 | 落点 | 说明 |
 |---|---|---|
-| 配置解析与校验 | `config/settings.py` | `.env` + `llm.yaml` → `ModelSettings` |
+| `.env` 读取 | `config/dotenv.py` | `read_dotenv`：逐行解析并产出告警文案 |
+| 配置解析与校验 | `infra/llm/configuration.py` | `.env` + `llm.yaml` → `ModelSettings`；`ModelSettingsSource` 负责文件戳与重载 |
 | 接口范式与 client 构造 | `infra/llm/spec.py`、`infra/llm/paradigms.py` | `chat_completions` / `responses` / `messages` |
+| 装配、缓存、热更 | `infra/llm/client.py` | `ModelClientManager`：按 `(provider, model, version)` 缓存、文件戳变化自动重载、`ReloadResult` |
 | 调用记录 | `infra/llm/usage.py` | `TrackedChatModel`、`usage_scope`、`UsageSink`、`UsageObserver` |
+| token 计数 | `infra/llm/tokens.py` | tiktoken 编码与本地估算 |
 | 轮次聚合与事件 | `module/llm/usage_service.py` | `UsageService`、`DbUsageReader`、`aggregate_turn` |
-| 能力选择、装配、缓存、热更 | `module/llm/llm_service.py` | `LlmService` |
+| 能力选择与对外门面 | `module/llm/llm_service.py` | `LlmService`：能力 → 模型 → client；装配与缓存委托 `ModelClientManager` |
+| 进程级配置 | `config/settings.py` | `ServiceSettings`；对 `infra.llm.configuration` 的兼容重导出与薄包装（保留旧导入路径） |
 | 当前模型持久化 | `app_setting` | `llm.active.<capability>` |
 | 调用落库 | `infra/store` | `llm_call` 表 |
 
 依赖方向：
 
 ```
-chat / pipeline ─► module/llm ─► config/settings
-                        └─────► infra/llm ─► provider SDK
+chat / pipeline ─► module/llm/llm_service ─┬─► infra/llm/client ─► infra/llm/paradigms ─► provider SDK
+                                           │        └─► infra/llm/usage / tokens
+                                           └─► infra/llm/configuration ─► config/dotenv
+
+config/settings（进程级配置）──兼容重导出──► infra/llm/configuration
 ```
+
+- `infra/llm/configuration.py` 不依赖进程级配置：`.env` 允许的键、能力变量名、告警键集合都由调用方以参数注入（`config/settings.py` 传 `CAPABILITY_VARS` / `KNOWN_KEY`）。
 
 - 业务代码不直接 import provider SDK。
 - 业务代码不读 `.env` / `llm.yaml`；只通过 `LlmService` 拿 client 或状态。
 - 模型域不依赖 chat / observer / proactive。
 
-## 4. 对外契约
+## 对外契约
 
-### 4.1 `LlmService`
+### `LlmService`
 
 | 方法 | 返回 | 说明 |
 |---|---|---|
@@ -67,7 +76,9 @@ chat / pipeline ─► module/llm ─► config/settings
 | `set_usage_observer(observer)` | — | 注入调用观察者（实时事件）；对已缓存 client 同步生效 |
 | `last_errors` | `list[str]` | 最近一次重载失败的错误 |
 
-### 4.2 错误语义
+`LlmService` 只做能力侧判断：模型是否存在、`capability` 是否在 `roles` 中，成功后交给 `ModelClientManager.client(settings, provider, model)`；`ModelUnavailableError` 统一转成 `LlmUnavailableError`，因此调用方只需处理后者。`start` / `current` / `reload` / `last_errors` / `set_usage_observer` 均为对 manager 的同名委托，语义与「快照与热更」一致。
+
+### 错误语义
 
 | 异常 | 含义 | 谁处理 |
 |---|---|---|
@@ -77,7 +88,7 @@ chat / pipeline ─► module/llm ─► config/settings
 
 `LlmUnavailableError` **不是**“调用失败”；调用失败由 `TrackedChatModel.invoke` 抛出，由 chat 包装为 `model_failed`。
 
-### 4.3 当前模型优先级
+### 当前模型优先级
 
 ```text
 app_setting 的 llm.active.<capability>
@@ -87,17 +98,17 @@ app_setting 的 llm.active.<capability>
 
 - 设置页切换写入 `app_setting`，立即生效。
 - 两者都未设置时，该能力不可用；启动仍成功，调用时返回明确错误。
-- 是否提供“恢复默认”入口待定（见 §10）。
+- 是否提供“恢复默认”入口待定。
 
-## 5. 快照与热更
+## 快照与热更
 
-### 5.1 快照
+### 快照
 
 - `ModelSettings` 不可变，带 `version`（内容哈希）。
 - 密钥不参与哈希；密钥值来自进程环境变量，不写入文件或数据库。
 - 解析失败不产生半生效状态：旧快照继续使用，返回错误列表。
 
-### 5.2 触发重载
+### 触发重载
 
 | 方式 | 说明 |
 |---|---|
@@ -105,19 +116,19 @@ app_setting 的 llm.active.<capability>
 | 手动重载 | `POST /api/llm/reload` |
 | 切换模型 | 写 `app_setting`，下一次取 client 生效 |
 
-### 5.3 缓存与进行中请求
+### 缓存与进行中请求
 
 - client 按 `(provider, model, version)` 缓存；版本切换后淘汰旧实例。
 - 进行中的请求继续使用发起时的快照；新请求使用新快照。
 - 可热更：provider 列表、`base_url`、模型预设、默认模型、温度、最大 token、上下文窗口与计数方式。
 - 不可热更：`PET_*` 等进程级配置；密钥环境变量在进程启动后不自动重读。
 
-### 5.4 已知限制
+### 已知限制
 
 - Windows 系统环境变量修改后需重启后端才能生效；若要做免重启，可在重载时用 `winreg` 读取，但需处理用户/系统优先级，待定。
 - `opencode` 的免费模型只能在 OpenCode 客户端使用；Gemini 原生接口不支持；Claude 走 `messages`，GPT 走 `responses`。
 
-## 6. 调用记录
+## 调用记录
 
 - 落点表为 `llm_call`（首次建表时名为 `llm_usage`，迁移 `0010_llm_call` 改名，与 `agent_run`、`capability_run`、`behavior_event` 的命名对齐；迁移 `0012_usage_turn` 增加 `turn_id` 与其索引；迁移 `0013_llm_call_reply_raw` 增加未解析原始响应 `reply_raw`）。
 - 每个 client 包装为 `TrackedChatModel`，每次调用记录：
@@ -128,7 +139,7 @@ app_setting 的 llm.active.<capability>
 - 记录写入失败只记日志，不影响业务返回。
 - 记录落 `llm_call` 表；不写业务日志。
 
-### 6.1 正文记录
+### 正文记录
 
 | 字段 | 内容 | 缺省 |
 |---|---|---|
@@ -138,16 +149,16 @@ app_setting 的 llm.active.<capability>
 
 - 正文**完整落库，不截断**：长上下文与长回复按原样保存，复盘时能看到模型实际收到的内容。
 - 失败调用同样写一行，`success=false`，`prompt_text` 保留、`reply_text` 与 `reply_raw` 为空——用于复盘模型侧异常。
-- 正文只落库、不进日志；日志侧由调用方按需记录（见 [CHAT.md](CHAT.md) §6.3「子代理的输出契约」）。
+- 正文只落库、不进日志；日志侧由调用方按需记录（见 [CHAT.md](CHAT.md) 的「派发分支」「子代理的输出契约」）。
 
-### 6.2 轮次关联
+### 轮次关联
 
 - 一轮对话对应一个 `turn_id`（32 位十六进制）。`ChatService` 在收到请求时开始一轮，写入时间取接收时刻；第二轮用户输入或下一次主动触发各自开新轮。
 - `turn_id` 通过 `usage_scope(..., turn_id=...)` 进入 ContextVar，`TrackedChatModel` 落库时读取。主 agent 的格式重试共享同一轮。
 - 派发时线程池**不继承 ContextVar**，`turn_id` 由 `Orchestrator` / `SubAgent` 显式传参，子代理的起草与执行调用同属该轮；`agent_run` 同步写入 `turn_id`，可与 `llm_call` 互查。
 - 模型不可用时也写一行 `success=false` 的 `llm_call` 并归属该轮，便于统计「整轮失败」。
 
-### 6.3 轮次聚合
+### 轮次聚合
 
 `module/llm/usage_service.py` 的 `UsageService.start_turn(at)` / `finish_turn(turn_id)` 负责轮次生命周期，`DbUsageReader.calls(turn_id)` 按 `started_at, id` 读取明细，`aggregate_turn` 产出 `TurnUsage`：
 
@@ -162,7 +173,7 @@ app_setting 的 llm.active.<capability>
 - 审批等待不计入模型耗时：区间只来自模型调用本身，审批发生在两次调用之间时自然留空。
 - 汇总读取失败（如数据库锁定）只记日志，不影响已生成的回复；轮次事件随之缺失。
 
-### 6.4 实时事件
+### 实时事件
 
 - `TrackedChatModel` 支持注入 `UsageObserver`：调用发起前 `call_started(CallStart)`（此时无回复、无 token），写入与通知完成后 `call_finished(UsageSample)`；观察者抛错只记日志，不影响调用。
 - `BusEventPublisher` 同时实现 `UsageObserver` 与 `UsageEvents`，经 WS 下发：
@@ -172,9 +183,9 @@ app_setting 的 llm.active.<capability>
 - 展示边界在服务端：`PET_DEV_MODE` 为真时下发完整正文与调用方信息；否则 `provider`、`model`、`run_id`、`prompt_hash`、`prompt_text`、`reply_text`、`reply_raw`、`usage_raw` 一律置空，只保留 token、耗时与成功状态。`llm_call` 中的完整正文仍在库内，状态窗口不提供历史回看。
 - 当前轮次由 `module/llm/usage_panel.py` 的内存面板维护：`start_turn` 换轮即替换，已结束轮次拒绝迟到事件，`finish_turn` 用落库记录重建明细；应用关闭后面板消失，不落库。
 
-## 7. 配置
+## 配置
 
-### 7.1 来源分工
+### 来源分工
 
 | 来源 | 提供什么 |
 |---|---|
@@ -183,7 +194,7 @@ app_setting 的 llm.active.<capability>
 | 系统环境变量 | 每个 provider 的实际密钥，变量名由 `.env` 解析得到，缺省 `<PROVIDER>_API_KEY` |
 | `app_setting` | 设置页切换后的当前模型，优先级最高 |
 
-### 7.2 校验规则
+### 校验规则
 
 启动与每次重载执行，任一失败即整体拒绝：
 
@@ -197,14 +208,14 @@ app_setting 的 llm.active.<capability>
 
 密钥缺失不属于配置错误：provider 标记为不可用，启动成功，调用时返回明确错误。
 
-### 7.3 密钥
+### 密钥
 
 - 只存在系统环境变量，不写入 `.env`、`llm.yaml`、数据库。
 - `.env` 中的 `<PROVIDER>_API_KEY` 是间接引用，值是系统环境变量名：`DEEPSEEK_API_KEY=PET_API_KEY` 表示 `deepseek` 的密钥从 `PET_API_KEY` 读取。未写该键时默认读 `<PROVIDER>_API_KEY`。
 - 值必须匹配 `^[A-Z_][A-Z0-9_]*$`；写密钥本身（如 `DEEPSEEK_API_KEY=sk-…`）启动报错。值等于键名时等价于未写。
 - `GET /api/llm/providers` 不返回密钥值，只返回可用状态与原因。
 
-## 8. 失败与降级
+## 失败与降级
 
 | 场景 | 行为 |
 |---|---|
@@ -217,7 +228,7 @@ app_setting 的 llm.active.<capability>
 
 重试归属：模型域**不重试**。调用方按业务决定：chat 只重试输出格式；主动管线重试整轮 1 次。
 
-## 9. 非目标
+## 非目标
 
 1. 不构建提示词、不组装上下文、不校验业务输出格式。
 2. 不判断何时对话/主动，不维护发送台账。
@@ -225,7 +236,7 @@ app_setting 的 llm.active.<capability>
 4. 不把密钥写入文件或数据库。
 5. 不新增 `proactive` 等业务能力；主动轮复用 `chat`。
 
-## 10. 待定
+## 待定
 
 | 项 | 建议 | 状态 |
 |---|---|---|
@@ -235,13 +246,13 @@ app_setting 的 llm.active.<capability>
 | `consolidate` 的用途边界 | 子代理整理；不参与日常对话主路径 | 已实现，文档待补 |
 | 多 provider 同名模型 | 要求 `provider/name` 显式写法 | 已定（校验规则） |
 
-## 11. 已定口径与关联文档
+## 已定口径与关联文档
 
-- 每次调用（含失败）连同完整请求与回复正文写入 `llm_call`，正文不截断；回复同时保留归一化纯文本（`reply_text`）与未解析原始响应（`reply_raw`），状态窗口开发模式展示后者（见 §6.1）。
-- 一轮对话、其重试、派发子代理与主动轮各自归属 `turn_id`；未知 token 不按 0 计入，整轮耗时按调用区间并集计算（见 §6.2–§6.3）。
-- 调用开始/完成与轮次开始/完成经 WS 实时下发（见 §6.4）。
+- 每次调用（含失败）连同完整请求与回复正文写入 `llm_call`，正文不截断；回复同时保留归一化纯文本（`reply_text`）与未解析原始响应（`reply_raw`），状态窗口开发模式展示后者（见「正文记录」）。
+- 一轮对话、其重试、派发子代理与主动轮各自归属 `turn_id`；未知 token 不按 0 计入，整轮耗时按调用区间并集计算（见「轮次关联」–「轮次聚合」）。
+- 调用开始/完成与轮次开始/完成经 WS 实时下发（见「实时事件」）。
 - 状态窗口只展示当前轮次；展示边界由服务端按 `PET_DEV_MODE` 裁剪，正式模式不下发正文与调用方信息。`PET_DEV_MODE` 只由 Tauri 调试构建注入，前端不参与判定。
 - ChatService 提供完整 chat 能力；主动复用同一入口，不新增生成链路。
 - 主动轮失败最多重试 1 次，不抛给用户。
-- `Arch.md` §8.3：LLM 配置、热更、校验规则。
+- `Arch.md` 的「LLM 配置」：LLM 配置、热更、校验规则。
 - `backend/config/README.md`：`.env`、`llm.yaml` 的完整解析规则。

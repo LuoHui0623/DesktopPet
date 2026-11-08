@@ -44,4 +44,4 @@ Thumbs.db
 backend/openapi.json
 
 # 本地任务记录，不纳入 git 追踪
-Task.md
+Task*.md

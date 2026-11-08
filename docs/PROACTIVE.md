@@ -3,9 +3,9 @@
 > 职责：定义解析器产出 Trigger 之后，如何调用 chat、写台账、推送 `proactive.message`，以及失败与并发处理。
 > 依赖：观测域解析器（Trigger）、ChatService（单入口）、`app_setting` 台账、WS 事件总线、`chat_active` 端口。
 > 不回答：采集、事件阈值、勿扰/限额判定（见 [OBSERVER.md](OBSERVER.md)）、话术内容（见 [CHAT.md](CHAT.md)）、气泡渲染。
-> 状态：已实现（2026-10-29；2026-10-31 升级为一条 `proactive.message` 可携带 1–4 条发言；2026-11-03 补齐逐工具只读判定、合并回注与可选 `notices`）。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见 §8。
+> 状态：已实现。一条 `proactive.message` 可携带 1–4 条发言，含逐工具只读判定、合并回注与可选 `notices`。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见「与前端/气泡的边界」。
 
-## 1. 定位
+## 定位
 
 管线只做**编排**：它不判断事件、不拼话术、不重算阈值，只把解析器已经决定好的 Trigger 变成一条实际发出的消息。
 
@@ -17,7 +17,7 @@
 | 推送 `proactive.message` | 绘制气泡、处理忽略状态 |
 | 失败重试与静默放弃 | 按 topic 维护话术模板 |
 
-## 2. 概念定义
+## 概念定义
 
 - **管线（pipeline）**：Trigger 的消费者，主动消息的编排者。落点 `module/proactive/pipeline.py`。
 - **Trigger**：解析器输出的唯一指令，`{topic, reason}`；`reason` 是事实摘要，不是话术。
@@ -25,7 +25,7 @@
 - **主动消息**：一次成功生成并推送的 `me` 回复。它在 `daily_log` 中就是普通 `me` 行，不加 `source`。
 - **最终并发保护**：管线在调用 chat 前再检查一次 `chat_active`。这不是重新判定规则，只防止“解析器判定后、生成前用户刚好开始对话”的竞态。
 
-## 3. 依赖与落点
+## 依赖与落点
 
 ```
 observer → parser → Trigger → pipeline → chat → llm
@@ -45,12 +45,12 @@ observer → parser → Trigger → pipeline → chat → llm
 
 - 管线不 import 观测器；只接收 Trigger。
 - 管线不 import 解析器内部；Trigger 是观测域对外的数据形状。
-- 管线不实现 tick；时钟与解析器调用由观测运行时负责（见 [OBSERVER.md](OBSERVER.md) §4.4）。
+- 管线不实现 tick；时钟与解析器调用由观测运行时负责（见 [OBSERVER.md](OBSERVER.md) 的「消费顺序」）。
 - chat 调用是阻塞的；管线不得在事件循环线程直接执行，需通过工作线程或任务队列。
 
-## 4. 对外契约
+## 对外契约
 
-### 4.1 唯一入口
+### 唯一入口
 
 ```text
 ProactivePipeline.handle(trigger: Trigger) -> ProactiveResult
@@ -67,7 +67,7 @@ ProactivePipeline.handle(trigger: Trigger) -> ProactiveResult
 
 管线对调用方（观测运行时）只暴露 `handle`；不暴露 chat、台账、WS 的细节。
 
-### 4.2 处理顺序
+### 处理顺序
 
 ```text
 handle(trigger)
@@ -90,7 +90,7 @@ handle(trigger)
 - **先台账后推送**：推送失败时消息已经在历史里，按“已发送”计，避免下次重复。
 - **推送失败不回滚台账**：否则同一主题可能在重连后再次触发。
 
-### 4.3 `proactive.message` 载荷
+### `proactive.message` 载荷
 
 ```text
 {
@@ -113,7 +113,7 @@ handle(trigger)
 - 不包含 `sources`、`reason`、`source` 字段；前端只需要显示文本（`messages[i].sources` 恒为空数组）。
 - 不作为 `daily_log` 的 `source`；`daily_log` 仍是普通 `me` 行（多条发言即多行）。
 
-## 5. 失败与重试
+## 失败与重试
 
 | 场景 | 管线行为 | 台账 | 推送 |
 |---|---|---|---|
@@ -132,14 +132,14 @@ handle(trigger)
 - 生成成功但推送失败时，消息已在 `daily_log` 与当日快照中；下次打开对话可见。
 - 台账写入失败是已知风险：可能导致同一主题再次触发；记录日志，不阻塞推送。
 
-## 6. 并发与排队
+## 并发与排队
 
 - 同一进程同时只允许一个主动轮生成；`ChatService` 的 `ChatActivity` 已提供“是否有对话进行中”的计数。
 - 若一个主动轮正在进行，新的 Trigger 直接丢弃并记录 `pipeline_busy`；不排队。
 - 理由：主动消息是时效性内容，排队后语境已变；解析器的最小间隔也会抑制连续触发。
 - 解析器与管线共享 `chat_active` 端口；管线在调用前做最后一次检查，缩小竞态窗口。
 
-## 7. 配置
+## 配置
 
 管线不新增配置键。它使用：
 
@@ -151,7 +151,7 @@ handle(trigger)
 
 主动消息的文案、语气、长度由 chat 的提示词决定；管线不维护 `perception.topics` 之类的话术字典。
 
-## 8. 与前端/气泡的边界
+## 与前端/气泡的边界
 
 - 管线只负责推送 `proactive.message`；气泡由 pet 窗口（320×360，宠物贴底、气泡占上部）的 webview 绘制，不新开窗口。
 - 一轮主动回复的多条发言各占一个气泡，按 `messages` 顺序逐条排队显示；气泡默认 15 秒自动消失，每条独立计时，新消息到达不打断当前气泡的剩余时长。
@@ -162,16 +162,16 @@ handle(trigger)
 - 不做 `POST /api/proactive/feedback`（该路由不存在，请求返回 404），也不写 `proactive_feedback` 表——该表从未有写入方，已由迁移 `0009_drop_proactive_feedback.sql` 移除。
 - 主动消息进入对话历史的方式：`daily_log` 的普通 `me` 行 + 当日快照；前端历史面板不区分主动/被动。
 
-## 9. 非目标
+## 非目标
 
 1. 不实现事件解析、阈值、勿扰/间隔/上限；这些归观测域解析器。
 2. 不实现 tick；时钟与解析器调用归观测运行时。
 3. 不按 topic 写话术、不建 per-topic hook。
 4. 不做反馈接口、不写反馈表、不要求用户对主动消息评分。
-5. 不做主动轮写入型派发或审批；只读派发自动放行（见 §10）。
+5. 不做主动轮写入型派发或审批；只读派发自动放行（见「主动轮只读派发」）。
 6. 不新增 LLM 能力；主动轮复用 `chat` 能力。
 
-## 10. 主动轮只读派发
+## 主动轮只读派发
 
 - 主动轮允许派发，但请求固定带 `read_only_dispatch=True`；只要能直接从当前上下文回答，仍可直接 `chat`，不强制每轮派发。
 - 是否放行按草案**实际声明的工具**逐项判定：全部在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里才执行；当前可用的纯读取任务主要来自「记忆检索」。
@@ -180,7 +180,7 @@ handle(trigger)
 - 主动轮不请求审批，也不会等待 `approval_request`。本轮所有子代理结果（成功输出与拒绝原因）合并成一条 `assistant` 正文落账，并作为回注交给主 agent；不写 `approval_rejected` 事件（D-24）。
 - 最终仍只生成一次 `chat` 回复；再次派发按 `invalid_output` 处理。
 
-## 11. 待定
+## 待定
 
 | 项 | 建议 | 状态 |
 |---|---|---|
@@ -195,7 +195,7 @@ handle(trigger)
 | 忽略语义 | 本会话静音，不落库、不调接口 | 已实现 |
 | 点击气泡落点 | 打开对话并定位历史页 | 已实现 |
 
-## 12. 已定口径与关联文档
+## 已定口径与关联文档
 
 - 主动是触发路径属性，不是数据属性；`daily_log` 不加 `source`，主动回复就是一条普通 `me` 行。
 - 解析器集中判定，只输出 `Trigger{topic, reason}`；管线只做编排。
@@ -203,4 +203,4 @@ handle(trigger)
 - 不做主动消息反馈；忽略只在前端本会话生效，后端没有反馈接口与反馈表。
 - 主动轮允许只读派发：`read_only_dispatch=True`，按草案声明的工具逐项判定，全部只读才放行、含写入即拒绝，不请求审批。
 - 主动轮的结构化记忆读取失败不中断消息，经 `proactive.message.notices`（`memory_unloaded`）提示；结果与拒绝原因合并为一条 `assistant` 回注。
-- 关联：[CHAT.md](CHAT.md) §5.3 主动轮上下文、[OBSERVER.md](OBSERVER.md) §4.3 解析器输出。
+- 关联：[CHAT.md](CHAT.md) 的「主动轮的上下文」主动轮上下文、[OBSERVER.md](OBSERVER.md) 的「解析器输出」解析器输出。
