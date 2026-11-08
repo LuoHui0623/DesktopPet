@@ -8,7 +8,7 @@
 2. **按需读取**：
    - 结构化记忆：`read`（`resource` 取 `structured`）。
    - 永久记忆：`read`（`resource` 取 `permanent`），用 `date` 读取某一天，或用 `from`/`to`（ISO 8601）读取一段范围；只返回当前人设的记录。
-3. **先搜再读**：内容多时先用 `grep`（`resource` 取 `structured` 或 `permanent`，永久记忆同样用 `date`/`from`/`to` 限定范围）定位，再用 `lines` 精准读取；`lines` 可同时取多段（如 `[[1, 5], [12, 12]]`，单行写 `[3]`）。
+3. **先搜再读**：内容多时先用 `grep`（`resource` 取 `structured` 或 `permanent`，永久记忆同样用 `date`/`from`/`to` 限定范围）定位，再用 `line_ranges` 精准读取；`line_ranges` 可同时取多段（如 `[[1, 5], [12, 12]]`，单行写 `[3]`）。
 4. **返回片段**：把找到的相关记忆片段作为结论返回，注明来源（结构化记忆注明行号；永久记忆注明时间）。
 
 ## 约束

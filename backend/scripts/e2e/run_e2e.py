@@ -470,7 +470,7 @@ def check_memory_replace(api: Api, tap: EventTap) -> str:
     check(len(approvals) == 1, f"改写应推送一次审批：{approvals}")
     item = approvals[0]["items"][0]
     check(item["topic"] == WRITE_TOPIC, f"审批项主题异常：{item}")
-    check(item["tools"] == ["replace"], f"审批项应带改写工具：{item}")
+    check(item["tools"] == ["edit"], f"审批项应带改写工具：{item}")
     after = api.call("GET", "/api/memories")["structured"]
     check("只喝冰美式" in after, f"应写入替换后的内容：{after!r}")
     check("只喝热美式" not in after, f"被替换的原文应消失：{after!r}")

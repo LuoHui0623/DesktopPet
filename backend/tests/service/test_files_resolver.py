@@ -7,9 +7,10 @@ import pytest
 from constants.files import (
     ACTION_APPEND,
     ACTION_DELETE,
-    ACTION_EDIT,
     ACTION_READ,
+    ACTION_REPLACE_LINES,
     DRAFT,
+    EDIT_ACTIONS,
     PERMANENT,
     READ_ACTIONS,
     RESOURCES,
@@ -40,10 +41,16 @@ def test_registry_declares_ids_paths_and_permissions():
     assert RESOURCES[DRAFT].path == "resources/草稿本.md"
     assert RESOURCES[STRUCTURED].path == "memory/structured.md"
     assert RESOURCES[PERMANENT].path is None
-    assert RESOURCES[PERMANENT].actions == READ_ACTIONS
+    assert RESOURCES[PERMANENT].actions == frozenset(READ_ACTIONS)
+    assert RESOURCES[PERMANENT].edit_supports == ()
+    assert RESOURCES[PERMANENT].supports_edit is False
+    assert RESOURCES[DRAFT].read_supports == READ_ACTIONS
+    assert RESOURCES[DRAFT].edit_supports == EDIT_ACTIONS
     assert RESOURCES[DRAFT].can_delete_file is False
+    assert RESOURCES[STRUCTURED].write_mode == "immediate"
     assert RESOURCES[STRUCTURED].can_delete_file is False
     assert RESOURCES[WORLD].can_delete_file is True
+    assert RESOURCES[WORLD].requires_path is True
 
 
 def test_resolve_ids_to_runtime_data_dir(resolver: ResourceResolver, data_dir: Path):
@@ -159,4 +166,4 @@ def test_symlink_inside_world_resolves_to_the_real_resource(
 
 def test_edit_is_allowed_on_writable_resources(resolver: ResourceResolver):
     for resource_id in (DRAFT, STRUCTURED, WORLD):
-        resolver.require(resolver.resolve(resource_id), ACTION_EDIT)
+        resolver.require(resolver.resolve(resource_id), ACTION_REPLACE_LINES)
