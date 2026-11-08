@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 from datetime import datetime
 
-from api.schemas.approval import ApprovalItem
+from api.schemas.approval import ApprovalItem, FilePreview, PreviewHunk
 from api.schemas.chat import ReplyMessageOut, SourceOut
 from api.schemas.events import (
     ApprovalRequestEvent,
@@ -49,6 +49,57 @@ def joined_text(messages: Sequence[ReplyMessage]) -> str:
     return "\n".join(message.text for message in messages)
 
 
+def approval_item(ticket: ApprovalTicket) -> ApprovalItem:
+    """把一张票据投影成前端卡片；读取票据额外带动作、目标与参数摘要。"""
+    draft = ticket.draft
+    return ApprovalItem(
+        approval_id=ticket.approval_id,
+        run_id=draft.run_id,
+        topic=draft.topic,
+        task=draft.task,
+        content=draft.content,
+        tools=list(draft.tools),
+        persona_id=draft.persona_id,
+        persona_version=draft.persona_version,
+        main_task_id=draft.main_task_id,
+        subtask_id=draft.subtask_id,
+        source=draft.source,
+        previews=[
+            FilePreview(
+                resource=preview.resource,
+                path=preview.path,
+                op=preview.op,
+                created=preview.created,
+                deleted=preview.deleted,
+                authors=list(preview.authors),
+                hunk_count=preview.hunk_count,
+                folded=preview.folded,
+                hunks=[
+                    PreviewHunk(
+                        header=hunk.header,
+                        removed=list(hunk.removed),
+                        added=list(hunk.added),
+                    )
+                    for hunk in preview.hunks
+                ],
+            )
+            for preview in draft.previews
+        ],
+        model=draft.model,
+        action=draft.action,
+        resource=draft.resource,
+        path=draft.path,
+        parameters=draft.parameters,
+        plan_id=draft.main_task_id,
+    )
+
+
+def approval_event(plan_id: str, tickets: Sequence[ApprovalTicket]) -> ApprovalRequestEvent:
+    return ApprovalRequestEvent(
+        plan_id=plan_id, items=[approval_item(ticket) for ticket in tickets]
+    )
+
+
 class BusEventPublisher:
     def __init__(
         self,
@@ -84,22 +135,7 @@ class BusEventPublisher:
         self._bus.publish(ChatChunkEvent(message_id=message_id, text=text))
 
     def approval_request(self, plan_id: str, tickets: Sequence[ApprovalTicket]) -> None:
-        self._bus.publish(
-            ApprovalRequestEvent(
-                plan_id=plan_id,
-                items=[
-                    ApprovalItem(
-                        approval_id=ticket.approval_id,
-                        run_id=ticket.draft.run_id,
-                        topic=ticket.draft.topic,
-                        task=ticket.draft.task,
-                        content=ticket.draft.content,
-                        tools=list(ticket.draft.tools),
-                    )
-                    for ticket in tickets
-                ],
-            )
-        )
+        self._bus.publish(approval_event(plan_id, tickets))
 
     def done(
         self, message_id: str, messages: Sequence[ReplyMessage], notices: Sequence[str] = ()

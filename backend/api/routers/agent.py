@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
 from api.errors import error_response
-from api.schemas.approval import ApprovalAck, ApprovalDecision
+from api.event_publisher import approval_item
+from api.schemas.approval import ApprovalAck, ApprovalDecision, ApprovalList
 from module.agent.approval import RESOLVE_CLOSED, RESOLVE_OK, RESOLVE_UNKNOWN, ApprovalRegistry
 
 router = APIRouter(prefix="/api", tags=["agent"])
@@ -18,6 +19,20 @@ def _registry(request: Request) -> ApprovalRegistry:
     if registry is None:
         raise HTTPException(status_code=503, detail="审批服务未配置")
     return registry
+
+
+@router.get(
+    "/agent/approvals",
+    operation_id="list_approvals",
+    response_model=ApprovalList,
+    responses={
+        503: {"description": "审批服务未配置"},
+    },
+)
+def list_approvals(request: Request) -> Response | ApprovalList:
+    """审批中心：列出所有挂起票据（含挂起中的读取与结算）。"""
+    tickets = _registry(request).pending_tickets()
+    return ApprovalList(items=[approval_item(ticket) for ticket in tickets])
 
 
 @router.post(

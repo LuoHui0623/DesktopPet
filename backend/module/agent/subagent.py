@@ -13,6 +13,8 @@ from langchain_core.tools import BaseTool
 
 from constants.agent import (
     DRAFT_INVALID_LIMIT,
+    FILE_TOOLS,
+    INDEX_TOOL,
     PHASE_DRAFT,
     PHASE_EXECUTE,
     SUBAGENT_MAX_STEPS,
@@ -20,7 +22,9 @@ from constants.agent import (
 )
 from constants.path import PROMPTS_DIR
 from infra.llm.usage import usage_scope
+from module.agent.context import TaskContext, task_scope
 from module.agent.prompt import read_template
+from module.agent.review import ReviewService
 from module.agent.skills import Skill
 from module.llm import LlmService, LlmUnavailableError
 
@@ -120,6 +124,17 @@ def _observation(result: dict[str, Any]) -> str:
     return "观察：" + json.dumps(result, ensure_ascii=False)
 
 
+def _settlement_observation(receipts: Sequence[str]) -> str:
+    """结算被拒或提交失败时把回执交回模型，让它重新读取后再提出修改。"""
+    return _observation(
+        {
+            "ok": False,
+            "settlement": list(receipts),
+            "hint": "草稿未提交且已丢弃；请先 read 确认当前内容，再重新提出修改。",
+        }
+    )
+
+
 def _phase_hint(action: dict[str, Any] | None, terminal: str) -> str | None:
     if action is None:
         return INVALID_HINT
@@ -175,10 +190,12 @@ class SubAgent:
         *,
         max_steps: int = SUBAGENT_MAX_STEPS,
         prompts_dir: Path = PROMPTS_DIR,
+        review: ReviewService | None = None,
     ) -> None:
         self._llm = llm
         self._tools = {tool.name: tool for tool in tools}
         self._max_steps = max_steps
+        self._review = review
         text = read_template(prompts_dir, SUBAGENT_TEMPLATE, SUBAGENT_PLACEHOLDERS)
         draft_text = read_template(
             prompts_dir, SUBAGENT_DRAFT_TEMPLATE, SUBAGENT_DRAFT_PLACEHOLDERS
@@ -194,6 +211,7 @@ class SubAgent:
         task: str,
         run_id: str,
         *,
+        context: TaskContext,
         tools: Sequence[str] | None = None,
         turn_id: str | None = None,
     ) -> SubAgentDraft:
@@ -213,18 +231,19 @@ class SubAgent:
             SystemMessage(content=self._draft_prompt(skill, request, picked, declarable)),
             HumanMessage(content=request),
         ]
-        loop = self._react(
-            client=client,
-            messages=messages,
-            run_id=run_id,
-            turn_id=turn_id,
-            tools=picked,
-            terminal="draft",
-            phase=PHASE_DRAFT,
-            accept=lambda action: _accept_draft(action, skill),
-            invalid_limit=DRAFT_INVALID_LIMIT,
-            topic=topic,
-        )
+        with task_scope(context):
+            loop = self._react(
+                client=client,
+                messages=messages,
+                run_id=run_id,
+                turn_id=turn_id,
+                tools=picked,
+                terminal="draft",
+                phase=PHASE_DRAFT,
+                accept=lambda action: _accept_draft(action, skill),
+                invalid_limit=DRAFT_INVALID_LIMIT,
+                topic=topic,
+            )
         if loop.error_code is not None:
             return SubAgentDraft(
                 False, error_code=loop.error_code, error=loop.error, steps=loop.steps
@@ -244,6 +263,7 @@ class SubAgent:
         task: str,
         run_id: str,
         *,
+        context: TaskContext,
         tools: Sequence[str] | None = None,
         draft: str = "",
         turn_id: str | None = None,
@@ -252,6 +272,7 @@ class SubAgent:
         picked, missing = self._pick(skill, names)
         if missing:
             return SubAgentResult(False, None, "tool_missing", _missing_text(skill, missing))
+        picked = self._with_index(picked)
         try:
             client = self._llm.client_for("consolidate")
         except LlmUnavailableError as exc:
@@ -261,18 +282,24 @@ class SubAgent:
             SystemMessage(content=self._execute_prompt(skill, request, picked, draft)),
             HumanMessage(content=request),
         ]
-        loop = self._react(
-            client=client,
-            messages=messages,
-            run_id=run_id,
-            turn_id=turn_id,
-            tools=picked,
-            terminal="finish",
-            phase=PHASE_EXECUTE,
-            accept=_accept_finish,
-            invalid_limit=self._max_steps,
-            topic=topic,
-        )
+        with task_scope(context):
+            loop = self._react(
+                client=client,
+                messages=messages,
+                run_id=run_id,
+                turn_id=turn_id,
+                tools=picked,
+                terminal="finish",
+                phase=PHASE_EXECUTE,
+                accept=_accept_finish,
+                invalid_limit=self._max_steps,
+                topic=topic,
+                before_finish=lambda: (
+                    self._review.finish(context.main_task_id, context.subtask_id)
+                    if self._review is not None
+                    else ()
+                ),
+            )
         if loop.error_code is not None:
             return SubAgentResult(False, None, loop.error_code, loop.error, loop.steps)
         output = str((loop.action or {}).get("output") or "").strip()
@@ -291,9 +318,13 @@ class SubAgent:
         accept: Accept,
         invalid_limit: int,
         topic: str,
+        before_finish: Callable[[], tuple[str, ...]] | None = None,
     ) -> _Loop:
         steps: list[dict[str, Any]] = []
         invalid = 0
+        names = {tool.name for tool in tools}
+        require_index = INDEX_TOOL in names and bool(names & set(FILE_TOOLS))
+        indexed = False
         for number in range(1, self._max_steps + 1):
             try:
                 with usage_scope(
@@ -345,21 +376,55 @@ class SubAgent:
                 return _Loop(steps, error_code="invalid_output", error=INVALID_HINT)
             if action["action"] == terminal:
                 steps.append({"step": number, "phase": phase, "action": terminal, "ok": True})
+                receipts = before_finish() if before_finish is not None else ()
+                if receipts:
+                    # 结算被拒或提交失败：草稿已丢弃，先让模型看到回执再决定后续动作。
+                    messages.append(HumanMessage(content=_settlement_observation(receipts)))
+                    continue
                 return _Loop(steps, action=action)
 
+            name = action.get("tool")
+            if require_index and not indexed:
+                if name == INDEX_TOOL:
+                    indexed = True
+                else:
+                    # 首次工具调用只允许 index：不执行该调用，把原因当观察交回模型。
+                    hint_text = (
+                        "首次工具调用必须是 index：先用它查看资源能力、路径与下一步提示，"
+                        "再按需 read 或 edit"
+                    )
+                    steps.append(
+                        {
+                            "step": number,
+                            "phase": phase,
+                            "action": "tool",
+                            "tool": name,
+                            "args": action.get("args"),
+                            "ok": False,
+                            "error": hint_text,
+                        }
+                    )
+                    messages.append(
+                        HumanMessage(content=_observation({"ok": False, "error": hint_text}))
+                    )
+                    continue
             result = self._call_tool(action, tools)
             succeeded = result.get("ok") is True
-            steps.append(
-                {
-                    "step": number,
-                    "phase": phase,
-                    "action": "tool",
-                    "tool": action.get("tool"),
-                    "args": action.get("args"),
-                    "ok": succeeded,
-                    "error": None if succeeded else result.get("error"),
-                }
-            )
+            step: dict[str, Any] = {
+                "step": number,
+                "phase": phase,
+                "action": "tool",
+                "tool": name,
+                "args": action.get("args"),
+                "ok": succeeded,
+                "error": None if succeeded else result.get("error"),
+            }
+            if name == "edit" and isinstance(action.get("args"), dict):
+                # 审计要看到具体写动作，不能只留一个 edit 工具名。
+                step["tool_action"] = action["args"].get("action")
+                step["resource"] = action["args"].get("resource")
+                step["path"] = action["args"].get("path")
+            steps.append(step)
             messages.append(HumanMessage(content=_observation(result)))
         logger.error("超过最大步数：主题=%s 阶段=%s 步数=%d", topic, phase, self._max_steps)
         return _Loop(
@@ -371,6 +436,14 @@ class SubAgent:
     def _pick(self, skill: Skill, names: Sequence[str]) -> tuple[list[BaseTool], list[str]]:
         missing = [name for name in names if name not in self._tools]
         return [self._tools[name] for name in names if name in self._tools], missing
+
+    def _with_index(self, tools: list[BaseTool]) -> list[BaseTool]:
+        """使用文件工具的任务自动带上 index；模型漏声明时也能完成首次发现。"""
+        names = {tool.name for tool in tools}
+        if not names & set(FILE_TOOLS) or INDEX_TOOL in names:
+            return tools
+        index = self._tools.get(INDEX_TOOL)
+        return tools if index is None else [index, *tools]
 
     def _call_tool(self, action: dict[str, Any], tools: Sequence[BaseTool]) -> dict[str, Any]:
         name = action.get("tool")

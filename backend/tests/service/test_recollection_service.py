@@ -13,6 +13,7 @@ from config.persona import PersonaConfig
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import AutoApprovalGate
+from module.agent.context import SOURCE_SYSTEM_AUTO
 from module.agent.orchestrator import Checkpoint
 from module.memory.daily_log_service import DailyLogService
 from module.memory.memory_service import KIND_DAILY, MemoryReader, StructuredMemoryDoc
@@ -87,12 +88,16 @@ class FakeOrchestrator:
         self.results = list(results or [])
         self.calls: list[dict] = []
 
-    def dispatch(self, topic, task, *, gate, read_only=False, turn_id=None):
+    def dispatch(
+        self, topic, task, *, gate, persona=None, source=None, read_only=False, turn_id=None
+    ):
         self.calls.append(
             {
                 "topic": topic,
                 "task": task,
                 "gate": gate,
+                "persona": persona,
+                "source": source,
                 "read_only": read_only,
                 "turn_id": turn_id,
             }
@@ -142,6 +147,19 @@ def test_dispatch_asks_for_yesterday_with_a_read_only_auto_approved_plan(tmp_pat
     assert result.ok is True
     assert result.day == YESTERDAY
     assert result.content == RECALL_OUTPUT
+
+
+def test_dispatch_carries_the_persona_snapshot_and_system_source(tmp_path: Path):
+    env = make_env(tmp_path)
+    seed_chat(env.daily, YESTERDAY, persona_id="芙芙")
+    orchestrator = FakeOrchestrator()
+    service = RecollectionService(orchestrator, env.daily)
+
+    service.ensure(TODAY, persona=snapshot("芙芙"))
+
+    assert orchestrator.calls[0]["persona"].id == "芙芙"
+    assert orchestrator.calls[0]["persona"].version == 1
+    assert orchestrator.calls[0]["source"] == SOURCE_SYSTEM_AUTO
 
 
 def test_recollection_is_persisted_on_the_recalled_day(tmp_path: Path):
@@ -310,10 +328,20 @@ class BlockingOrchestrator(FakeOrchestrator):
         self.entered = threading.Event()
         self.release = threading.Event()
 
-    def dispatch(self, topic, task, *, gate, read_only=False, turn_id=None):
+    def dispatch(
+        self, topic, task, *, gate, persona=None, source=None, read_only=False, turn_id=None
+    ):
         self.entered.set()
         assert self.release.wait(5)
-        return super().dispatch(topic, task, gate=gate, read_only=read_only, turn_id=turn_id)
+        return super().dispatch(
+            topic,
+            task,
+            gate=gate,
+            persona=persona,
+            source=source,
+            read_only=read_only,
+            turn_id=turn_id,
+        )
 
 
 def test_concurrent_calls_share_one_generation(tmp_path: Path):

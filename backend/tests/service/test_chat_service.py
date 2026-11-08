@@ -13,6 +13,7 @@ from infra.llm.tokens import TokenCount, TokenCountError
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft
+from module.agent.context import SOURCE_USER
 from module.agent.orchestrator import Checkpoint, PlanStep
 from module.agent.prompt import load_templates
 from module.chat.chat_service import (
@@ -906,12 +907,26 @@ class FakeOrchestrator:
         self.calls: list[tuple[str, list]] = []
         self.read_only_flags: list[bool] = []
         self.turn_ids: list[str | None] = []
+        self.personas: list[object] = []
+        self.sources: list[str | None] = []
 
-    def run_plan(self, plan, *, gate, plan_id=None, read_only=False, turn_id=None):
+    def run_plan(
+        self,
+        plan,
+        *,
+        gate,
+        persona=None,
+        source=None,
+        plan_id=None,
+        read_only=False,
+        turn_id=None,
+    ):
         steps = list(plan)
         self.plans.append(steps)
         self.read_only_flags.append(read_only)
         self.turn_ids.append(turn_id)
+        self.personas.append(persona)
+        self.sources.append(source)
         drafts = [
             ApprovalDraft(
                 run_id=f"run-{index}",
@@ -945,11 +960,23 @@ class RejectingOrchestrator(FakeOrchestrator):
     def __init__(self) -> None:
         super().__init__(ok=False)
 
-    def run_plan(self, plan, *, gate, plan_id=None, read_only=False, turn_id=None):
+    def run_plan(
+        self,
+        plan,
+        *,
+        gate,
+        persona=None,
+        source=None,
+        plan_id=None,
+        read_only=False,
+        turn_id=None,
+    ):
         steps = list(plan)
         self.plans.append(steps)
         self.read_only_flags.append(read_only)
         self.turn_ids.append(turn_id)
+        self.personas.append(persona)
+        self.sources.append(source)
         drafts = [
             ApprovalDraft(
                 run_id=f"run-{index}",
@@ -1003,6 +1030,17 @@ def test_dispatch_passes_the_current_turn_id_to_the_orchestrator(tmp_path: Path)
     [turn_id] = harness.query("SELECT DISTINCT turn_id FROM llm_call")
     assert turn_id[0]
     assert orchestrator.turn_ids == [turn_id[0]]
+
+
+def test_dispatch_passes_the_persona_snapshot_and_user_source(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DISPATCH), "记好啦。"], orchestrator=orchestrator)
+    ask(harness.chat, "记一下我喜欢猫")
+
+    [persona] = orchestrator.personas
+    assert persona.id == "芙芙"
+    assert persona.version >= 1
+    assert orchestrator.sources == [SOURCE_USER]
 
 
 def test_direct_chat_does_not_dispatch_even_when_an_orchestrator_is_available(tmp_path: Path):

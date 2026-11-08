@@ -8,8 +8,10 @@ from config.settings import ModelSettingsSource
 from constants.agent import DRAFT_INVALID_LIMIT, PHASE_DRAFT, PHASE_EXECUTE
 from infra.store.db import connect
 from infra.store.migrate import migrate
+from module.agent.context import TaskContext, current_task
 from module.agent.skills import Skill
 from module.agent.subagent import INVALID_HINT, NO_DRAFT, SubAgent, parse_action
+from module.files.permissions import system_permissions
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 
@@ -44,6 +46,39 @@ def echo(text: str) -> dict:
 def boom(text: str) -> dict:
     """总是失败的工具。"""
     raise RuntimeError("磁盘不可用")
+
+
+@tool("identity")
+def identity() -> dict:
+    """读取当前任务身份。"""
+    context = current_task()
+    return {
+        "ok": True,
+        "content": f"{context.persona_id}|{context.subtask_id}|{context.source}",
+    }
+
+
+TASK = TaskContext(
+    persona_id="芙芙",
+    persona_version=2,
+    main_task_id="main-1",
+    subtask_id="sub-1",
+    turn_id="turn-1",
+    source="user",
+    permissions=system_permissions(),
+)
+
+
+class ScopedSubAgent(SubAgent):
+    """测试默认带上任务身份；生产调用仍必须由派发层显式传入。"""
+
+    def run(self, *args, **kwargs):
+        kwargs.setdefault("context", TASK)
+        return super().run(*args, **kwargs)
+
+    def draft(self, *args, **kwargs):
+        kwargs.setdefault("context", TASK)
+        return super().draft(*args, **kwargs)
 
 
 class ScriptedChat:
@@ -88,7 +123,7 @@ SKILL = Skill(
 
 
 def make_agent(llm: LlmService, max_steps: int = 8) -> SubAgent:
-    return SubAgent(llm, [echo, boom], max_steps=max_steps)
+    return ScopedSubAgent(llm, [echo, boom, identity], max_steps=max_steps)
 
 
 def test_tool_call_then_finish_succeeds(tmp_path: Path):
@@ -109,6 +144,22 @@ def test_tool_call_then_finish_succeeds(tmp_path: Path):
     observation = chat.calls[1][-1].content
     assert observation.startswith("观察：")
     assert "你好" in observation
+
+
+def test_tool_reads_the_task_identity_from_the_scope(tmp_path: Path):
+    skill = Skill(name="身份", description="读取任务身份。", tools=("identity",))
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "identity", "args": {}}',
+            '{"action": "finish", "output": "已读取"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(skill, "身份", "读取身份", "sub-1")
+
+    assert result.ok is True
+    assert result.steps[0]["ok"] is True
+    assert "芙芙|sub-1|user" in chat.calls[1][-1].content
 
 
 def test_prompt_carries_the_main_agent_task(tmp_path: Path):
@@ -440,3 +491,149 @@ def test_execute_rejects_an_unknown_approved_tool(tmp_path: Path):
     llm, _ = make_llm(tmp_path, ScriptedChat([]))
     result = make_agent(llm).run(SKILL, "回声", "任务", "run-1", tools=("ghost",))
     assert result.error_code == "tool_missing"
+
+
+class FakeReview:
+    """脚本化结算：每次 finish 依次返回一组回执。"""
+
+    def __init__(self, batches=()) -> None:
+        self.batches = [tuple(batch) for batch in batches]
+        self.calls: list[tuple[str, str]] = []
+
+    def finish(self, task: str, author: str) -> tuple[str, ...]:
+        self.calls.append((task, author))
+        return self.batches.pop(0) if self.batches else ()
+
+
+def make_agent_with_review(llm, review, max_steps: int = 8) -> SubAgent:
+    return ScopedSubAgent(llm, [echo, boom, identity], max_steps=max_steps, review=review)
+
+
+def test_rejected_settlement_receipt_goes_back_to_the_model(tmp_path: Path):
+    chat = ScriptedChat(
+        [
+            '{"action": "finish", "output": "已改写文件"}',
+            '{"action": "finish", "output": "已重新读取并改写"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    review = FakeReview([["结算：笔记.md 的修改被拒绝（用户拒绝执行）；草稿已丢弃"]])
+    result = make_agent_with_review(llm, review).run(SKILL, "回声", "任务", "run-1")
+
+    assert review.calls[0] == ("main-1", "sub-1")
+    assert result.ok is True
+    assert result.output == "已重新读取并改写"
+    assert [step["action"] for step in result.steps] == ["finish", "finish"]
+    receipt = chat.calls[1][-1].content
+    assert receipt.startswith("观察：")
+    assert "settlement" in receipt
+    assert "笔记.md" in receipt
+
+
+def test_successful_settlement_ends_the_subtask_without_another_round(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "finish", "output": "已写入"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    review = FakeReview([[]])
+    result = make_agent_with_review(llm, review).run(SKILL, "回声", "任务", "run-1")
+
+    assert review.calls == [("main-1", "sub-1")]
+    assert result.ok is True
+    assert len(chat.calls) == 1
+
+
+FILE_SKILL = Skill(
+    name="写笔记",
+    description="读取并编辑笔记。",
+    tools=("read", "edit"),
+)
+
+
+def make_file_agent(llm, calls: list, max_steps: int = 8) -> SubAgent:
+    @tool("index")
+    def index() -> dict:
+        """查看资源能力与下一步提示。"""
+        calls.append(("index", {}))
+        return {"ok": True, "content": '{"kind": "overview"}'}
+
+    @tool("read")
+    def read(resource: str, path: str | None = None) -> dict:
+        """读取文件内容。"""
+        calls.append(("read", {"resource": resource, "path": path}))
+        return {"ok": True, "content": "内容"}
+
+    @tool("edit")
+    def edit(
+        action: str,
+        resource: str,
+        path: str | None = None,
+        content: str | None = None,
+    ) -> dict:
+        """按动作修改文件。"""
+        calls.append(("edit", {"action": action, "resource": resource, "path": path}))
+        return {"ok": True, "content": "已暂存"}
+
+    return ScopedSubAgent(llm, [index, read, edit], max_steps=max_steps)
+
+
+def test_first_file_call_must_be_index(tmp_path: Path):
+    calls: list = []
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "read", "args": {"resource": "world", "path": "笔记.md"}}',
+            '{"action": "tool", "tool": "index", "args": {}}',
+            '{"action": "tool", "tool": "read", "args": {"resource": "world", "path": "笔记.md"}}',
+            '{"action": "finish", "output": "读完了"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_file_agent(llm, calls).run(FILE_SKILL, "笔记", "读笔记", "run-1")
+
+    assert result.ok is True
+    assert calls == [
+        ("index", {}),
+        ("read", {"resource": "world", "path": "笔记.md"}),
+    ]
+    blocked = result.steps[0]
+    assert blocked["tool"] == "read"
+    assert blocked["ok"] is False
+    assert "首次工具调用必须是 index" in blocked["error"]
+    assert "首次工具调用必须是 index" in chat.calls[1][-1].content
+    assert [step["ok"] for step in result.steps] == [False, True, True, True]
+
+
+def test_index_is_injected_when_the_skill_does_not_declare_it(tmp_path: Path):
+    calls: list = []
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "index", "args": {}}',
+            '{"action": "finish", "output": "看完了"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_file_agent(llm, calls).run(FILE_SKILL, "笔记", "看看资源", "run-1")
+
+    assert result.ok is True
+    assert calls == [("index", {})]
+    assert "- index:" in chat.calls[0][0].content
+    assert result.steps[0]["tool"] == "index"
+
+
+def test_edit_step_records_the_concrete_write_action(tmp_path: Path):
+    calls: list = []
+    chat = ScriptedChat(
+        [
+            '{"action": "tool", "tool": "index", "args": {}}',
+            '{"action": "tool", "tool": "edit", "args": '
+            '{"action": "append", "resource": "world", "path": "笔记.md", "content": "新"}}',
+            '{"action": "finish", "output": "写好了"}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_file_agent(llm, calls).run(FILE_SKILL, "笔记", "追加一句", "run-1")
+
+    step = result.steps[1]
+    assert step["tool"] == "edit"
+    assert step["tool_action"] == "append"
+    assert step["resource"] == "world"
+    assert step["path"] == "笔记.md"
+    assert step["ok"] is True

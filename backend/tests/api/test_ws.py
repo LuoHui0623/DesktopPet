@@ -9,6 +9,7 @@ from api.event_publisher import BusEventPublisher
 from api.schemas.events import ChatChunkEvent, ChatDoneEvent, StatusEvent
 from infra.events.bus import EventBus
 from infra.llm.usage import CallStart, UsageSample
+from module.agent.approval import ApprovalDraft, ApprovalRegistry
 from module.llm.usage_service import TurnUsage
 
 START = "2026-11-01T10:00:00.000+08:00"
@@ -47,6 +48,37 @@ def test_new_connection_replays_last_known_status():
     app.state.event_publisher.status("thinking")
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "thinking"}
+
+
+def test_new_connection_replays_pending_approvals():
+    registry = ApprovalRegistry()
+    ticket = registry.open(
+        [
+            ApprovalDraft(
+                run_id="read:1",
+                topic="读取：world/笔记.md",
+                task="read world/笔记.md",
+                content="无额外参数",
+                tools=("read",),
+                main_task_id="main-1",
+                subtask_id="sub-1",
+                source="user",
+                action="read",
+                resource="world",
+                path="笔记.md",
+                parameters="无额外参数",
+            )
+        ]
+    )[0]
+    client = TestClient(create_app(TOKEN, approvals=registry))
+    with client.websocket_connect("/ws", headers=AUTH) as websocket:
+        assert websocket.receive_json() == {"type": "status", "state": "idle"}
+        assert websocket.receive_json()["type"] == "usage.panel.snapshot"
+        event = websocket.receive_json()
+        assert event["type"] == "approval.request"
+        assert event["plan_id"] == "main-1"
+        assert event["items"][0]["approval_id"] == ticket.approval_id
+        assert event["items"][0]["action"] == "read"
 
 
 def test_events_arrive_in_publish_order():

@@ -8,20 +8,38 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
+from config.persona import PersonaConfig
 from config.settings import ModelSettingsSource
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
+from module.agent.context import SOURCE_USER
 from module.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
 from module.agent.repository import DbAgentRuns
+from module.agent.review import ReviewService
 from module.agent.skills import SkillRegistry, SkillSpec
 from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
+from module.files.staging import StagingStore
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
+from module.persona.persona_service import PersonaSnapshot
 
 TZ = ZoneInfo("Asia/Shanghai")
 GATE = AutoApprovalGate()
 DRAFT_MARK = "提交草案"
+PERSONA = PersonaSnapshot(id="芙芙", config=PersonaConfig(themes={}), version=3)
+
+
+class ScopedOrchestrator(Orchestrator):
+    """测试默认带上派发时人设，生产调用仍必须显式传入。"""
+
+    def dispatch(self, *args, **kwargs):
+        kwargs.setdefault("persona", PERSONA)
+        return super().dispatch(*args, **kwargs)
+
+    def run_plan(self, *args, **kwargs):
+        kwargs.setdefault("persona", PERSONA)
+        return super().run_plan(*args, **kwargs)
 
 
 class FakeGate:
@@ -123,7 +141,7 @@ def setup(tmp_path: Path):
     (tmp_path / ".env").write_text(ENV, encoding="utf-8")
     (tmp_path / "llm.yaml").write_text(LLM_YAML, encoding="utf-8")
 
-    def build(outcomes: list, chat=None) -> Orchestrator:
+    def build(outcomes: list, chat=None, review=None, model_provider=None) -> Orchestrator:
         chat = chat if chat is not None else ScriptedChat(outcomes)
         environ = {"DEEPSEEK_API_KEY": "sk-test"}
         llm = LlmService(
@@ -142,15 +160,17 @@ def setup(tmp_path: Path):
         skills.register(SkillSpec("写笔记", "note", ("write_note",), ("记下",)))
         skills.register(SkillSpec("查笔记", "note", ("read",), ("查一下",)))
         skills.register(SkillSpec("混合笔记", "note", ("read", "write_note"), ("读一下",)))
-        return Orchestrator(
+        return ScopedOrchestrator(
             SubAgent(llm, [write_note, read_note]),
             DbAgentRuns(db_file),
             skills,
             TZ,
             clock=Clock(),
+            review=review,
+            model_provider=model_provider,
         )
 
-    return {"build": build, "db_file": db_file}
+    return {"build": build, "db_file": db_file, "tmp": tmp_path}
 
 
 def rows(db_file: Path) -> list[tuple]:
@@ -228,7 +248,7 @@ def test_execute_only_sees_the_declared_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "run",
-        lambda skill, topic, task, run_id, *, tools, draft, turn_id=None: (
+        lambda skill, topic, task, run_id, *, context, tools, draft, turn_id=None: (
             seen.update(tools=tools, draft=draft),
             SubAgentResult(True, "好", None, None, []),
         )[1],
@@ -244,7 +264,7 @@ def test_draft_only_sees_the_read_only_tools(setup, monkeypatch):
     monkeypatch.setattr(
         orchestrator._subagent,
         "draft",
-        lambda skill, topic, task, run_id, *, tools, turn_id=None: (
+        lambda skill, topic, task, run_id, *, context, tools, turn_id=None: (
             seen.update(tools=tools),
             SubAgentDraft(False, error_code="stop", error="停"),
         )[1],
@@ -519,6 +539,46 @@ def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
     assert call_turns and set(call_turns) == {"turn-7"}
 
 
+def test_dispatch_carries_the_task_identity_to_approval_and_records(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"](
+        [
+            draft_reply("记下牛奶", ["write_note"]),
+            '{"action": "tool", "tool": "write_note", "args": {"text": "牛奶"}}',
+            '{"action": "finish", "output": "已记下牛奶"}',
+        ]
+    )
+    checkpoint = orchestrator.dispatch(
+        "写笔记",
+        "记下牛奶",
+        gate=gate,
+        persona=PERSONA,
+        source=SOURCE_USER,
+        turn_id="turn-9",
+        main_task_id="main-9",
+    )
+
+    assert len(gate.calls) == 1
+    plan_id, drafts = gate.calls[0]
+    draft = drafts[0]
+    assert plan_id == "main-9"
+    assert (draft.persona_id, draft.persona_version) == ("芙芙", 3)
+    assert draft.main_task_id == "main-9"
+    assert draft.subtask_id == checkpoint.run_id
+    assert draft.source == SOURCE_USER
+
+    conn = connect(setup["db_file"])
+    try:
+        row = conn.execute(
+            "SELECT persona_id, persona_version, main_task_id, source, turn_id "
+            "FROM agent_run WHERE id = ?",
+            (checkpoint.run_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert tuple(row) == ("芙芙", 3, "main-9", SOURCE_USER, "turn-9")
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -539,3 +599,39 @@ def test_run_plan_records_the_turn_on_agent_runs_and_model_calls(setup):
 def test_parse_plan_rejects_invalid_plans(text: str):
     with pytest.raises(PlanError):
         parse_plan(text)
+
+
+def test_run_plan_settles_leftover_drafts_with_the_dispatch_model(setup):
+    review = ReviewService(StagingStore())
+    target = setup["tmp"] / "笔记.md"
+    target.write_text("旧内容\n", encoding="utf-8")
+    review.establish(
+        "main-x",
+        resource="world",
+        key="world:笔记.md",
+        display="笔记.md",
+        abs_path=target,
+        text="旧内容\n",
+        created=False,
+    )
+    review.record("main-x", "sub-x", "world:笔记.md", "replace_lines", "新内容\n", False)
+    gate = FakeGate()
+    orchestrator = setup["build"](
+        [
+            draft_reply("改写笔记", ["write_note"]),
+            '{"action": "finish", "output": "完成"}',
+        ],
+        review=review,
+        model_provider=lambda: "deepseek/deepseek-flash",
+    )
+
+    orchestrator.run_plan([PlanStep("写笔记", "记下牛奶")], gate=gate, plan_id="main-x")
+
+    assert target.read_text(encoding="utf-8") == "新内容\n"
+    assert gate.calls[0][1][0].model == "deepseek/deepseek-flash"
+    settlement_id, settlement_drafts = gate.calls[1]
+    assert settlement_id == "main-x"
+    assert settlement_drafts[0].model == "deepseek/deepseek-flash"
+    assert settlement_drafts[0].source == "user"
+    assert settlement_drafts[0].previews[0].path == "笔记.md"
+    assert review.pending("main-x") == ()

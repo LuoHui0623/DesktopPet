@@ -20,11 +20,15 @@ sys.path.insert(0, str(BACKEND))
 from config.settings import ModelSettingsSource  # noqa: E402
 from infra.store.db import connect  # noqa: E402
 from infra.store.migrate import migrate  # noqa: E402
+from module.agent.context import TaskContext  # noqa: E402
+from module.agent.review import ReviewService  # noqa: E402
 from module.agent.skills import SkillRegistry, memory_retrieve_skill, memory_write_skill  # noqa: E402
 from module.agent.subagent import SubAgent  # noqa: E402
 from module.agent.tools.files import make_file_tools  # noqa: E402
+from module.files.permissions import system_permissions  # noqa: E402
 from module.files.resolver import ResourceResolver  # noqa: E402
 from module.files.service import FileService, ModelLimit  # noqa: E402
+from module.files.staging import StagingStore  # noqa: E402
 from module.llm import LlmService  # noqa: E402
 from module.llm.repository import db_usage_sink  # noqa: E402
 from module.memory.daily_log_service import DailyLogService  # noqa: E402
@@ -104,6 +108,7 @@ def build() -> tuple[SubAgent, _LoggingLlm, Path, Any]:
         structured,
         daily_log,
         skills,
+        editor=ReviewService(StagingStore()),
         timezone=timezone,
         limit_provider=lambda: ModelLimit(configured.max_tokens, configured.tokenizer),
     )
@@ -119,7 +124,16 @@ def build() -> tuple[SubAgent, _LoggingLlm, Path, Any]:
 def main() -> int:
     task = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TASK
     subagent, llm, structured_file, skill = build()
-    result = subagent.draft(skill, "记忆写入", task, "probe-memory-write")
+    context = TaskContext(
+        persona_id="芙芙",
+        persona_version=1,
+        main_task_id="probe-main",
+        subtask_id="probe-memory-write",
+        turn_id=None,
+        source="user",
+        permissions=system_permissions(),
+    )
+    result = subagent.draft(skill, "记忆写入", task, "probe-memory-write", context=context)
     print(
         json.dumps(
             {

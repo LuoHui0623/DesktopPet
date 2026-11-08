@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from module.agent.approval import AutoApprovalGate
+from module.agent.context import SOURCE_SYSTEM_AUTO
 from module.memory.contracts import DailyLogEntry
 from module.memory.daily_log_service import DailyLogService
 from module.persona.persona_service import PersonaSnapshot
@@ -112,7 +113,7 @@ class RecollectionService:
         day, is_yesterday = chosen
         reason = "派发失败"
         for attempt in range(1, MAX_ATTEMPTS + 1):
-            checkpoint = self._dispatch(day, is_yesterday, turn_id)
+            checkpoint = self._dispatch(day, is_yesterday, turn_id, persona)
             text = (checkpoint.output or "").strip()
             if checkpoint.ok and text:
                 return self._store(day, text, persona_id=persona.id)
@@ -130,11 +131,15 @@ class RecollectionService:
             )
         return self._store(day, f"{FAILURE_PREFIX}{reason}", persona_id=persona.id)
 
-    def _dispatch(self, day: str, is_yesterday: bool, turn_id: str | None):
+    def _dispatch(
+        self, day: str, is_yesterday: bool, turn_id: str | None, persona: PersonaSnapshot
+    ):
         return self._orchestrator.dispatch(
             RECOLLECTION_TOPIC,
             _task_for(day, is_yesterday=is_yesterday),
             gate=AutoApprovalGate(),
+            persona=persona,
+            source=SOURCE_SYSTEM_AUTO,
             read_only=True,
             turn_id=turn_id,
         )

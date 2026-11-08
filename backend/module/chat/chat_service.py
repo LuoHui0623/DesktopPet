@@ -29,6 +29,7 @@ from module.agent.chat_output import (
     _extract_json,
     parse_chat_output,
 )
+from module.agent.context import SOURCE_SYSTEM_AUTO, SOURCE_USER
 from module.agent.orchestrator import (
     ERROR_REJECTED,
     STATUS_REJECTED,
@@ -116,7 +117,7 @@ class NoChatEvents:
 
 
 class EventApprovalGate:
-    """把草案推给前端并阻塞等待裁决，超时按拒绝处理。"""
+    """把草案推给前端并阻塞等待裁决；不设超时，任务挂起直到决出或取消。"""
 
     def __init__(self, events: ChatEvents, registry: ApprovalRegistry) -> None:
         self._events = events
@@ -432,9 +433,10 @@ class ChatService:
                     output,
                     assembled,
                     events,
-                    persona_id=snapshot.id,
+                    persona=snapshot,
                     persisted=persisted,
                     read_only=request.read_only_dispatch,
+                    source=SOURCE_USER if user_text is not None else SOURCE_SYSTEM_AUTO,
                     turn_id=turn_id,
                 )
             return self._finish_reply(
@@ -516,9 +518,10 @@ class ChatService:
         assembled: AssembledContext,
         events: ChatEvents,
         *,
-        persona_id: str,
+        persona: PersonaSnapshot,
         persisted: bool,
         read_only: bool = False,
+        source: str = SOURCE_USER,
         turn_id: str | None = None,
     ) -> ChatReply:
         if self._orchestrator is None:
@@ -529,12 +532,14 @@ class ChatService:
         checkpoints = self._orchestrator.run_plan(
             output.plan,
             gate=gate,
+            persona=persona,
+            source=source,
             plan_id=plan_id,
             read_only=read_only,
             turn_id=turn_id,
         )
         self._record_rejections(checkpoints)
-        merged = self._record_assistant_backfill(checkpoints, persona_id=persona_id)
+        merged = self._record_assistant_backfill(checkpoints, persona_id=persona.id)
         follow_up = [*messages]
         if merged:
             follow_up.append(AIMessage(content=merged))
@@ -542,7 +547,7 @@ class ChatService:
         events.status("thinking")
         generated = self._generate(client, follow_up, digest, allow_dispatch=False, turn_id=turn_id)
         return self._finish_reply(
-            generated.texts, assembled, events, persona_id=persona_id, persisted=persisted
+            generated.texts, assembled, events, persona_id=persona.id, persisted=persisted
         )
 
     def _restore_lines(self, day: date, persona_id: str) -> list[ChatLine]:

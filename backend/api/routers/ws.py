@@ -4,8 +4,9 @@ from typing import Any
 from fastapi import APIRouter, WebSocket
 
 from api.auth import WS_SUBPROTOCOL
-from api.event_publisher import BusEventPublisher
+from api.event_publisher import BusEventPublisher, approval_event
 from infra.events.bus import EventBus, Subscription
+from module.agent.approval import ApprovalTicket
 
 router = APIRouter(tags=["ws"])
 
@@ -20,7 +21,21 @@ async def events_socket(websocket: WebSocket) -> None:
         await websocket.accept(subprotocol=subprotocol)
         await websocket.send_json(publisher.last_status.model_dump(mode="json"))
         await websocket.send_json(publisher.panel_snapshot.model_dump(mode="json"))
+        await _replay_approvals(websocket, publisher)
         await _pump(websocket, subscription)
+
+
+async def _replay_approvals(websocket: WebSocket, publisher: BusEventPublisher) -> None:
+    """重连回放挂起票据，避免任务挂起期间刷新页面后无法裁决。"""
+    registry = websocket.app.state.approvals
+    if registry is None:
+        return
+    grouped: dict[str, list[ApprovalTicket]] = {}
+    for ticket in registry.pending_tickets():
+        grouped.setdefault(ticket.draft.main_task_id or "", []).append(ticket)
+    for plan_id, tickets in grouped.items():
+        event = approval_event(plan_id, tickets)
+        await websocket.send_json(event.model_dump(mode="json"))
 
 
 async def _pump(websocket: WebSocket, subscription: Subscription) -> None:

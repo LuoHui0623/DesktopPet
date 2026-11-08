@@ -21,7 +21,7 @@ def make_draft(run_id: str = "run-1") -> ApprovalDraft:
 
 @pytest.fixture
 def registry() -> ApprovalRegistry:
-    return ApprovalRegistry(timeout=5.0)
+    return ApprovalRegistry()
 
 
 @pytest.fixture
@@ -97,3 +97,52 @@ def test_submit_approval_is_in_the_openapi_schema(client: TestClient):
     operation = schema["paths"][URL]["post"]
     assert operation["operationId"] == "submit_approval"
     assert "ApprovalDecision" in schema["components"]["schemas"]
+
+
+def test_list_approvals_returns_pending_read_tickets(
+    client: TestClient, registry: ApprovalRegistry
+):
+    ticket = registry.open(
+        [
+            ApprovalDraft(
+                run_id="read:1",
+                topic="读取：world/笔记.md",
+                task="read world/笔记.md",
+                content="line_ranges=[[1, 5]]",
+                tools=("read",),
+                main_task_id="main-1",
+                subtask_id="sub-1",
+                source="user",
+                action="read",
+                resource="world",
+                path="笔记.md",
+                parameters="line_ranges=[[1, 5]]",
+                model="deepseek/deepseek-flash",
+            )
+        ]
+    )[0]
+    other = registry.open([make_draft("run-2")])[0]
+
+    response = client.get(URL, headers=AUTH)
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["approval_id"] for item in items] == [ticket.approval_id, other.approval_id]
+    first = items[0]
+    assert first["action"] == "read"
+    assert first["resource"] == "world"
+    assert first["path"] == "笔记.md"
+    assert first["parameters"] == "line_ranges=[[1, 5]]"
+    assert first["plan_id"] == "main-1"
+
+
+def test_list_approvals_without_registry_returns_503():
+    client = TestClient(create_app(TOKEN))
+    response = client.get(URL, headers=AUTH)
+    assert response.status_code == 503
+
+
+def test_list_approvals_is_in_the_openapi_schema(client: TestClient):
+    schema = client.get("/openapi.json", headers=AUTH).json()
+    assert schema["paths"][URL]["get"]["operationId"] == "list_approvals"
+    assert "ApprovalList" in schema["components"]["schemas"]

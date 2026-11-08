@@ -516,7 +516,8 @@ def test_previous_turn_events_are_not_carried_into_this_turn(parts):
     assert not any("[event]" in message.content for message in second.messages)
 
 
-def test_no_reply_yet_means_everything_is_current(parts):
+def test_history_without_reply_still_inserts_current_separator(parts):
+    """历史非空即插分隔线，即使还没有助手回复（D-18）。"""
     lines = (master(at(9), "一"),)
     perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 9, 30, exe="code", minutes=5)])
     messages = (
@@ -524,7 +525,9 @@ def test_no_reply_yet_means_everything_is_current(parts):
         .build("你好")
         .messages
     )
-    assert not any(message.content == CURRENT_SEPARATOR for message in messages)
+    assert messages[1].content == expects(at(9), "master", "一")
+    assert messages[2].content == CURRENT_SEPARATOR
+    assert messages[3].content.startswith("[event]")
 
 
 def test_perception_from_another_day_is_ignored(parts):

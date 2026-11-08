@@ -57,7 +57,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+    assert applied == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
     assert EXPECTED_TABLES <= tables(conn)
     assert not {"core_memory", "proactive_feedback"} & tables(conn)
 
@@ -83,6 +83,7 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
         (14, "daily_log_event_time"),
         (15, "daily_log_recollection"),
         (16, "agent_run_skill"),
+        (17, "agent_run_task_identity"),
     ]
 
 
@@ -241,6 +242,10 @@ def test_agent_run_columns(conn: sqlite3.Connection):
         "started_at",
         "finished_at",
         "turn_id",
+        "persona_id",
+        "persona_version",
+        "main_task_id",
+        "source",
     }
 
 
@@ -268,7 +273,7 @@ def test_agent_run_accepts_rejected_status(tmp_path: Path):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(insert, ("r2", "rejected"))
 
-        assert migrate(conn) == [7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
         conn.execute(
             "INSERT INTO agent_run (id, session_id, skill, instruction, status, started_at) "
@@ -301,7 +306,7 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
         )
         conn.execute("INSERT INTO core_memory (memory_id, sort_order) VALUES ('1', 1)")
 
-        assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
         call = conn.execute(
             "SELECT provider, model, success, purpose, run_id, usage_raw FROM llm_call"
@@ -329,6 +334,7 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
             (14,),
             (15,),
             (16,),
+            (17,),
         ]
     finally:
         conn.close()
@@ -337,7 +343,7 @@ def test_migration_upgrades_existing_database_and_keeps_call_rows(tmp_path: Path
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
         assert migrate(conn) == []
     finally:
         conn.close()
@@ -359,7 +365,7 @@ def test_daily_log_roles_are_renamed_and_old_names_rejected(tmp_path: Path):
             "('2026-10-25', 'event', '切换人设', '2026-10-25T09:05:00+08:00')"
         )
 
-        assert migrate(conn) == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
         rows = conn.execute("SELECT id, role, content FROM daily_log ORDER BY id").fetchall()
         assert [tuple(row) for row in rows] == [
@@ -401,7 +407,7 @@ def test_daily_log_backfills_active_persona_and_accepts_assistant(tmp_path: Path
             "'2026-10-25T09:01:00+08:00')"
         )
 
-        assert migrate(conn) == [11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [11, 12, 13, 14, 15, 16, 17]
 
         rows = conn.execute("SELECT role, persona_id FROM daily_log ORDER BY id").fetchall()
         assert [tuple(row) for row in rows] == [("master", "小桌"), ("event", "小桌")]
@@ -431,7 +437,7 @@ def test_daily_log_backfill_defaults_to_the_default_persona(tmp_path: Path):
             "VALUES ('2026-10-25', 'me', '你好呀', '2026-10-25T09:00:00+08:00')"
         )
 
-        assert migrate(conn) == [11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [11, 12, 13, 14, 15, 16, 17]
 
         row = conn.execute("SELECT role, persona_id FROM daily_log").fetchone()
         assert tuple(row) == ("me", "芙芙")
@@ -460,7 +466,7 @@ def test_session_boundary_text_becomes_structured_event(tmp_path: Path):
             "('2026-10-25', 'event', '其他旧事件', 'y')"
         )
 
-        assert migrate(conn) == [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
+        assert migrate(conn) == [6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
 
         rows = conn.execute("SELECT content FROM daily_log ORDER BY id").fetchall()
         assert json.loads(rows[0][0]) == {"type": "session_boundary", "persona": "小桌"}
@@ -478,7 +484,7 @@ def test_daily_log_event_time_replaces_date_and_backfills_from_created_at(tmp_pa
             "VALUES ('2026-10-25', 'master', '你好', '芙芙', '2026-10-25T09:00:00.000+08:00')"
         )
 
-        assert migrate(conn) == [14, 15, 16]
+        assert migrate(conn) == [14, 15, 16, 17]
 
         columns = {row[1] for row in conn.execute("PRAGMA table_info(daily_log)")}
         assert "event_time" in columns

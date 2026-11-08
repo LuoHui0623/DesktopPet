@@ -26,7 +26,7 @@ from api.routers import (
 from api.routers import memories as memory_routes
 from api.schemas.events import event_component_schemas
 from infra.events.bus import EventBus
-from module.agent.approval import ApprovalRegistry
+from module.agent.approval import PROCESS_EXIT_REASON, ApprovalRegistry
 from module.avatar.avatar_service import AvatarService
 from module.chat.chat_service import ChatService
 from module.interaction.interaction_service import InteractionService
@@ -62,6 +62,9 @@ def create_app(
         finally:
             if perception_runtime is not None:
                 await perception_runtime.stop()
+            # 进程退出时唤醒所有挂起等待，避免后台线程把关闭流程拖住。
+            if approvals is not None:
+                approvals.cancel_all(PROCESS_EXIT_REASON)
 
     app = FastAPI(title="Desktop Pet Backend", lifespan=lifespan)
     app.state.request_shutdown = request_shutdown or (lambda reason: False)

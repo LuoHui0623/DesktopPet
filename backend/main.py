@@ -38,6 +38,7 @@ from module.agent.prompt import (
     merge_capabilities,
 )
 from module.agent.repository import DbAgentRuns
+from module.agent.review import ReviewService
 from module.agent.skills import (
     SkillRegistry,
     draft_note_skill,
@@ -107,6 +108,14 @@ def subagent_limit(llm_service: LlmService) -> ModelLimit:
     if model is None:
         raise RuntimeError(f"未知的模型：{active.model}")
     return ModelLimit(model.max_tokens, model.tokenizer)
+
+
+def model_label(llm_service: LlmService) -> str | None:
+    """审批卡展示本次草稿与结算使用的模型（与模型选择页的 provider/model 一致）。"""
+    active = llm_service.active_model("consolidate")
+    if active is None:
+        return None
+    return f"{active.provider}/{active.model}"
 
 
 def serve(
@@ -194,20 +203,25 @@ def serve(
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
     skills.register(draft_note_skill())
+    review = ReviewService()
     file_service = FileService(
         ResourceResolver(settings.data_dir),
         structured_memory,
         daily_log,
         skills,
+        editor=review,
+        read_gate=review,
         timezone=ZoneInfo(settings.timezone),
         limit_provider=lambda: subagent_limit(llm_service),
     )
-    subagent = SubAgent(llm_service, make_file_tools(file_service))
+    subagent = SubAgent(llm_service, make_file_tools(file_service), review=review)
     orchestrator = Orchestrator(
         subagent,
         DbAgentRuns(db_file),
         skills,
         ZoneInfo(settings.timezone),
+        review=review,
+        model_provider=lambda: model_label(llm_service),
     )
     approvals = ApprovalRegistry()
     recollection = RecollectionService(orchestrator, daily_log)

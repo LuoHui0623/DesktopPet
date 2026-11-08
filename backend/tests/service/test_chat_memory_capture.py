@@ -12,12 +12,14 @@ from module.agent.approval import ApprovalRegistry
 from module.agent.orchestrator import Orchestrator
 from module.agent.prompt import load_templates
 from module.agent.repository import DbAgentRuns
+from module.agent.review import ReviewService
 from module.agent.skills import SkillRegistry, memory_write_skill
 from module.agent.subagent import SubAgent
 from module.agent.tools.files import make_file_tools
 from module.chat.chat_service import ChatRequest, ChatService
 from module.files.resolver import ResourceResolver
 from module.files.service import FileService, ModelLimit
+from module.files.staging import StagingStore
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
@@ -81,19 +83,26 @@ def chat_reply(text: str) -> str:
 DRAFT = json.dumps(
     {
         "action": "draft",
-        "content": "用 append 记下咖啡偏好",
-        "tools": ["append"],
+        "content": "用 edit(append) 记下咖啡偏好",
+        "tools": ["edit"],
     },
     ensure_ascii=False,
 )
+
+
+def index() -> str:
+    return json.dumps(
+        {"action": "tool", "tool": "index", "args": {"resource": "structured"}},
+        ensure_ascii=False,
+    )
 
 
 def append(content: str) -> str:
     return json.dumps(
         {
             "action": "tool",
-            "tool": "append",
-            "args": {"resource": "structured", "content": content},
+            "tool": "edit",
+            "args": {"action": "append", "resource": "structured", "content": content},
         },
         ensure_ascii=False,
     )
@@ -175,6 +184,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         structured,
         daily,
         skills,
+        editor=ReviewService(StagingStore()),
         timezone=TZ,
         limit_provider=lambda: ModelLimit(10000, "estimate"),
     )
@@ -225,6 +235,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
         [
             dispatch(text),
             DRAFT,
+            index(),
             append("## 喜好\n咖啡：美式，不加糖"),
             finish("已记下咖啡偏好"),
             chat_reply("记住啦，美式不加糖～"),
@@ -235,7 +246,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
     assert result.text == "记住啦，美式不加糖～"
     assert result.recorded is True
     assert "咖啡：美式，不加糖" in env["structured"].text()
-    assert env["chat_model"].calls == 5
+    assert env["chat_model"].calls == 6
     assert len(events.plan_ids) == 1
     kinds = states(events)
     assert kinds[0] == "thinking"
@@ -273,6 +284,7 @@ def test_legacy_temporary_setting_does_not_block_the_dispatched_write(tmp_path: 
         [
             dispatch(text),
             DRAFT,
+            index(),
             append("## 喜好\n咖啡：美式"),
             finish("已经写进记忆"),
             chat_reply("记好啦。"),
@@ -299,6 +311,7 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
         [
             dispatch(text),
             DRAFT,
+            index(),
             append("证件号：11010119900307123X"),
             finish("这条没有记下"),
             chat_reply("这个我就不记了。"),

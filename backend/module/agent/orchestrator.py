@@ -10,9 +10,13 @@ from uuid import uuid4
 
 from constants.agent import PHASE_DRAFT, PHASE_EXECUTE, READ_ONLY_TOOLS
 from module.agent.approval import REJECT_REASON, ApprovalDraft, ApprovalGate, ApprovalOutcome
+from module.agent.context import SOURCE_USER, TaskContext
 from module.agent.contracts import AgentRunRecord
+from module.agent.review import ReviewService
 from module.agent.skills import Skill, SkillRegistry
 from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
+from module.files.permissions import TaskPermissions, system_permissions
+from module.persona.persona_service import PersonaSnapshot
 
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
@@ -79,6 +83,7 @@ class Checkpoint:
 class _Item:
     run_id: str
     step: PlanStep
+    context: TaskContext
     skill: Skill | None = None
     draft: SubAgentDraft | None = None
     outcome: ApprovalOutcome | None = None
@@ -188,12 +193,16 @@ class Orchestrator:
         skills: SkillRegistry,
         timezone: tzinfo,
         clock: Callable[[tzinfo], datetime] = _system_now,
+        review: ReviewService | None = None,
+        model_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._subagent = subagent
         self._runs = runs
         self._skills = skills
         self._timezone = timezone
         self._clock = clock
+        self._review = review
+        self._model_provider = model_provider
 
     def dispatch(
         self,
@@ -201,12 +210,18 @@ class Orchestrator:
         task: str,
         *,
         gate: ApprovalGate,
+        persona: PersonaSnapshot,
+        source: str = SOURCE_USER,
         read_only: bool = False,
         turn_id: str | None = None,
+        main_task_id: str | None = None,
     ) -> Checkpoint:
         return self.run_plan(
             [PlanStep(topic=topic, task=task)],
             gate=gate,
+            persona=persona,
+            source=source,
+            plan_id=main_task_id,
             read_only=read_only,
             turn_id=turn_id,
         )[0]
@@ -216,11 +231,63 @@ class Orchestrator:
         plan: Sequence[PlanStep],
         *,
         gate: ApprovalGate,
+        persona: PersonaSnapshot,
+        source: str = SOURCE_USER,
         plan_id: str | None = None,
         read_only: bool = False,
         turn_id: str | None = None,
     ) -> list[Checkpoint]:
-        items = [self._open(step, read_only=read_only, turn_id=turn_id) for step in plan]
+        # 权限在派发时快照一次，任务执行期间新增的配置或登记不会中途放宽。
+        main_task_id = plan_id or uuid4().hex
+        model = self._model_label()
+        if self._review is not None:
+            self._review.bind(
+                main_task_id,
+                gate,
+                model=model,
+                persona_id=persona.id,
+                persona_version=persona.version,
+                source=source,
+            )
+        try:
+            return self._run_plan(
+                plan,
+                main_task_id=main_task_id,
+                model=model,
+                gate=gate,
+                persona=persona,
+                source=source,
+                read_only=read_only,
+                turn_id=turn_id,
+            )
+        finally:
+            self._finish_review(main_task_id)
+
+    def _run_plan(
+        self,
+        plan: Sequence[PlanStep],
+        *,
+        main_task_id: str,
+        model: str | None,
+        gate: ApprovalGate,
+        persona: PersonaSnapshot,
+        source: str,
+        read_only: bool,
+        turn_id: str | None,
+    ) -> list[Checkpoint]:
+        permissions = system_permissions()
+        items = [
+            self._open(
+                step,
+                main_task_id=main_task_id,
+                persona=persona,
+                source=source,
+                permissions=permissions,
+                read_only=read_only,
+                turn_id=turn_id,
+            )
+            for step in plan
+        ]
         self._in_parallel(
             lambda item: self._draft(item, turn_id), [item for item in items if item.done is None]
         )
@@ -230,18 +297,57 @@ class Orchestrator:
         waiting = [item for item in items if item.done is None]
         # 主动轮只读派发自动放行，不请求任何审批。
         if waiting and not read_only:
-            self._approve(plan_id or uuid4().hex, waiting, gate)
+            self._approve(main_task_id, waiting, gate, model)
         self._in_parallel(
             lambda item: self._execute(item, turn_id), [item for item in items if item.done is None]
         )
         return [item.done or self._abort(item) for item in items]
 
+    def _model_label(self) -> str | None:
+        if self._model_provider is None:
+            return None
+        try:
+            return self._model_provider()
+        except Exception:
+            logger.warning("读取本次派发使用的模型标识失败", exc_info=True)
+            return None
+
+    def _finish_review(self, main_task_id: str) -> None:
+        """主任务终态兜底结算：未被写动作触发的草稿也要有明确结论。"""
+        if self._review is None:
+            return
+        try:
+            receipts = self._review.finish_task(main_task_id)
+            if receipts:
+                logger.warning("主任务结束时仍有未提交的草稿：%s", "；".join(receipts))
+        except Exception:
+            logger.exception("主任务结束结算草稿失败：%s", main_task_id)
+        finally:
+            self._review.unbind(main_task_id)
+
     def _open(
-        self, step: PlanStep, *, read_only: bool = False, turn_id: str | None = None
+        self,
+        step: PlanStep,
+        *,
+        main_task_id: str,
+        persona: PersonaSnapshot,
+        source: str,
+        permissions: TaskPermissions,
+        read_only: bool = False,
+        turn_id: str | None = None,
     ) -> _Item:
         run_id = uuid4().hex
         started = self._clock(self._timezone)
         skill = self._skills.route(step.task)
+        context = TaskContext(
+            persona_id=persona.id,
+            persona_version=persona.version,
+            main_task_id=main_task_id,
+            subtask_id=run_id,
+            turn_id=turn_id,
+            source=source,
+            permissions=permissions,
+        )
         self._runs.insert(
             AgentRunRecord(
                 id=run_id,
@@ -255,9 +361,13 @@ class Orchestrator:
                 started_at=started.isoformat(timespec="milliseconds"),
                 finished_at=None,
                 turn_id=turn_id,
+                persona_id=persona.id,
+                persona_version=persona.version,
+                main_task_id=main_task_id,
+                source=source,
             )
         )
-        item = _Item(run_id=run_id, step=step, skill=skill, read_only=read_only)
+        item = _Item(run_id=run_id, step=step, context=context, skill=skill, read_only=read_only)
         if item.skill is None:
             item.done = self._close(
                 item,
@@ -292,6 +402,7 @@ class Orchestrator:
             item.run_id,
             tools=read_only_tools(item.skill),
             turn_id=turn_id,
+            context=item.context,
         )
         if not draft.ok:
             item.done = self._close(
@@ -307,8 +418,10 @@ class Orchestrator:
             return
         item.draft = draft
 
-    def _approve(self, plan_id: str, items: Sequence[_Item], gate: ApprovalGate) -> None:
-        outcomes = gate.request(plan_id, [self._approval_draft(item) for item in items])
+    def _approve(
+        self, plan_id: str, items: Sequence[_Item], gate: ApprovalGate, model: str | None
+    ) -> None:
+        outcomes = gate.request(plan_id, [self._approval_draft(item, model) for item in items])
         for item in items:
             item.outcome = outcomes.get(item.run_id) or ApprovalOutcome(False, REJECT_REASON)
             if not item.outcome.approved:
@@ -331,6 +444,7 @@ class Orchestrator:
             tools=tools,
             draft=content,
             turn_id=turn_id,
+            context=item.context,
         )
         steps = [*(draft.steps if draft is not None else []), *result.steps]
         item.done = self._close(item, result, steps=steps)
@@ -378,14 +492,21 @@ class Orchestrator:
         )
 
     @staticmethod
-    def _approval_draft(item: _Item) -> ApprovalDraft:
+    def _approval_draft(item: _Item, model: str | None) -> ApprovalDraft:
         draft = item.draft
+        context = item.context
         return ApprovalDraft(
             run_id=item.run_id,
             topic=item.step.topic,
             task=item.step.task,
             content=(draft.content or "") if draft is not None else "",
             tools=draft.tools if draft is not None else (),
+            persona_id=context.persona_id,
+            persona_version=context.persona_version,
+            main_task_id=context.main_task_id,
+            subtask_id=context.subtask_id,
+            source=context.source,
+            model=model,
         )
 
     def _in_parallel(self, action: Callable[[_Item], None], items: Sequence[_Item]) -> None:
