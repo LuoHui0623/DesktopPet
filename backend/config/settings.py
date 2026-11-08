@@ -1,16 +1,52 @@
-import hashlib
-import json
 import os
 import re
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-import yaml
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, SecretStr
 
+from config.dotenv import read_dotenv
 from constants.path import CONFIG_DIR, DATA_DIR, PERSONAS_DIR, resolve_from_root
+from infra.llm.configuration import (
+    API_KEY_REF as API_KEY_REF,
+)
+from infra.llm.configuration import (
+    HEADER_NAME as HEADER_NAME,
+)
+from infra.llm.configuration import (
+    PROVIDER_NAME as PROVIDER_NAME,
+)
+from infra.llm.configuration import (
+    ApiName as ApiName,
+)
+from infra.llm.configuration import (
+    DefaultModel as DefaultModel,
+)
+from infra.llm.configuration import (
+    ModelItem as ModelItem,
+)
+from infra.llm.configuration import (
+    ModelSettings as ModelSettings,
+)
+from infra.llm.configuration import (
+    ModelSettingsError as ModelSettingsError,
+)
+from infra.llm.configuration import (
+    ModelSettingsSource as _ModelSettingsSource,
+)
+from infra.llm.configuration import (
+    ProviderSettings as ProviderSettings,
+)
+from infra.llm.configuration import (
+    Role as Role,
+)
+from infra.llm.configuration import (
+    load_model_settings as _load_model_settings,
+)
+from infra.llm.configuration import (
+    resolve_api_key_env as resolve_api_key_env,
+)
 
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 TRUE_VALUES = ("1", "true", "yes", "on")
@@ -23,145 +59,10 @@ DEPRECATED_SCHEDULER_KEYS = (
     "PET_PROACTIVE_MAX_PER_DAY",
 )
 
-PROVIDER_NAME = re.compile(r"^[a-z][a-z0-9_]*$")
-HEADER_NAME = re.compile(r"^[A-Za-z0-9-]+$")
 KNOWN_KEY = re.compile(
     r"^(PET_|WEATHER_|QWEATHER_|CAPABILITY_|LLM_PROVIDERS$|DEFAULT_(CHAT|CONSOLIDATE)_MODEL$)"
 )
 CAPABILITY_VARS = {"chat": "DEFAULT_CHAT_MODEL", "consolidate": "DEFAULT_CONSOLIDATE_MODEL"}
-# `.env` 里 `<PROVIDER>_API_KEY` 的值只允许是「系统环境变量名」（如 PET_API_KEY），表示
-# 实际密钥去那个环境变量里取；匹配不上的（如 sk-xxx）按「把密钥写进了文件」报错。
-API_KEY_REF = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-
-ApiName = Literal["chat_completions", "responses", "messages"]
-Role = Literal["chat", "consolidate"]
-
-
-class ModelSettingsError(Exception):
-    def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
-        super().__init__("; ".join(errors))
-
-
-class ModelItem(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    name: str
-    api: ApiName
-    roles: tuple[Role, ...]
-    temperature: float
-    max_tokens: int
-    context_window: int
-    tokenizer: str
-
-
-class ProviderSettings(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    name: str
-    display_name: str
-    base_url: str
-    api_key_env: str
-    request_header: dict[str, str]
-    models: dict[str, ModelItem]
-
-
-class DefaultModel(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    provider: str
-    model: str
-
-
-class ModelSettings(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    version: str
-    providers: dict[str, ProviderSettings]
-    defaults: dict[str, DefaultModel]
-    warnings: tuple[str, ...] = ()
-
-
-class _ModelYaml(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1)
-    name: str = Field(min_length=1)
-    api: ApiName
-    roles: list[Role] = Field(min_length=1)
-    temperature: float = Field(ge=0, le=2)
-    max_tokens: int = Field(gt=0)
-    context_window: int = Field(default=128000, gt=0)
-    tokenizer: str = Field(default="cl100k_base", min_length=1)
-
-    @field_validator("roles")
-    @classmethod
-    def _roles_unique(cls, value: list[Role]) -> list[Role]:
-        if len(set(value)) != len(value):
-            raise ValueError("roles 不允许重复")
-        return value
-
-
-class _ProviderYaml(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    display_name: str = Field(min_length=1)
-    request_header: dict[str, str] = Field(default_factory=dict)
-    models: list[_ModelYaml] = Field(default_factory=list)
-
-    @field_validator("request_header")
-    @classmethod
-    def _headers_valid(cls, value: dict[str, str]) -> dict[str, str]:
-        for name, header_value in value.items():
-            if not HEADER_NAME.match(name):
-                raise ValueError(f"请求头名 {name!r} 不合法")
-            if not header_value:
-                raise ValueError(f"请求头 {name} 的值不能为空")
-        return value
-
-
-class _LlmYaml(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    providers: dict[str, _ProviderYaml]
-
-
-def read_dotenv(path: Path) -> tuple[dict[str, str], list[str]]:
-    if not path.exists():
-        return {}, [f"未找到 {path.name}，使用空配置"]
-    values: dict[str, str] = {}
-    warnings: list[str] = []
-    for lineno, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            warnings.append(f".env 第 {lineno} 行格式无效，已忽略")
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        if key in values:
-            warnings.append(f".env 中键 {key} 重复，以最后一次为准")
-        values[key] = value
-    return values, warnings
-
-
-def resolve_api_key_env(provider: str, file_values: Mapping[str, str]) -> str:
-    """解析 provider 实际读取密钥的系统环境变量名。
-
-    `.env` 中写 `DEEPSEEK_API_KEY=PET_API_KEY` 表示密钥存放在系统环境变量
-    `PET_API_KEY` 中，此时返回 `PET_API_KEY`；未声明或写成自身名字时仍然返回
-    `DEEPSEEK_API_KEY`。
-    """
-    default = f"{provider.upper()}_API_KEY"
-    declared = file_values.get(default, "")
-    if API_KEY_REF.match(declared):
-        return declared
-    return default
 
 
 def deprecated_scheduler_values(
@@ -176,171 +77,26 @@ def deprecated_scheduler_values(
     return {key: values[key] for key in DEPRECATED_SCHEDULER_KEYS if key in values}
 
 
-def _read_llm_yaml(path: Path, errors: list[str]) -> dict[str, _ProviderYaml]:
-    if not path.exists():
-        errors.append(f"未找到 {path.name}")
-        return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as exc:
-        errors.append(f"llm.yaml 解析失败：{exc}")
-        return {}
-    try:
-        parsed = _LlmYaml.model_validate(data)
-    except ValidationError as exc:
-        for item in exc.errors():
-            location = ".".join(str(part) for part in item["loc"])
-            errors.append(f"llm.yaml {location}: {item['msg']}")
-        return {}
-    for name in parsed.providers:
-        if not PROVIDER_NAME.match(name):
-            errors.append(f"llm.yaml 中 provider 名 {name!r} 不合法")
-    return parsed.providers
-
-
-def _parse_provider_names(raw: str, errors: list[str]) -> list[str]:
-    names: list[str] = []
-    for part in raw.split(","):
-        name = part.strip().lower()
-        if not name:
-            continue
-        if not PROVIDER_NAME.match(name):
-            errors.append(f"LLM_PROVIDERS 中 provider 名 {name!r} 不合法")
-        elif name not in names:
-            names.append(name)
-    return names
-
-
-def _resolve_default(
-    raw: str,
-    capability: str,
-    variable: str,
-    providers: dict[str, ProviderSettings],
-    errors: list[str],
-) -> DefaultModel | None:
-    if "/" in raw:
-        provider, _, label = raw.partition("/")
-        candidates = [(provider, label)]
-    else:
-        candidates = [
-            (p.name, m.name) for p in providers.values() for m in p.models.values() if m.name == raw
-        ]
-    matches = [
-        (provider, label)
-        for provider, label in candidates
-        if provider in providers
-        and label in providers[provider].models
-        and capability in providers[provider].models[label].roles
-    ]
-    if len(matches) == 1:
-        provider, label = matches[0]
-        return DefaultModel(provider=provider, model=label)
-    if not matches:
-        errors.append(
-            f"{variable}={raw} 无法解析：没有已启用的 provider 提供支持 {capability} 的该模型"
-        )
-    else:
-        errors.append(f"{variable}={raw} 在多个 provider 中存在，请写为 provider/model")
-    return None
-
-
 def load_model_settings(
     config_dir: Path = CONFIG_DIR,
     environ: Mapping[str, str] | None = None,
 ) -> ModelSettings:
-    errors: list[str] = []
-    warnings: list[str] = []
+    """按 llm.yaml 与 .env 装配各 provider 与能力默认模型。
 
-    file_values, dotenv_warnings = read_dotenv(config_dir / ".env")
-    warnings.extend(dotenv_warnings)
-    for key, declared in file_values.items():
-        if key.endswith("_API_KEY") and declared and not API_KEY_REF.match(declared):
-            errors.append(f".env 中 {key} 只能写系统环境变量名（如 PET_API_KEY），不能写密钥本身")
-
-    source: Mapping[str, str] = os.environ if environ is None else environ
-    values = {key: value for key, value in file_values.items() if value}
-    values.update({key: value for key, value in source.items() if value})
-
-    yaml_providers = _read_llm_yaml(config_dir / "llm.yaml", errors)
-
-    for key in file_values:
-        if (
-            not KNOWN_KEY.match(key)
-            and not key.endswith("_BASE_URL")
-            and not key.endswith("_API_KEY")
-        ):
-            warnings.append(f".env 中未识别的键 {key}，已忽略")
-
-    providers: dict[str, ProviderSettings] = {}
-    for name in _parse_provider_names(values.get("LLM_PROVIDERS", ""), errors):
-        upper = name.upper()
-        if name not in yaml_providers:
-            errors.append(f"provider {name} 未在 llm.yaml 中定义")
-            continue
-        base_url = values.get(f"{upper}_BASE_URL", "")
-        if not base_url:
-            errors.append(f"缺少 {upper}_BASE_URL")
-            continue
-        if not base_url.startswith(("http://", "https://")):
-            errors.append(f"{upper}_BASE_URL 必须以 http:// 或 https:// 开头")
-            continue
-        api_key_env = resolve_api_key_env(name, file_values)
-        if not source.get(api_key_env):
-            pointer = "" if api_key_env == f"{upper}_API_KEY" else f"（由 {upper}_API_KEY 指向）"
-            warnings.append(
-                f"provider {name} 缺少系统环境变量 {api_key_env}{pointer}，该 provider 不可用"
-            )
-        definition = yaml_providers[name]
-        models: dict[str, ModelItem] = {}
-        for model in definition.models:
-            if model.name in models:
-                errors.append(f"provider {name} 中模型标签 name {model.name} 重复")
-                continue
-            models[model.name] = ModelItem(
-                id=model.id,
-                name=model.name,
-                api=model.api,
-                roles=tuple(model.roles),
-                temperature=model.temperature,
-                max_tokens=model.max_tokens,
-                context_window=model.context_window,
-                tokenizer=model.tokenizer,
-            )
-        providers[name] = ProviderSettings(
-            name=name,
-            display_name=definition.display_name,
-            base_url=base_url,
-            api_key_env=api_key_env,
-            request_header=dict(definition.request_header),
-            models=models,
-        )
-
-    defaults: dict[str, DefaultModel] = {}
-    for capability, variable in CAPABILITY_VARS.items():
-        raw = values.get(variable, "")
-        if not raw:
-            warnings.append(f"{variable} 未设置，{capability} 能力未配置默认模型")
-            continue
-        resolved = _resolve_default(raw, capability, variable, providers, errors)
-        if resolved is not None:
-            defaults[capability] = resolved
-
-    if errors:
-        raise ModelSettingsError(errors)
-
-    body = {
-        "providers": {name: provider.model_dump() for name, provider in providers.items()},
-        "defaults": {name: default.model_dump() for name, default in defaults.items()},
-    }
-    version = hashlib.sha256(
-        json.dumps(body, sort_keys=True, ensure_ascii=False).encode("utf-8")
-    ).hexdigest()[:16]
-    return ModelSettings(
-        version=version,
-        providers=providers,
-        defaults=defaults,
-        warnings=tuple(warnings),
+    保留旧签名：capabilities 与 llm.yaml 告警键沿用本项目的约定。
+    """
+    return _load_model_settings(
+        config_dir, environ, capabilities=CAPABILITY_VARS, known_key=KNOWN_KEY
     )
+
+
+class ModelSettingsSource(_ModelSettingsSource):
+    """带文件戳的模型配置源，注入本项目的 capabilities 与告警键。"""
+
+    def __init__(
+        self, config_dir: Path = CONFIG_DIR, environ: Mapping[str, str] | None = None
+    ) -> None:
+        super().__init__(config_dir, environ, capabilities=CAPABILITY_VARS, known_key=KNOWN_KEY)
 
 
 class ServiceSettingsError(Exception):
@@ -467,25 +223,3 @@ def load_service_settings(
         log_max_wait_seconds=log_max_wait_seconds,
         dev_mode=dev_mode,
     )
-
-
-def _file_stamp(path: Path) -> tuple[int, int] | None:
-    try:
-        stat = path.stat()
-    except FileNotFoundError:
-        return None
-    return stat.st_mtime_ns, stat.st_size
-
-
-class ModelSettingsSource:
-    def __init__(
-        self, config_dir: Path = CONFIG_DIR, environ: Mapping[str, str] | None = None
-    ) -> None:
-        self._config_dir = config_dir
-        self._environ = environ
-
-    def stamp(self) -> tuple[tuple[int, int] | None, ...]:
-        return tuple(_file_stamp(self._config_dir / name) for name in (".env", "llm.yaml"))
-
-    def load(self) -> ModelSettings:
-        return load_model_settings(self._config_dir, self._environ)

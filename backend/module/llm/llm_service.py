@@ -1,24 +1,23 @@
+"""能力级 LLM 门面：管能力、默认模型与选中项，client 装配委托 infra.llm.client。"""
+
 import os
-import threading
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from langchain_core.language_models import BaseChatModel
-
-from config.settings import (
-    CAPABILITY_VARS,
-    DefaultModel,
-    ModelSettings,
-    ModelSettingsError,
-    ModelSettingsSource,
+from config.settings import CAPABILITY_VARS, DefaultModel, ModelSettings, ModelSettingsSource
+from infra.llm import build_chat_model
+from infra.llm.client import (
+    Builder,
+    CounterFactory,
+    ModelClientManager,
+    ModelUnavailableError,
 )
-from infra.llm import ApiParadigm, ModelSpec, build_chat_model
-from infra.llm.tokens import TokenCounter, create_counter
-from infra.llm.usage import TrackedChatModel, UsageObserver, UsageSink, discard_usage
+from infra.llm.client import (
+    ReloadResult as ReloadResult,
+)
+from infra.llm.usage import TrackedChatModel, UsageObserver, UsageSink
 
-Builder = Callable[[ModelSpec], BaseChatModel]
-CounterFactory = Callable[[str], TokenCounter]
 ACTIVE_KEY_PREFIX = "llm.active."
 
 
@@ -63,13 +62,6 @@ class ProviderStatus:
     reason: str | None
 
 
-@dataclass(frozen=True)
-class ReloadResult:
-    ok: bool
-    version: str | None
-    errors: list[str] = field(default_factory=list)
-
-
 class LlmService:
     def __init__(
         self,
@@ -82,45 +74,32 @@ class LlmService:
         counter_factory: CounterFactory | None = None,
         usage_observer: UsageObserver | None = None,
     ) -> None:
-        self._source = source
-        self._builder = builder
+        self._manager = ModelClientManager(
+            source,
+            builder=builder,
+            environ=environ,
+            usage_sink=usage_sink,
+            counter_factory=counter_factory,
+            usage_observer=usage_observer,
+        )
         self._environ = environ
-        self._usage_sink = usage_sink or discard_usage
-        self._usage_observer = usage_observer
-        self._counter_factory = counter_factory or create_counter
         self._active_store = active_store or MemoryActiveModelStore()
-        self._lock = threading.RLock()
-        self._settings: ModelSettings | None = None
-        self._stamp: object = None
-        self._clients: dict[tuple[str, str, str], TrackedChatModel] = {}
-        self._last_errors: list[str] = []
 
     def start(self) -> None:
-        with self._lock:
-            self._load()
+        self._manager.start()
 
     def current(self) -> ModelSettings:
-        with self._lock:
-            if self._settings is None:
-                self._load()
-            elif self._source.stamp() != self._stamp:
-                try:
-                    self._load()
-                except ModelSettingsError as exc:
-                    self._last_errors = exc.errors
-            assert self._settings is not None
-            return self._settings
+        return self._manager.current()
 
     def reload(self) -> ReloadResult:
-        with self._lock:
-            try:
-                self._load()
-            except ModelSettingsError as exc:
-                self._last_errors = exc.errors
-                version = self._settings.version if self._settings else None
-                return ReloadResult(ok=False, version=version, errors=exc.errors)
-            assert self._settings is not None
-            return ReloadResult(ok=True, version=self._settings.version)
+        return self._manager.reload()
+
+    @property
+    def last_errors(self) -> list[str]:
+        return self._manager.last_errors
+
+    def set_usage_observer(self, observer: UsageObserver | None) -> None:
+        self._manager.set_usage_observer(observer)
 
     def providers(self) -> list[ProviderStatus]:
         settings = self.current()
@@ -164,59 +143,10 @@ class LlmService:
             raise LlmUnavailableError(f"provider {ref.provider} 中没有模型 {ref.model}")
         if capability not in model.roles:
             raise LlmUnavailableError(f"模型 {ref.model} 不支持 {capability} 能力")
-        api_key = self._env().get(provider.api_key_env)
-        if not api_key:
-            raise LlmUnavailableError(
-                f"provider {ref.provider} 不可用：缺少系统环境变量 {provider.api_key_env}"
-            )
-
-        key = (ref.provider, ref.model, settings.version)
-        with self._lock:
-            client = self._clients.get(key)
-            if client is None:
-                spec = ModelSpec(
-                    provider=provider.name,
-                    model=model.id,
-                    api=ApiParadigm(model.api),
-                    base_url=provider.base_url,
-                    api_key=api_key,
-                    temperature=model.temperature,
-                    max_tokens=model.max_tokens,
-                    default_headers=provider.request_header,
-                )
-                client = TrackedChatModel(
-                    self._builder(spec),
-                    provider=provider.name,
-                    model_name=model.id,
-                    sink=self._usage_sink,
-                    context_window=model.context_window,
-                    max_tokens=model.max_tokens,
-                    tokenizer=model.tokenizer,
-                    counter=self._counter_factory(model.tokenizer),
-                    observer=self._usage_observer,
-                )
-                self._clients[key] = client
-            return client
-
-    def set_usage_observer(self, observer: UsageObserver | None) -> None:
-        with self._lock:
-            self._usage_observer = observer
-            for client in self._clients.values():
-                client.set_observer(observer)
-
-    @property
-    def last_errors(self) -> list[str]:
-        return list(self._last_errors)
-
-    def _load(self) -> None:
-        stamp = self._source.stamp()
-        settings = self._source.load()
-        self._settings = settings
-        self._stamp = stamp
-        self._last_errors = []
-        self._clients = {
-            key: client for key, client in self._clients.items() if key[2] == settings.version
-        }
+        try:
+            return self._manager.client(settings, ref.provider, ref.model)
+        except ModelUnavailableError as exc:
+            raise LlmUnavailableError(str(exc)) from exc
 
     def _env(self) -> Mapping[str, str]:
         return os.environ if self._environ is None else self._environ
