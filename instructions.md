@@ -1,29 +1,19 @@
-# 协作约定
+# Copilot Instructions
 
-本文件记录与本项目 AI 助手协作时必须遵守的规则。新增规则追加到对应小节。
+- **Task scope**: Clarify the task's topic and scope.
+- **Check before asking**: Verify existing materials, dependencies, and implementation before raising questions that require the user's decision.
+- **Task worksheet**: Fill in the user's blank `Task*.md` template or keep the existing worksheet aligned and organized as shared context across collaboration rounds.
+- **Discussion and execution**: Proactively surface open questions, discuss and confirm decisions with the user, update the task plan accordingly, and implement within the authorized scope.
+- **建设性质疑**：对用户明确提出的口径、要求或方案，结合任务目标及相关材料独立审视。发现有依据的冲突、风险、遗漏或更合适的替代方案时，说明理由、依据与代价，并给出可行方案。避免无依据反驳或为形式重复质疑；涉及口径变更或重大取舍时由用户决定，用户知悉取舍后坚持原口径的，按其最终决定执行。
+- **Skill guidance**: Before acting, check the available skill index and load relevant skills for guidance.
+- **Root cause Before Fix**: Verify the root cause before fixing bugs; avoid speculative changes.
+- **TDD**: For new features or behavior changes, write tests first, confirm they fail for the expected reason, then implement and verify they pass.
+- **Documentation sync**: Once task decisions and implementation stabilize, update affected long-lived documentation to match the final implementation before delivery.
+- **Completion verification**: Before delivery, run checks relevant to the changes and accurately report results and any unverified areas.
 
-## 1. 讨论方式
+## Language Rules
 
-- 用户给出想法，助手给出意见，双方确认后才写成口径。
-- 已确认的作为 `口径` 落进 `Task.md` 的 D 编号，视情况可整理入 `docs/` 对应章节；**未确认的继续讨论，不得当作已定口径写进文档**。
-- 长期文档（`docs/`、`Arch.md`、各级 `README.md`）写结论正文，不引用 `Task.md` 的 D/Q/T 编号：台账是本地文件且会被重写，编号不跨版本稳定（见 `docs/README.md` §3 规则 3）。
-
-## 2. 提概念必须给定义
-
-助手提出任何新概念（新名词、新模块、新机制、新缩写）时，必须同时给出：
-
-- **定义**：它是什么，边界在哪里。
-- **它不是什么**：与哪些易混概念的区别。
-- **落点**：它出现在哪个文件、哪一层。
-
-未给定义的概念，用户有权要求重新解释，且在解释清楚前不得据此推进实现。
-
-## 3. 提需求必须给理由
-
-助手提出任何需求、约束、任务项、验收项时，必须同时给出：
-
-- **为什么需要**：不这么做会发生什么具体问题，而不是"这样更好"。
-- **依据**：代码事实、迁移文件、既有约定，或用户此前的口径。
-- **代价**：引入它的成本与副作用。
-
-无理由的建议只能作为备选列出，不得作为口径。
+- **Reasoning**: Think in English; communicate with the user in Chinese.
+- **Documentation and comments**: Write and maintain documentation and code comments in Chinese.
+- **表达方式**：根据内容优先用结构化符号（如 `业务主题 → 分层设计项 → 业务口径`）、表格或矩阵、无序或有序列表，以及 `**<主题>**：<说明>` 组织内容。说明符号含义，避免混淆层级与执行顺序；不为格式强行套模板。
+- **提出概念**：给出概念的定义、场景范围、意义、是否已有概念重复
