@@ -11,6 +11,7 @@
 | [Arch.md](../Arch.md) | 跨域架构：前后端划分、目录、依赖方向、跨域契约、数据流、配置 | 单域内部细节、任务状态 | 现行（区分目标职责与当前实现；除 LLM/client 首批外迁移未完成） |
 | [docs/LLM.md](LLM.md) | 模型域：provider/model、能力映射、快照/热更、装配缓存、用量、不可用 | 提示词、上下文、重试、句长 | 已实现 |
 | [docs/CHAT.md](CHAT.md) | 对话域：单入口、上下文、生成契约、落账、快照、引用、派发 | 模型配置、感知阈值、开口判定 | 已实现 |
+| [docs/MEMORY/README.md](MEMORY/README.md) | 记忆域：边界与业务概念（recall / 策略 / 卡片 / 追溯元数据），指向权威文档与代码落点 | 产品需求、跨域契约、任务排期、已实现契约正文 | 草案（概念来自 `Draft.md` §7 讨论中提案） |
 | [docs/AVATAR/README.md](AVATAR/README.md) | 形象域导航：边界、概念、组件地图、阅读路径 | 各主题的详细契约正文 | 已实现 |
 | [docs/AVATAR/PACK.md](AVATAR/PACK.md) | 形象包：目录、manifest、静态主形象、资源约束、目录接口、包级失败 | 状态选择、逐帧解码、窗口穿透 | 已实现 |
 | [docs/AVATAR/STATE.md](AVATAR/STATE.md) | 状态层：注册表、行为解析、状态表、回退链、状态扩展 | 事件产生时机、动画播放、命中判定 | 已实现 |
