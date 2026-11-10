@@ -29,6 +29,7 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 # 提示词正文是数据，不是代码：长行是提示词本身的内容，不应被行宽规则改写。
 "module/agent/chat_system_prompt.py" = ["E501"]
+"scripts/rewrite_structured.py" = ["E501"]
 
 [dependency-groups]
 dev = [

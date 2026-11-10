@@ -6,6 +6,8 @@ import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from config.persona import parse_persona
+from infra.store.db import connect
+from infra.store.migrate import migrate
 from module.agent.chat_system_prompt import SEPARATOR_WIDTH
 from module.agent.prompt import ResourceItem, SystemPrompt, load_templates
 from module.chat import context as context_module
@@ -21,8 +23,9 @@ from module.chat.context import (
     visible_notices,
 )
 from module.chat.transcript import ChatLine
-from module.memory.contracts import DailyLogEntry
-from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
+from module.memory.contracts import DailyLogEntry, MemoryEntryCreate
+from module.memory.entry_service import MemoryEntryService
+from module.memory.memory_service import MemoryReadError
 from service.perception.events import PerceptionEvent, PerceptionEventKind
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -123,7 +126,14 @@ def pe(kind: PerceptionEventKind, hour: int, minute: int, **fields) -> Perceptio
 @pytest.fixture
 def parts(tmp_path: Path):
     clock = Clock(at(21, 30))
-    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
+    db_file = tmp_path / "pet.db"
+    conn = connect(db_file)
+    migrate(conn)
+    conn.close()
+    entries = MemoryEntryService(db_file)
+
+    def add(content: str, tags: list[str] | None = None):
+        return entries.add(MemoryEntryCreate(content=content, tags=tags or ["喜好"])).entry
 
     def transcript(*lines: ChatLine) -> Reader:
         return Reader(list(lines))
@@ -133,7 +143,7 @@ def parts(tmp_path: Path):
             PERSONA,
             load_templates(),
             TZ,
-            structured=structured,
+            memory=entries,
             clock=clock,
             perception=perception,
             transcript=transcript_,
@@ -141,7 +151,8 @@ def parts(tmp_path: Path):
 
     return {
         "clock": clock,
-        "structured": structured,
+        "entries": entries,
+        "add": add,
         "transcript": transcript,
         "builder": builder,
     }
@@ -157,7 +168,7 @@ def test_resources_render_registered_ids(parts):
 
 
 def test_persona_is_first_then_structured_then_input(parts):
-    parts["structured"].save("## 喜好\n喜欢美式咖啡，不加糖")
+    parts["add"]("喜欢美式咖啡，不加糖")
     result = parts["builder"]().build("你好")
     system = result.messages[0]
     assert isinstance(system, SystemMessage)
@@ -191,27 +202,26 @@ def test_proactive_build_appends_trigger_block_and_skips_perception(parts):
 
 
 def test_structured_block_is_omitted_when_document_is_empty(parts):
-    parts["structured"].save("")
     text = parts["builder"]().build("你好").messages[0].content
     assert "【结构化记忆】" not in text
 
 
 def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch):
-    def explode() -> list[str]:
+    def explode(**kwargs):
         raise MemoryReadError("坏了")
 
-    monkeypatch.setattr(parts["structured"], "lines", explode)
+    monkeypatch.setattr(parts["entries"], "load", explode)
     result = parts["builder"]().build("你好")
     assert "【结构化记忆】" not in result.messages[0].content
     assert [warning.code for warning in result.warnings] == [WARNING_MEMORY_UNLOADED]
 
 
 def test_structured_memory_is_injected_in_full_without_truncation(parts):
-    body = "## 喜好\n" + "\n".join(f"- 第{index}条：" + "字" * 40 for index in range(50))
-    parts["structured"].save(body)
+    for index in range(50):
+        parts["add"](f"第{index}条：" + "字" * 40)
     result = parts["builder"]().build("你好")
     text = result.messages[0].content
-    assert body.strip() in text
+    assert all(f"第{index}条：" in text for index in range(50))
     assert "已截断" not in text
     assert result.warnings == ()
 
@@ -285,7 +295,7 @@ def test_several_utterances_are_restored_as_separate_history_lines(parts):
 
 def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
     """段落顺序：基础系统提示词 → 日期分隔符 → 结构化记忆 → 检索片段 → 引用规则。"""
-    parts["structured"].save("## 喜好\n喜欢美式咖啡")
+    parts["add"]("喜欢美式咖啡")
     fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
     text = parts["builder"]().build("你好", fragments).messages[0].content
     order = [
@@ -301,7 +311,7 @@ def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
 
 
 def test_day_marker_appears_exactly_once(parts):
-    parts["structured"].save("## 喜好\n喜欢美式咖啡")
+    parts["add"]("喜欢美式咖啡")
     fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
     result = parts["builder"]().build("你好", fragments)
     assert result.messages[0].content.count("2026/10/18") == 1
@@ -393,10 +403,10 @@ def test_fragments_over_budget_are_dropped_and_counted(parts, monkeypatch):
 
 
 def test_only_memory_unload_is_mapped_to_a_user_notice(parts, monkeypatch):
-    def explode() -> list[str]:
+    def explode(**kwargs):
         raise MemoryReadError("坏了")
 
-    monkeypatch.setattr(parts["structured"], "lines", explode)
+    monkeypatch.setattr(parts["entries"], "load", explode)
     result = parts["builder"]().build("你好")
     assert visible_notices(result.warnings) == (WARNING_MEMORY_UNLOADED,)
 
@@ -427,7 +437,7 @@ def test_injected_lists_kept_fragments_only(parts):
 
 
 def test_structured_memory_is_not_citable(parts):
-    parts["structured"].save("## 喜好\n喜欢茶")
+    parts["add"]("喜欢茶")
     result = parts["builder"]().build("你好")
     assert result.injected == ()
     assert "【结构化记忆】" in result.messages[0].content

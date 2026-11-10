@@ -17,6 +17,14 @@ from module.agent.context import SOURCE_USER, TaskContext
 from module.agent.preview import build_preview
 from module.files.commit import commit_change
 from module.files.diff import Hunk, MergeConflict, text_hunks
+from module.files.outcome import (
+    STATUS_COMMITTED,
+    STATUS_CONFLICT,
+    STATUS_FAILED,
+    STATUS_REJECTED,
+    SettlementOutcome,
+    SettleResult,
+)
 from module.files.resolver import FileError
 from module.files.staging import (
     DEFAULT_SETTLE_WRITES,
@@ -45,12 +53,6 @@ class _Binding:
     persona_id: str
     persona_version: int
     source: str | None
-
-
-@dataclass(frozen=True)
-class SettlementOutcome:
-    receipts: tuple[str, ...] = ()
-    needs_model: bool = False
 
 
 class ReviewService:
@@ -225,7 +227,16 @@ class ReviewService:
             raise FileError("缺少审批通道，暂存草稿无法结算")
         return binding
 
+    def settle(self, task: str, key: str) -> SettlementOutcome:
+        """结算单个草稿，返回逐文件结局；供调用方读取细节或记录日志。"""
+        return self._settle(task, key)
+
     def _settle(self, task: str, key: str) -> SettlementOutcome:
+        outcome = self._run_settle(task, key)
+        _log_settlement(task, key, outcome)
+        return outcome
+
+    def _run_settle(self, task: str, key: str) -> SettlementOutcome:
         staging = self._staging(task)
         snapshot = staging.get(key)
         if snapshot is None:
@@ -238,7 +249,14 @@ class ReviewService:
             binding = self._binding(task)
         except FileError as exc:
             staging.drop(key)
-            return SettlementOutcome((f"结算：{snapshot.change.path} 未提交：{exc}",), True)
+            return _report(
+                SettleResult(
+                    STATUS_FAILED,
+                    path=snapshot.change.path,
+                    reason=str(exc),
+                    receipt=f"结算：{snapshot.change.path} 未提交：{exc}",
+                )
+            )
         with self.lock_for(snapshot.abs_path):
             snapshot = staging.get(key)
             if snapshot is None or not snapshot.dirty:
@@ -253,12 +271,13 @@ class ReviewService:
         snapshot: StagedSnapshot,
         binding: _Binding,
     ) -> SettlementOutcome:
+        path = snapshot.change.path
         hunks = text_hunks(snapshot.change.base_text, snapshot.change.staged_text)
         preview = build_preview(snapshot, hunks)
         draft = ApprovalDraft(
             run_id=snapshot.key,
-            topic=f"文件编辑：{snapshot.change.path}",
-            task=f"{self._op_label(snapshot)} {snapshot.change.path}",
+            topic=f"文件编辑：{path}",
+            task=f"{self._op_label(snapshot)} {path}",
             content=self._summary(snapshot, len(hunks)),
             tools=(snapshot.change.op,),
             persona_id=binding.persona_id,
@@ -272,36 +291,71 @@ class ReviewService:
         try:
             outcomes = binding.gate.request(task, [draft])
         except Exception as exc:
-            logger.exception("结算审批失败：文件=%s", snapshot.change.path)
+            logger.exception("结算审批失败：文件=%s", path)
             staging.drop(snapshot.key)
-            return SettlementOutcome(
-                (f"结算：{snapshot.change.path} 未提交：审批失败：{exc}",), True
+            return _report(
+                SettleResult(
+                    STATUS_FAILED,
+                    path=path,
+                    reason=f"审批失败：{exc}",
+                    receipt=f"结算：{path} 未提交：审批失败：{exc}",
+                )
             )
         outcome = outcomes.get(draft.run_id) or ApprovalOutcome(False, "未获得审批结果")
         if not outcome.approved:
             staging.drop(snapshot.key)
-            return SettlementOutcome(
-                (self._rejected_receipt(snapshot, hunks, outcome.reason),), True
+            return _report(
+                SettleResult(
+                    STATUS_REJECTED,
+                    path=path,
+                    hunks=len(hunks),
+                    reason=outcome.reason,
+                    receipt=self._rejected_receipt(snapshot, hunks, outcome.reason),
+                )
             )
         try:
             result = commit_change(snapshot)
         except Exception as exc:
-            logger.exception("结算提交失败：文件=%s", snapshot.change.path)
+            logger.exception("结算提交失败：文件=%s", path)
             staging.drop(snapshot.key)
-            return SettlementOutcome(
-                (f"结算：{snapshot.change.path} 未提交：提交失败：{exc}",), True
+            return _report(
+                SettleResult(
+                    STATUS_FAILED,
+                    path=path,
+                    hunks=len(hunks),
+                    reason=f"提交失败：{exc}",
+                    receipt=f"结算：{path} 未提交：提交失败：{exc}",
+                )
             )
         staging.drop(snapshot.key)
         if not result.ok:
             if result.conflicts:
-                return SettlementOutcome(
-                    (self._conflict_receipt(snapshot, result.error, result.conflicts),), True
+                return _report(
+                    SettleResult(
+                        STATUS_CONFLICT,
+                        path=path,
+                        hunks=len(hunks),
+                        reason=result.error,
+                        receipt=self._conflict_receipt(snapshot, result.error, result.conflicts),
+                    )
                 )
-            return SettlementOutcome(
-                (f"结算：{snapshot.change.path} 未提交：{result.error}",), True
+            return _report(
+                SettleResult(
+                    STATUS_FAILED,
+                    path=path,
+                    hunks=len(hunks),
+                    reason=result.error,
+                    receipt=f"结算：{path} 未提交：{result.error}",
+                )
             )
-        return SettlementOutcome(
-            (self._committed_receipt(snapshot, len(hunks), result.merged),), False
+        return _report(
+            SettleResult(
+                STATUS_COMMITTED,
+                path=path,
+                hunks=len(hunks),
+                merged=result.merged,
+                receipt=self._committed_receipt(snapshot, len(hunks), result.merged),
+            )
         )
 
     @staticmethod
@@ -344,6 +398,24 @@ class ReviewService:
             f"结算：{snapshot.change.path} 的修改被拒绝（{reason or '用户拒绝'}）；"
             f"草稿已丢弃，请重新 read 后再提出。被拒改动：{detail}{more}"
         )
+
+
+def _report(result: SettleResult) -> SettlementOutcome:
+    return SettlementOutcome((result,))
+
+
+def _log_settlement(task: str, key: str, outcome: SettlementOutcome) -> None:
+    """结算发生在后台流程里，用一条结构化日志留下会话与结局分布。"""
+    if not outcome.results:
+        return
+    tally = " ".join(f"{status}={count}" for status, count in sorted(outcome.counts.items()))
+    logger.info(
+        "event=files.settle session=%s key=%s files=%d %s",
+        task,
+        key,
+        len(outcome.results),
+        tally,
+    )
 
 
 def _hunk_text(hunk: Hunk) -> str:

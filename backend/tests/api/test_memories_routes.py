@@ -1,5 +1,3 @@
-import json
-from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -9,10 +7,9 @@ from fastapi.testclient import TestClient
 from api.app import create_app
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.memory.contracts import DailyLogRecord, DailyLogRole
+from module.memory.contracts import DailyLogRecord, DailyLogRole, MemoryEntryCreate
 from module.memory.daily_log_service import DailyLogService
-from module.memory.index import MemoryIndexService
-from module.memory.memory_service import MemoryWriter, StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 from module.memory.repository import DbDailyLog
 from module.memory.services import MemoryServices
 from module.settings.settings_service import SettingsService
@@ -26,14 +23,6 @@ def daily(event_time: str, role: DailyLogRole, content: str) -> DailyLogRecord:
     return DailyLogRecord(event_time=event_time, role=role, content=content, created_at=event_time)
 
 
-class Clock:
-    def __init__(self) -> None:
-        self.moment = datetime(2026, 10, 18, 21, 30, tzinfo=TZ)
-
-    def __call__(self, zone: ZoneInfo) -> datetime:
-        return self.moment.astimezone(zone)
-
-
 @pytest.fixture
 def client(tmp_path: Path):
     db_file = tmp_path / "pet.db"
@@ -41,24 +30,18 @@ def client(tmp_path: Path):
     migrate(conn)
     conn.close()
     settings = SettingsService(db_file)
-    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
-    daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
-    index_file = tmp_path / "memory" / "index.json"
-    index = MemoryIndexService(structured.lines, daily.dates, index_file)
-    structured.add_listener(index.rebuild)
-    index.rebuild()
-    writer = MemoryWriter(structured)
-    services = MemoryServices(structured=structured, writer=writer, daily=daily)
+    entries = MemoryEntryService(db_file)
+    daily_log = DailyLogService(DbDailyLog(db_file), settings, TZ)
+    services = MemoryServices(entries=entries, daily=daily_log)
     app = create_app(TOKEN, memories=services)
     test_client = TestClient(app)
-    test_client.index_file = index_file
-    test_client.structured = structured
+    test_client.entries = entries
     test_client.db_file = db_file
     return test_client
 
 
-def index_data(client) -> dict:
-    return json.loads(client.index_file.read_text(encoding="utf-8"))
+def add_entry(client, content: str, tags: list[str]):
+    return client.entries.add(MemoryEntryCreate(content=content, tags=tags))
 
 
 def test_routes_require_token(client):
@@ -66,11 +49,13 @@ def test_routes_require_token(client):
     assert client.put("/api/memories/structured", json={"text": "x"}).status_code == 401
 
 
-def test_list_returns_structured_text_and_daily_index(client):
-    client.structured.save("## 喜好\n- 咖啡：美式，不加糖")
+def test_list_returns_rendered_entries_and_daily_index(client):
+    add_entry(client, "咖啡：美式，不加糖", ["喜好"])
     DbDailyLog(client.db_file).append([daily("2026-10-18T09:00:00+08:00", "master", "你好")])
+
     body = client.get("/api/memories", headers=AUTH).json()
-    assert body["structured"] == "## 喜好\n- 咖啡：美式，不加糖\n"
+
+    assert body["structured"] == "## 喜好\n[#1] 咖啡：美式，不加糖\n"
     assert body["daily_memory"] == {"2026-10": ["2026-10-18"]}
     assert "temporary_mode" not in body
     assert body["daily_records"] is None
@@ -93,40 +78,24 @@ def test_invalid_date_is_rejected(client):
     assert bad_date.json()["error"]["code"] == "invalid_date"
 
 
-def test_put_structured_memory_saves_text_and_refreshes_index(client):
+def test_put_structured_memory_is_closed_until_the_entry_editor_lands(client):
+    add_entry(client, "喜欢美式", ["饮品"])
+    before = client.get("/api/memories", headers=AUTH).json()["structured"]
+
     response = client.put(
         "/api/memories/structured",
         headers=AUTH,
         json={"text": "## 喜好\n\n- 咖啡：美式"},
     )
-    assert response.status_code == 200
-    assert response.json() == {"text": "## 喜好\n\n- 咖啡：美式\n"}
-    assert client.structured.text() == "## 喜好\n\n- 咖啡：美式\n"
-    data = index_data(client)
-    assert data["index"]["structured"]["headings"] == [{"line": 1, "text": "## 喜好"}]
-    assert data["index"]["structured"]["lines"] == 3
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "read_only"
+    assert client.get("/api/memories", headers=AUTH).json()["structured"] == before
 
 
-def test_put_structured_memory_normalizes_newlines_and_allows_empty(client):
-    windows = client.put(
-        "/api/memories/structured", headers=AUTH, json={"text": "## 喜好\r\n\r\n- 猫"}
-    )
-    assert windows.json() == {"text": "## 喜好\n\n- 猫\n"}
-    cleared = client.put("/api/memories/structured", headers=AUTH, json={"text": "  \n"})
-    assert cleared.json() == {"text": ""}
-    assert client.structured.text() == ""
-
-
-def test_put_structured_memory_requires_text_field(client):
+def test_put_structured_memory_still_requires_text_field(client):
     assert client.put("/api/memories/structured", headers=AUTH, json={}).status_code == 422
     assert client.put("/api/memories/structured", headers=AUTH, json={"text": 1}).status_code == 422
-
-
-def test_put_structured_memory_ignores_the_legacy_temporary_setting(client):
-    SettingsService(client.db_file).put("memory.temporary_mode", "true")
-    response = client.put("/api/memories/structured", headers=AUTH, json={"text": "## 喜好"})
-    assert response.status_code == 200
-    assert response.json() == {"text": "## 喜好\n"}
 
 
 def test_temporary_mode_endpoint_is_removed(client):

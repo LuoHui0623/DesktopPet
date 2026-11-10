@@ -60,6 +60,8 @@ def test_registry_enforces_write_mode_consistency():
     with pytest.raises(ValueError, match="只读资源"):
         spec(id="custom", edit_supports=EDIT_ACTIONS, write_mode="read_only")
     with pytest.raises(ValueError, match="write_mode 必须是 staged"):
+        spec(edit_supports=(), write_mode="read_only")
+    with pytest.raises(ValueError, match="write_mode 不合法"):
         spec(write_mode="immediate")
     with pytest.raises(ValueError, match="write_mode 不合法"):
         spec(write_mode="eventual")

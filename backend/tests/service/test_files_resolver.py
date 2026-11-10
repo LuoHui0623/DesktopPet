@@ -24,9 +24,7 @@ from module.files.resolver import ResourceResolver
 def data_dir(tmp_path: Path) -> Path:
     data = tmp_path / "data"
     (data / "resources").mkdir(parents=True)
-    (data / "memory").mkdir()
     (data / "resources" / "草稿本.md").write_text("# 草稿本\n", encoding="utf-8")
-    (data / "memory" / "structured.md").write_text("名字：小李\n", encoding="utf-8")
     (data / "resources" / "笔记.md").write_text("便签\n", encoding="utf-8")
     return data
 
@@ -39,7 +37,9 @@ def resolver(data_dir: Path) -> ResourceResolver:
 def test_registry_declares_ids_paths_and_permissions():
     assert set(RESOURCES) == {DRAFT, STRUCTURED, PERMANENT, WORLD}
     assert RESOURCES[DRAFT].path == "resources/草稿本.md"
-    assert RESOURCES[STRUCTURED].path == "memory/structured.md"
+    assert RESOURCES[STRUCTURED].path is None
+    assert RESOURCES[STRUCTURED].actions == frozenset(READ_ACTIONS)
+    assert RESOURCES[STRUCTURED].edit_supports == ()
     assert RESOURCES[PERMANENT].path is None
     assert RESOURCES[PERMANENT].actions == frozenset(READ_ACTIONS)
     assert RESOURCES[PERMANENT].edit_supports == ()
@@ -47,7 +47,7 @@ def test_registry_declares_ids_paths_and_permissions():
     assert RESOURCES[DRAFT].read_supports == READ_ACTIONS
     assert RESOURCES[DRAFT].edit_supports == EDIT_ACTIONS
     assert RESOURCES[DRAFT].can_delete_file is False
-    assert RESOURCES[STRUCTURED].write_mode == "immediate"
+    assert RESOURCES[STRUCTURED].write_mode == "read_only"
     assert RESOURCES[STRUCTURED].can_delete_file is False
     assert RESOURCES[WORLD].can_delete_file is True
     assert RESOURCES[WORLD].requires_path is True
@@ -75,8 +75,8 @@ def test_relative_path_resolves_against_data_dir(resolver: ResourceResolver, dat
 
 
 def test_absolute_registered_path_is_accepted(resolver: ResourceResolver, data_dir: Path):
-    resolved = resolver.resolve(None, str(data_dir / "memory" / "structured.md"))
-    assert resolved.spec.id == STRUCTURED
+    resolved = resolver.resolve(None, str(data_dir / "resources" / "草稿本.md"))
+    assert resolved.spec.id == DRAFT
 
 
 def test_path_outside_registered_resources_is_rejected(resolver: ResourceResolver, tmp_path: Path):
@@ -165,5 +165,10 @@ def test_symlink_inside_world_resolves_to_the_real_resource(
 
 
 def test_edit_is_allowed_on_writable_resources(resolver: ResourceResolver):
-    for resource_id in (DRAFT, STRUCTURED, WORLD):
+    for resource_id in (DRAFT, WORLD):
         resolver.require(resolver.resolve(resource_id), ACTION_REPLACE_LINES)
+
+
+def test_edit_is_rejected_on_read_only_structured(resolver: ResourceResolver):
+    with pytest.raises(Exception, match="不支持 replace_lines"):
+        resolver.require(resolver.resolve(STRUCTURED), ACTION_REPLACE_LINES)

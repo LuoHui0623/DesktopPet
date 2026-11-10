@@ -40,7 +40,6 @@ class ResourceResolver:
             if spec.path is not None
         }
         self._draft = _resolved(self._paths[DRAFT])
-        self._structured = _resolved(self._paths[STRUCTURED])
         self._world = _resolved(self._paths[WORLD])
         self._repo_fallback = self._data_dir == _resolved(DATA_DIR)
 
@@ -52,9 +51,9 @@ class ResourceResolver:
         spec = RESOURCES.get(resource)
         if spec is None:
             raise FileError(f"未知的资源 ID：{resource}；可用：{'、'.join(RESOURCES)}")
-        if resource == PERMANENT:
+        if resource in (PERMANENT, STRUCTURED):
             if path is not None:
-                raise FileError("永久记忆是虚拟资源，不支持路径；请用 date 或 from/to 指定范围")
+                raise FileError(f"{spec.label}是虚拟资源，不支持路径")
             return Resource(spec, None, self._data_dir)
         if resource == WORLD:
             if path is None:
@@ -96,8 +95,6 @@ class ResourceResolver:
             resolved = _resolved(candidate)
             if resolved == self._draft:
                 return Resource(RESOURCES[DRAFT], resolved, self._world)
-            if resolved == self._structured:
-                return Resource(RESOURCES[STRUCTURED], resolved, self._structured.parent)
             if resolved.is_relative_to(self._world):
                 return Resource(RESOURCES[WORLD], resolved, self._world)
         raise FileError(f"路径不在授权资源内：{path}；只能使用已注册资源 ID 或对应路径")

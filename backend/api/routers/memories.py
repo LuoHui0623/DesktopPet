@@ -31,7 +31,7 @@ def list_memories(request: Request, date: str | None = None) -> Response | Memor
         except ValueError as exc:
             return error_response(422, "invalid_date", str(exc))
     return MemoriesResponse(
-        structured=services.structured.text(),
+        structured=services.entries.structured_text(),
         daily_memory=daily_memory_index(services.daily.dates()),
         daily_records=daily_records,
     )
@@ -40,11 +40,12 @@ def list_memories(request: Request, date: str | None = None) -> Response | Memor
 @router.put(
     "/memories/structured",
     operation_id="save_structured_memory",
-    response_model=StructuredMemoryUpdate,
 )
-def save_structured_memory(
-    request: Request, body: StructuredMemoryUpdate
-) -> StructuredMemoryUpdate:
-    services = _services(request)
-    services.structured.save(body.text)
-    return StructuredMemoryUpdate(text=services.structured.text())
+def save_structured_memory(request: Request, body: StructuredMemoryUpdate) -> Response:
+    """结构化记忆已改为条目存储，整篇覆盖的写入口暂时关闭（设置页接入见 T-08）。"""
+    _services(request)
+    return error_response(
+        409,
+        "read_only",
+        "结构化记忆已改为条目存储，不能整篇覆盖；写入请走 memory 工具，设置页编辑稍后接入",
+    )

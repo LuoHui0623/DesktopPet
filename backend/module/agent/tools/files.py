@@ -70,7 +70,7 @@ class EditArgs(BaseModel):
             "delete（按行范围删内容；world 省略 line_ranges 时删除文件本体）"
         )
     )
-    resource: str = Field(description="资源 ID：draft、structured、world；permanent 只读")
+    resource: str = Field(description="资源 ID：draft、world；permanent 与 structured 只读")
     path: str | None = Field(default=None, description="world 内的相对路径；world 写文件必填")
     line_ranges: list[list[int]] | None = Field(
         default=None, description="行号范围，如 [[2, 5], [9, 9]]；replace_* 与删行必填"
@@ -80,6 +80,13 @@ class EditArgs(BaseModel):
     pattern: str | None = Field(default=None, description="replace_regex 使用的 Python 正则")
     expect: str | list[str] | None = Field(
         default=None, description="replace_lines / delete 可选的行原文比对，用于冲突检测"
+    )
+    token: str | None = Field(
+        default=None,
+        description=(
+            "上次 read 回执里的快照 token；不传则只校验磁盘是否变化，"
+            "传了但已过期会被拒绝并提示重新 read"
+        ),
     )
 
     @model_validator(mode="after")
@@ -196,7 +203,10 @@ def make_file_tools(service: FileService) -> list[BaseTool]:
         end_at: str | None = None,
     ) -> dict[str, Any]:
         """读取文本并附行号（从 1 开始），建立本次编辑的读取基准。resource 取 draft、
-        structured、permanent、world 或 skill；resource 为 skill 时用 name 指定能力名。
+        permanent、world 或 skill；structured 是条目只读视图，行内带 #id；
+        resource 为 skill 时用 name 指定能力名。
+        文件级结果末尾会附一行「快照 token」，编辑该文件时原样传给 edit；
+        它标记了这次读到的版本，内容被别处改动后旧 token 会被拒绝。
         永久记忆用 date 或 from/to 指定范围，单次结果超过子代理模型的 max_tokens 会失败。"""
         return call(
             "read",
@@ -235,13 +245,16 @@ def make_file_tools(service: FileService) -> list[BaseTool]:
         content: str | None = None,
         pattern: str | None = None,
         expect: str | list[str] | None = None,
+        token: str | None = None,
     ) -> dict[str, Any]:
         """执行一个写动作，按 action 区分：replace_lines（line_ranges + content 整段替换）、
         replace_regex（line_ranges + pattern + content，范围内正则替换）、
         append（content 追加；world 缺文件时可新建）、insert（line + content 前插入）、
         delete（line_ranges 删行；world 省略 line_ranges 删除文件本体）。
-        草稿本与小世界先形成待审批草稿，批准前不改真实文件；结构化记忆即时写入。
-        expect 与当前内容不符时不写入，应先重新 read。"""
+        草稿本与小世界先形成待审批草稿，批准前不改真实文件。
+        structured 是只读条目视图，写入请改用 memory 工具的 add / enable / disable。
+        token 取 read 回执末尾的「快照 token」，用于拒绝基于旧内容的编辑；
+        不传也能写，但会失去这一层保护。expect 与当前内容不符时不写入，应先重新 read。"""
         return call(
             action,
             lambda: _dispatch(
@@ -254,6 +267,7 @@ def make_file_tools(service: FileService) -> list[BaseTool]:
                 content,
                 pattern,
                 expect,
+                token,
             ),
             ERRORS,
         )
@@ -271,20 +285,21 @@ def _dispatch(
     content: str | None,
     pattern: str | None,
     expect: str | list[str] | None,
+    token: str | None,
 ) -> str:
     if action not in _EDIT_ACTIONS:
         raise FileError(f"未知的写动作：{action}；可用：{'、'.join(_EDIT_ACTIONS)}")
     if action == "replace_lines":
         assert line_ranges is not None and content is not None
-        return service.edit(resource, line_ranges, content, path, expect)
+        return service.edit(resource, line_ranges, content, path, expect, token)
     if action == "replace_regex":
         assert line_ranges is not None and pattern is not None and content is not None
-        return service.replace(resource, line_ranges, pattern, content, path)
+        return service.replace(resource, line_ranges, pattern, content, path, token)
     if action == "append":
         assert content is not None
-        return service.append(resource, content, path)
+        return service.append(resource, content, path, token)
     if action == "insert":
         assert line is not None and content is not None
-        return service.insert(resource, line, content, path)
+        return service.insert(resource, line, content, path, token)
     assert action == "delete"
-    return service.delete(resource, path, line_ranges, expect)
+    return service.delete(resource, path, line_ranges, expect, token)

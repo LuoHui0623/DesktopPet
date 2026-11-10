@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import MemoryWriter, StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 
 
 @dataclass(frozen=True)
 class MemoryServices:
-    structured: StructuredMemoryDoc
-    writer: MemoryWriter
+    entries: MemoryEntryService
     daily: DailyLogService

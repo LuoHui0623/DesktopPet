@@ -1,149 +1,78 @@
 from datetime import datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from module.memory.contracts import DailyLogEntry, DailyLogRole
 from module.memory.memory_service import (
-    MemoryReader,
     MemoryReadError,
     MemoryWriteError,
-    StructuredMemoryDoc,
+    compile_pattern,
+    number_lines,
+    parse_ranges,
     render_daily_turns,
+    section,
+    split_lines,
 )
 
 
-@pytest.fixture
-def doc(tmp_path: Path) -> StructuredMemoryDoc:
-    return StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
+def test_parse_ranges_accepts_single_and_multiple_specs():
+    assert parse_ranges([[2, 5]]) == [(2, 5)]
+    assert parse_ranges([[5]]) == [(5, 5)]
+    assert parse_ranges([[9, 10], [1, 2]]) == [(1, 2), (9, 10)]
 
 
-def test_missing_file_is_created_empty(doc: StructuredMemoryDoc):
-    assert not doc.path.exists()
-    assert doc.text() == ""
-    assert doc.path.read_text(encoding="utf-8") == ""
-    assert doc.lines() == []
+@pytest.mark.parametrize("spec", [[[0, 3]], [[4, 2]], [[1, 2, 3]], [[1, 2], [2, 4]], []])
+def test_parse_ranges_rejects_bad_specs(spec: list):
+    with pytest.raises(MemoryReadError):
+        parse_ranges(spec)
 
 
-def test_lines_split_document_and_ignore_trailing_newline(doc: StructuredMemoryDoc):
-    doc.save("a\nb\nc\n")
-    assert doc.lines() == ["a", "b", "c"]
-    assert doc.line_count() == 3
+def test_line_numbers_start_at_one_and_do_not_change_content():
+    original = ["第一行", "", "第三行 with 符号 :", "  缩进"]
+    numbered = number_lines(original)
+    assert numbered.split("\n") == [
+        "1: 第一行",
+        "2: ",
+        "3: 第三行 with 符号 :",
+        "4:   缩进",
+    ]
+    stripped = [line.split(": ", 1)[1] if ": " in line else "" for line in numbered.split("\n")]
+    assert stripped == original
 
 
-def test_save_normalizes_newlines_and_keeps_single_trailing_newline(doc: StructuredMemoryDoc):
-    doc.save("## 主人信息\r\n名字：小李\r\n")
-    assert doc.text() == "## 主人信息\n名字：小李\n"
+def test_section_returns_numbered_slice():
+    lines = ["a", "b", "c", "d"]
+    assert section(lines, [[2, 3]]) == "2: b\n3: c"
 
 
-def test_save_empty_text_clears_document(doc: StructuredMemoryDoc):
-    doc.save("   ")
-    assert doc.text() == ""
-    assert doc.lines() == []
+def test_section_keeps_real_line_numbers_across_ranges():
+    lines = ["a", "b", "c", "d"]
+    assert section(lines, [[1, 2], [4, 4]]) == "1: a\n2: b\n4: d"
 
 
-def test_save_writes_atomically_without_leftovers(doc: StructuredMemoryDoc):
-    doc.save("## 主人信息\n")
-    doc.save("## 喜好\n")
-    assert list(doc.path.parent.glob("*.tmp")) == []
+def test_section_out_of_range_returns_reason():
+    with pytest.raises(MemoryReadError, match="超出范围，共 3 行"):
+        section(["a", "b", "c"], [[2, 4]])
 
 
-def test_listeners_are_notified_on_every_write(doc: StructuredMemoryDoc):
-    doc.save("a\nb")
-    calls: list[int] = []
-    doc.add_listener(lambda: calls.append(1))
-    doc.append("咖啡偏好")
-    doc.replace_pattern([[3, 3]], "咖啡偏好", "喜欢美式")
-    doc.save("")
-    assert len(calls) == 3
+def test_split_lines_normalizes_newlines_and_ignores_blank_text():
+    assert split_lines("a\r\nb\r\n") == ["a", "b"]
+    assert split_lines("  \n ") == []
 
 
-def test_append_returns_written_line_numbers(doc: StructuredMemoryDoc):
-    doc.save("a")
-    start, end = doc.append("咖啡偏好\n喜欢美式")
-    assert (start, end) == (2, 3)
-    assert doc.lines() == ["a", "咖啡偏好", "喜欢美式"]
-
-
-def test_append_rejects_blank_content(doc: StructuredMemoryDoc):
-    with pytest.raises(MemoryWriteError, match="内容不能为空"):
-        doc.append("\n \n")
-
-
-def test_replace_pattern_edits_only_matched_text(doc: StructuredMemoryDoc):
-    doc.save("名字：小李\n工作地点：杭州")
-    assert doc.replace_pattern([[2, 2]], "杭州", "上海") == (2, 2)
-    assert doc.lines() == ["名字：小李", "工作地点：上海"]
-
-
-def test_replace_pattern_accepts_multiple_ranges(doc: StructuredMemoryDoc):
-    doc.save("a\ncity = 杭州\nc\nd\ncity = 杭州")
-    assert doc.replace_pattern([[5, 5], [2, 2]], "杭州", "上海") == (2, 5)
-    assert doc.lines() == ["a", "city = 上海", "c", "d", "city = 上海"]
-
-
-def test_replace_pattern_keeps_unmatched_ranges_untouched(doc: StructuredMemoryDoc):
-    doc.save("a\nb\nc")
-    assert doc.replace_pattern([[1, 1], [3, 3]], "c", "C") == (3, 3)
-    assert doc.lines() == ["a", "b", "C"]
-
-
-def test_replace_pattern_without_match_is_rejected(doc: StructuredMemoryDoc):
-    doc.save("a\nb")
-    with pytest.raises(MemoryWriteError, match="没有匹配到内容"):
-        doc.replace_pattern([[1, 2]], "杭州", "上海")
-    assert doc.lines() == ["a", "b"]
-
-
-def test_replace_pattern_rejects_bad_pattern(doc: StructuredMemoryDoc):
-    doc.save("a")
+def test_compile_pattern_rejects_blank_empty_match_and_bad_regex():
+    with pytest.raises(MemoryWriteError, match="正则不能为空"):
+        compile_pattern("  ")
+    with pytest.raises(MemoryWriteError, match="空字符串"):
+        compile_pattern("x*")
     with pytest.raises(MemoryWriteError, match="正则不合法"):
-        doc.replace_pattern([[1, 1]], "(", "B")
+        compile_pattern("(")
 
 
-@pytest.mark.parametrize("pattern", ["", " ", ".*"])
-def test_replace_pattern_rejects_empty_match(doc: StructuredMemoryDoc, pattern: str):
-    doc.save("a")
-    with pytest.raises(MemoryWriteError):
-        doc.replace_pattern([[1, 1]], pattern, "B")
-
-
-def test_replace_pattern_treats_content_as_literal_text(doc: StructuredMemoryDoc):
-    doc.save("路径：old")
-    doc.replace_pattern([[1, 1]], "old", r"C:\new")
-    assert doc.lines() == ["路径：C:\\new"]
-
-
-@pytest.mark.parametrize("spec", [[[0, 1]], [[2, 1]], [[1, 9]], [[1, 2, 3]], []])
-def test_replace_pattern_rejects_bad_ranges(doc: StructuredMemoryDoc, spec: list):
-    doc.save("a\nb")
-    with pytest.raises(MemoryWriteError):
-        doc.replace_pattern(spec, "a", "B")
-    assert doc.lines() == ["a", "b"]
-
-
-def test_replace_pattern_rejects_overlapping_ranges(doc: StructuredMemoryDoc):
-    doc.save("a\nb\nc")
-    with pytest.raises(MemoryWriteError, match="重叠"):
-        doc.replace_pattern([[1, 2], [2, 3]], "a", "B")
-
-
-def test_read_errors_become_write_errors(doc: StructuredMemoryDoc):
-    doc.save("a")
-    with pytest.raises(MemoryWriteError):
-        doc.replace_pattern([[1, 2]], "a", "B")
-
-
-class FakeDaily:
-    def read_day(self, day: str) -> list:
-        return []
-
-
-def test_reader_reports_missing_index(doc: StructuredMemoryDoc, tmp_path: Path):
-    reader = MemoryReader(tmp_path / "missing.json", doc, FakeDaily())
-    with pytest.raises(MemoryReadError, match="记忆索引不存在"):
-        reader.describe()
+def test_compile_pattern_matches_escaped_literal_text():
+    regex = compile_pattern(r"C:\\new")
+    assert regex.search(r"C:\new") is not None
 
 
 def record(role: DailyLogRole, content: str) -> DailyLogEntry:

@@ -118,7 +118,7 @@ def parse_head_note(path: Path) -> str:
 MEMORY_WRITE_SKILL = "记忆写入"
 MEMORY_RETRIEVE_SKILL = "记忆检索"
 DRAFT_NOTE_SKILL = "自记笔记"
-MEMORY_WRITE_TOOLS = ("index", "read", "grep", "edit")
+MEMORY_WRITE_TOOLS = ("index", "read", "grep", "memory")
 MEMORY_RETRIEVE_TOOLS = ("index", "read", "grep")
 DRAFT_NOTE_TOOLS = ("index", "read", "grep", "edit")
 MEMORY_WRITE_KEYWORDS = (

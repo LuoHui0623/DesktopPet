@@ -22,9 +22,9 @@ from module.files.permissions import system_permissions
 from module.files.resolver import ResourceResolver
 from module.files.service import FileService, ModelLimit
 from module.files.staging import StagingStore
-from module.memory.contracts import DailyLogRecord
+from module.memory.contracts import DailyLogRecord, MemoryEntryCreate
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 from module.memory.repository import DbDailyLog
 from module.settings.settings_service import SettingsService
 
@@ -54,10 +54,9 @@ def tools(tmp_path: Path):
     conn.close()
     data = tmp_path / "data"
     (data / "resources").mkdir(parents=True)
-    (data / "memory").mkdir()
     (data / "resources" / "草稿本.md").write_text("# 草稿本\n", encoding="utf-8")
-    structured = StructuredMemoryDoc(data / "memory" / "structured.md")
-    structured.save("名字：小李\n")
+    entries = MemoryEntryService(db_file)
+    entries.add(MemoryEntryCreate(content="名字：小李", tags=["主人信息"]))
     daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
     store = DbDailyLog(db_file)
     skills = SkillRegistry()
@@ -74,14 +73,20 @@ def tools(tmp_path: Path):
     )
     service = FileService(
         ResourceResolver(data),
-        structured,
+        entries,
         daily,
         skills,
         editor=review,
         timezone=TZ,
         limit_provider=lambda: ModelLimit(10000, "estimate"),
     )
-    return {tool.name: tool for tool in make_file_tools(service)}, structured, daily, store
+    return (
+        {tool.name: tool for tool in make_file_tools(service)},
+        entries,
+        daily,
+        store,
+        data,
+    )
 
 
 def test_tool_names_are_unified(tools):
@@ -130,30 +135,20 @@ def test_read_skill_manual(tools):
 def test_read_file_with_lines(tools):
     result = tools[0]["read"].invoke({"resource": WORLD, "path": "草稿本.md"})
     assert result["ok"] is True
-    assert result["content"] == "1: # 草稿本"
+    assert result["content"].startswith("1: # 草稿本\n\n快照 token：")
 
 
-def test_write_tools_operate_on_structured_memory(tools):
-    by_name, structured, _, _ = tools
-    appended = by_name["edit"].invoke(
-        {"action": "append", "resource": STRUCTURED, "content": "工作地点：杭州"}
-    )
-    assert appended["ok"] is True
-    edited = by_name["edit"].invoke(
-        {
-            "action": "replace_regex",
-            "resource": STRUCTURED,
-            "pattern": "杭州",
-            "content": "上海",
-            "line_ranges": [[2]],
-        }
-    )
-    assert edited["ok"] is True
-    assert structured.lines() == ["名字：小李", "工作地点：上海"]
+def test_structured_is_read_only_through_edit(tools):
+    by_name, entries, _, _, _ = tools
+    with pytest.raises(ValidationError, match="不支持 append"):
+        by_name["edit"].invoke(
+            {"action": "append", "resource": STRUCTURED, "content": "工作地点：杭州"}
+        )
+    assert [entry.content for entry in entries.all()] == ["名字：小李"]
 
 
 def test_read_permanent_accepts_from_and_to_aliases(tools):
-    by_name, _, _, store = tools
+    by_name, _, _, store, _ = tools
     store.append(
         [
             DailyLogRecord(
@@ -194,7 +189,7 @@ def test_edit_validates_action_fields(tools):
         by_name["edit"].invoke(
             {
                 "action": "replace_regex",
-                "resource": STRUCTURED,
+                "resource": "draft",
                 "pattern": "杭州",
                 "content": "上海",
             }
@@ -203,7 +198,7 @@ def test_edit_validates_action_fields(tools):
         by_name["edit"].invoke(
             {
                 "action": "replace_lines",
-                "resource": STRUCTURED,
+                "resource": "draft",
                 "line_ranges": [[1]],
                 "content": "新",
                 "pattern": "旧",
@@ -213,7 +208,7 @@ def test_edit_validates_action_fields(tools):
         by_name["edit"].invoke(
             {
                 "action": "replace_regex",
-                "resource": STRUCTURED,
+                "resource": "draft",
                 "line_ranges": [[1]],
                 "pattern": "名字",
                 "content": "新",
@@ -222,23 +217,19 @@ def test_edit_validates_action_fields(tools):
         )
     with pytest.raises(ValidationError, match="不能使用字段"):
         by_name["edit"].invoke(
-            {"action": "append", "resource": STRUCTURED, "content": "新", "line": 1}
+            {"action": "append", "resource": "draft", "content": "新", "line": 1}
         )
     with pytest.raises(ValidationError, match="必须提供 line"):
-        by_name["edit"].invoke({"action": "insert", "resource": STRUCTURED, "content": "新"})
+        by_name["edit"].invoke({"action": "insert", "resource": "draft", "content": "新"})
     with pytest.raises(ValidationError, match="未知的资源 ID"):
         by_name["edit"].invoke({"action": "append", "resource": "secret", "content": "新"})
 
 
-def test_edit_rejects_read_only_resource_and_non_delete_file_writes(tools):
+def test_edit_rejects_read_only_resources(tools):
     by_name = tools[0]
-    with pytest.raises(ValidationError, match="不支持 append"):
-        by_name["edit"].invoke({"action": "append", "resource": "permanent", "content": "x"})
-    # permanent 只读，structured 则允许即时写入。
-    result = by_name["edit"].invoke(
-        {"action": "append", "resource": STRUCTURED, "content": "## 喜好\n咖啡：美式"}
-    )
-    assert result["ok"] is True
+    for resource in ("permanent", STRUCTURED):
+        with pytest.raises(ValidationError, match="不支持 append"):
+            by_name["edit"].invoke({"action": "append", "resource": resource, "content": "x"})
 
 
 def test_edit_requires_path_for_world_writes(tools):
@@ -247,27 +238,86 @@ def test_edit_requires_path_for_world_writes(tools):
 
 
 def test_edit_replace_lines_keeps_the_original_semantics(tools):
-    by_name, structured, _, _ = tools
+    by_name = tools[0]
+    by_name["read"].invoke({"resource": WORLD, "path": "草稿本.md"})
     result = by_name["edit"].invoke(
         {
             "action": "replace_lines",
-            "resource": STRUCTURED,
+            "resource": WORLD,
+            "path": "草稿本.md",
             "line_ranges": [[1]],
-            "content": "名字：小王",
-            "expect": "名字：小李",
+            "content": "# 新草稿本",
+            "expect": "# 草稿本",
         }
     )
     assert result["ok"] is True
     assert result["action"] == "replace_lines"
-    assert structured.lines() == ["名字：小王"]
 
 
 def test_edit_delete_file_body_is_staged_for_world(tools):
-    by_name, structured, _, _ = tools
-    note = structured.path.parent.parent / "resources" / "笔记.md"
+    by_name, _, _, _, data = tools
+    note = data / "resources" / "笔记.md"
     note.write_text("便签", encoding="utf-8")
     assert by_name["read"].invoke({"resource": WORLD, "path": "笔记.md"})["ok"] is True
     result = by_name["edit"].invoke({"action": "delete", "resource": WORLD, "path": "笔记.md"})
     assert result["ok"] is True
     assert "已暂存" in result["content"]
     assert note.exists()
+
+
+def issued_token(text: str) -> str:
+    """从 read 回执里取出下发的令牌。"""
+    marker = "快照 token："
+    line = next(item for item in text.splitlines() if marker in item)
+    return line.split(marker, 1)[1].split("（", 1)[0]
+
+
+def test_edit_accepts_token_issued_by_read(tools):
+    by_name = tools[0]
+    read = by_name["read"].invoke({"resource": WORLD, "path": "草稿本.md"})
+    result = by_name["edit"].invoke(
+        {
+            "action": "replace_lines",
+            "resource": WORLD,
+            "path": "草稿本.md",
+            "line_ranges": [[1]],
+            "content": "# 新草稿本",
+            "token": issued_token(read["content"]),
+        }
+    )
+    assert result["ok"] is True
+    assert "已暂存" in result["content"]
+
+
+def test_edit_rejects_stale_token(tools):
+    by_name = tools[0]
+    by_name["read"].invoke({"resource": WORLD, "path": "草稿本.md"})
+    result = by_name["edit"].invoke(
+        {
+            "action": "append",
+            "resource": WORLD,
+            "path": "草稿本.md",
+            "content": "追一行",
+            "token": "deadbeefcafe",
+        }
+    )
+    assert result["ok"] is False
+    assert "请重新 read" in result["error"]
+
+
+def test_edit_without_token_stays_optional(tools):
+    by_name = tools[0]
+    by_name["read"].invoke({"resource": WORLD, "path": "草稿本.md"})
+    result = by_name["edit"].invoke(
+        {
+            "action": "append",
+            "resource": WORLD,
+            "path": "草稿本.md",
+            "content": "追一行",
+        }
+    )
+    assert result["ok"] is True
+
+
+def test_edit_schema_exposes_token(tools):
+    assert "token" in tools[0]["edit"].args

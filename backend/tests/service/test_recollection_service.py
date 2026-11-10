@@ -16,7 +16,7 @@ from module.agent.approval import AutoApprovalGate
 from module.agent.context import SOURCE_SYSTEM_AUTO
 from module.agent.orchestrator import Checkpoint
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import KIND_DAILY, MemoryReader, StructuredMemoryDoc
+from module.memory.memory_service import render_daily_turns
 from module.memory.recollection_service import (
     FAILURE_PREFIX,
     MAX_ATTEMPTS,
@@ -300,10 +300,8 @@ def test_the_retrieval_material_excludes_previous_recollections(tmp_path: Path):
     env = make_env(tmp_path)
     seed_chat(env.daily, YESTERDAY)
     env.daily.record_recollection(YESTERDAY, "这是一段旧回忆")
-    structured = StructuredMemoryDoc(tmp_path / "memory.md")
-    reader = MemoryReader(tmp_path / "index.json", structured, env.daily)
 
-    text = reader.read(KIND_DAILY, YESTERDAY)
+    text = "\n".join(render_daily_turns(env.daily.restore_day(YESTERDAY)))
 
     assert "这是一段旧回忆" not in text
     assert "用户：昨天聊了咖啡" in text

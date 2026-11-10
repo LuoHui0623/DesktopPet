@@ -18,7 +18,7 @@ from module.agent.prompt import (
 )
 from module.chat.transcript import ChatLine, TranscriptReader
 from module.memory.contracts import DailyLogEntry
-from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService, render_entry_lines
 from service.perception.constants import CONTEXT_EVENT_LIMIT
 from service.perception.events import PerceptionEvent
 
@@ -123,7 +123,7 @@ class ContextBuilder:
         templates: PromptTemplates,
         timezone: tzinfo,
         *,
-        structured: StructuredMemoryDoc | None = None,
+        memory: MemoryEntryService | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
         resources: Sequence[ResourceItem] | None = None,
@@ -135,7 +135,7 @@ class ContextBuilder:
         self._persona = persona
         self._templates = templates
         self._timezone = timezone
-        self._structured = structured
+        self._memory = memory
         self._clock = clock or (lambda zone: datetime.now(zone))
         self._capabilities = tuple(capabilities)
         self._resources = resources
@@ -275,12 +275,13 @@ class ContextBuilder:
         return AIMessage(content=text)
 
     def _structured_block(self, warnings: list[ContextWarning]) -> str:
-        """结构化记忆全文注入，不做预算裁剪：它是主人手写的大纲，删行会丢语义。"""
-        if self._structured is None:
+        """结构化条目按分区平铺注入；预算与卡片渲染留给 T-04。"""
+        if self._memory is None:
             return ""
         try:
-            lines = self._structured.lines()
-        except (MemoryReadError, OSError):
+            lines = render_entry_lines(self._memory.load(), include_disabled=False)
+        except Exception:
+            logger.exception("结构化条目读取失败，本轮跳过")
             warnings.append(ContextWarning(WARNING_MEMORY_UNLOADED, "结构化记忆无法读取，已跳过"))
             return ""
         return "\n".join(lines).strip()

@@ -39,10 +39,9 @@ from module.files.permissions import ResourcePermission, TaskPermissions, system
 from module.files.resolver import FileDenied, FileError, ResourceResolver
 from module.files.service import FileService, ModelLimit
 from module.files.staging import StagingStore
-from module.memory.contracts import DailyLogRecord
+from module.memory.contracts import DailyLogRecord, MemoryEntryCreate
 from module.memory.daily_log_service import DailyLogService
-from module.memory.index import MemoryIndexService
-from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 from module.memory.repository import DbDailyLog
 from module.settings.settings_service import SettingsService
 
@@ -123,15 +122,12 @@ def stack(tmp_path: Path):
     conn.close()
     data = tmp_path / "data"
     (data / "resources").mkdir(parents=True)
-    (data / "memory").mkdir()
     (data / "resources" / "草稿本.md").write_text("# 草稿本\n", encoding="utf-8")
-    structured = StructuredMemoryDoc(data / "memory" / "structured.md")
-    structured.save("名字：小李\n工作地点：杭州\n")
+    entries = MemoryEntryService(db_file)
+    for content in ("名字：小李", "工作地点：杭州"):
+        entries.add(MemoryEntryCreate(content=content, tags=["主人信息"]))
     settings = SettingsService(db_file)
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
-    index = MemoryIndexService(structured.lines, daily.dates, data / "memory" / "index.json")
-    structured.add_listener(index.rebuild)
-    index.rebuild()
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
@@ -158,7 +154,7 @@ def stack(tmp_path: Path):
             )
         return FileService(
             ResourceResolver(data),
-            structured,
+            entries,
             daily,
             skills,
             editor=editor,
@@ -172,10 +168,9 @@ def stack(tmp_path: Path):
         "tmp": tmp_path,
         "data": data,
         "db_file": db_file,
-        "structured": structured,
+        "entries": entries,
         "daily": daily,
         "settings": settings,
-        "index_file": data / "memory" / "index.json",
         "service": build(),
         "build": build,
         "store": DbDailyLog(db_file),
@@ -223,13 +218,16 @@ def test_index_world_returns_tree_and_metadata(stack):
     assert "笔记.md" in paths
 
 
-def test_index_structured_reports_lines_and_headings(stack):
-    stack["structured"].save("## 主人信息\n名字：小李\n")
+def test_index_structured_reports_entries_tags_and_read_only_view(stack):
     payload = json.loads(stack["service"].index(STRUCTURED))
-    assert payload["kind"] == "file"
-    assert payload["exists"] is True
-    assert payload["lines"] == 2
-    assert payload["headings"] == [{"line": 1, "text": "## 主人信息"}]
+    assert payload["kind"] == "structured"
+    assert payload["entries"] == 2
+    assert payload["enabled"] == 2
+    assert payload["disabled"] == 0
+    assert payload["tags"] == ["主人信息"]
+    assert payload["read_only"] is True
+    assert payload["edit_supports"] == []
+    assert payload["supports_edit"] is False
     assert payload["read_required_before_edit"] is False
 
 
@@ -273,12 +271,17 @@ def test_index_skill_returns_catalog_object(stack):
 
 def test_read_files_returns_numbered_lines_and_ranges(stack):
     (stack["data"] / "resources" / "笔记.md").write_text("一\n二\n三", encoding="utf-8")
-    assert stack["service"].read(WORLD, "笔记.md") == "1: 一\n2: 二\n3: 三"
-    assert stack["service"].read(WORLD, "笔记.md", line_ranges=[[2, 3]]) == "2: 二\n3: 三"
+    assert stack["service"].read(WORLD, "笔记.md").startswith("1: 一\n2: 二\n3: 三")
+    assert stack["service"].read(WORLD, "笔记.md", line_ranges=[[2, 3]]).startswith("2: 二\n3: 三")
 
 
-def test_read_structured_and_skills(stack):
-    assert stack["service"].read(STRUCTURED) == "1: 名字：小李\n2: 工作地点：杭州"
+def test_read_structured_entries_and_skills(stack):
+    text = stack["service"].read(STRUCTURED)
+    lines = text.splitlines()
+    assert lines[0] == "1: ## 主人信息"
+    assert sum("名字：小李" in line for line in lines) == 1
+    assert sum("工作地点：杭州" in line for line in lines) == 1
+    assert stack["service"].read(STRUCTURED, line_ranges=[[1, 1]]) == "1: ## 主人信息"
     assert stack["service"].read("skill", name="记忆检索").startswith("# 记忆检索")
 
 
@@ -303,84 +306,108 @@ def test_append_draft_keeps_existing_content(stack):
     )
 
 
-def test_structured_writes_refresh_index(stack):
-    stack["service"].append(STRUCTURED, "咖啡偏好\n喜欢美式")
-    index = json.loads(stack["index_file"].read_text(encoding="utf-8"))
-    assert index["index"]["structured"]["lines"] == 4
+def test_structured_edit_is_rejected_as_read_only(stack):
+    with pytest.raises(FileDenied, match="不支持 append"):
+        stack["service"].append(STRUCTURED, "咖啡偏好\n喜欢美式")
+    with pytest.raises(FileDenied, match="不支持 delete"):
+        stack["service"].delete(STRUCTURED, line_ranges=[[1]])
+    assert len(stack["entries"].all()) == 2
 
 
-def test_structured_write_keeps_sensitive_guard_and_ignores_legacy_temporary_setting(stack):
-    with pytest.raises(Exception, match="密码"):
-        stack["service"].append(STRUCTURED, "网银密码是 abc")
-    SettingsService(stack["db_file"]).put("memory.temporary_mode", "true")
-    stack["service"].delete(STRUCTURED, line_ranges=[[1]])
-    assert stack["structured"].lines() == ["工作地点：杭州"]
-
-
-def test_sensitive_structured_write_leaves_file_and_index_unchanged(stack):
-    target = stack["data"] / "memory" / "structured.md"
-    before_text = target.read_text(encoding="utf-8")
-    before_index = stack["index_file"].read_text(encoding="utf-8")
-
-    with pytest.raises(Exception, match="密码"):
-        stack["service"].append(STRUCTURED, "网银密码是 abc")
-
-    assert target.read_text(encoding="utf-8") == before_text
-    assert stack["index_file"].read_text(encoding="utf-8") == before_index
+def editable(stack):
+    """准备一份可编辑的小世界文件并完成首次读取。"""
+    path = stack["data"] / "resources" / "编辑.md"
+    path.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
+    service = stack["build"](max_writes=8)
+    service.read(WORLD, "编辑.md")
+    return service, path
 
 
 def test_insert_places_content_before_the_line(stack):
-    stack["service"].insert(STRUCTURED, 2, "新的一行")
-    assert stack["structured"].lines() == ["名字：小李", "新的一行", "工作地点：杭州"]
-    stack["service"].insert(STRUCTURED, 4, "末尾")
-    assert stack["structured"].lines()[-1] == "末尾"
+    service, path = editable(stack)
+    message = service.insert(WORLD, 2, "新的一行", path="编辑.md")
+    assert "2-2" in message
+    service.insert(WORLD, 4, "末尾", path="编辑.md")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n新的一行\n工作地点：杭州\n末尾"
 
 
 def test_insert_out_of_range_is_rejected(stack):
+    service, path = editable(stack)
     with pytest.raises(Exception, match="插入位置"):
-        stack["service"].insert(STRUCTURED, 9, "越界")
+        service.insert(WORLD, 9, "越界", path="编辑.md")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
 
 
 def test_edit_replaces_multiple_ranges_and_checks_expectation(stack):
-    message = stack["service"].edit(
-        STRUCTURED,
+    service, path = editable(stack)
+    message = service.edit(
+        WORLD,
         line_ranges=[[1], [2]],
         content="已替换",
+        path="编辑.md",
         expect=["名字：小李", "工作地点：杭州"],
     )
     assert "1-2" in message
-    assert stack["structured"].lines() == ["已替换", "已替换"]
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "已替换\n已替换"
 
 
 def test_edit_expect_mismatch_does_not_write(stack):
+    service, path = editable(stack)
     with pytest.raises(Exception, match="expect"):
-        stack["service"].edit(STRUCTURED, line_ranges=[[1]], content="新", expect="旧")
-    assert stack["structured"].lines() == ["名字：小李", "工作地点：杭州"]
+        service.edit(WORLD, line_ranges=[[1]], content="新", path="编辑.md", expect="旧")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
 
 
 def test_replace_matches_regex_inside_ranges(stack):
-    stack["service"].replace(STRUCTURED, [[2]], "杭州", "上海")
-    assert stack["structured"].lines()[1] == "工作地点：上海"
+    service, path = editable(stack)
+    service.replace(WORLD, [[2]], "杭州", "上海", path="编辑.md")
     with pytest.raises(Exception, match="没有匹配"):
-        stack["service"].replace(STRUCTURED, [[1, 2]], "北京", "深圳")
+        service.replace(WORLD, [[1, 2]], "北京", "深圳", path="编辑.md")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海"
 
 
 def test_replace_requires_line_ranges(stack):
+    service, path = editable(stack)
     with pytest.raises(Exception, match="line_ranges"):
-        stack["service"].replace(STRUCTURED, [], "杭州", "上海")
-    assert stack["structured"].lines() == ["名字：小李", "工作地点：杭州"]
+        service.replace(WORLD, [], "杭州", "上海", path="编辑.md")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
 
 
 def test_delete_lines_keeps_the_file(stack):
-    stack["service"].delete(STRUCTURED, line_ranges=[[2]])
-    assert stack["structured"].lines() == ["名字：小李"]
-    assert stack["structured"].path.exists()
+    service, path = editable(stack)
+    service.delete(WORLD, path="编辑.md", line_ranges=[[2]])
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李"
 
 
 def test_delete_expect_mismatch_does_not_write(stack):
+    service, path = editable(stack)
     with pytest.raises(Exception, match="expect"):
-        stack["service"].delete(STRUCTURED, line_ranges=[[2]], expect="旧内容")
-    assert stack["structured"].lines() == ["名字：小李", "工作地点：杭州"]
+        service.delete(WORLD, path="编辑.md", line_ranges=[[2]], expect="旧内容")
+
+    service.editor.finish_task(TASK.main_task_id)
+
+    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
 
 
 def test_delete_world_file_is_allowed_but_draft_and_structured_are_not(stack):
@@ -392,10 +419,9 @@ def test_delete_world_file_is_allowed_but_draft_and_structured_are_not(stack):
 
     with pytest.raises(Exception, match="不能删除文件本体"):
         stack["service"].delete(DRAFT)
-    with pytest.raises(Exception, match="不能删除文件本体"):
+    with pytest.raises(FileDenied, match="不支持 delete"):
         stack["service"].delete(STRUCTURED)
     assert (stack["data"] / "resources" / "草稿本.md").exists()
-    assert stack["structured"].path.exists()
 
 
 def test_world_cannot_bypass_draft_file_delete_rule(stack):
@@ -866,10 +892,10 @@ def test_grep_overlays_another_subtasks_staged_text(stack):
     assert gate.calls == []
 
 
-def test_structured_writes_remain_immediate_and_do_not_enter_staging(stack):
+def test_structured_never_enters_staging(stack):
     service = stack["build"](max_writes=8)
-    service.append(STRUCTURED, "咖啡偏好")
-    assert stack["structured"].lines() == ["名字：小李", "工作地点：杭州", "咖啡偏好"]
+    with pytest.raises(FileDenied, match="不支持 append"):
+        service.append(STRUCTURED, "咖啡偏好")
     assert service.editor.pending(TASK.main_task_id) == ()
 
 

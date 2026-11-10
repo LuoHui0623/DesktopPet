@@ -16,6 +16,7 @@ from module.agent.review import ReviewService
 from module.agent.skills import SkillRegistry, memory_write_skill
 from module.agent.subagent import SubAgent
 from module.agent.tools.files import make_file_tools
+from module.agent.tools.memory import make_memory_tools
 from module.chat.chat_service import ChatRequest, ChatService
 from module.files.resolver import ResourceResolver
 from module.files.service import FileService, ModelLimit
@@ -23,8 +24,7 @@ from module.files.staging import StagingStore
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
-from module.memory.index import MemoryIndexService
-from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
 from module.persona.repository import DbPersonaVersions
@@ -83,8 +83,8 @@ def chat_reply(text: str) -> str:
 DRAFT = json.dumps(
     {
         "action": "draft",
-        "content": "用 edit(append) 记下咖啡偏好",
-        "tools": ["edit"],
+        "content": "用 index 查看现状，再用 memory(add) 记下咖啡偏好",
+        "tools": ["index", "memory"],
     },
     ensure_ascii=False,
 )
@@ -97,12 +97,12 @@ def index() -> str:
     )
 
 
-def append(content: str) -> str:
+def remember(content: str, tags: list[str]) -> str:
     return json.dumps(
         {
             "action": "tool",
-            "tool": "edit",
-            "args": {"action": "append", "resource": "structured", "content": content},
+            "tool": "memory",
+            "args": {"action": "add", "content": content, "tags": tags},
         },
         ensure_ascii=False,
     )
@@ -172,23 +172,19 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     )
     llm.start()
     daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
-    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
-    index_file = tmp_path / "memory" / "index.json"
-    index = MemoryIndexService(structured.lines, daily.dates, index_file)
-    structured.add_listener(index.rebuild)
-    index.rebuild()
+    entries = MemoryEntryService(db_file)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     service = FileService(
         ResourceResolver(tmp_path),
-        structured,
+        entries,
         daily,
         skills,
         editor=ReviewService(StagingStore()),
         timezone=TZ,
         limit_provider=lambda: ModelLimit(10000, "estimate"),
     )
-    tools = make_file_tools(service)
+    tools = [*make_file_tools(service), *make_memory_tools(entries)]
     orchestrator = Orchestrator(SubAgent(llm, tools), DbAgentRuns(db_file), skills, TZ)
     approvals = ApprovalRegistry()
     events.registry = approvals
@@ -203,11 +199,12 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         capabilities=skills.summaries(),
         orchestrator=orchestrator,
         approvals=approvals,
+        memory=entries,
     )
     return {
         "chat": chat,
         "chat_model": chat_model,
-        "structured": structured,
+        "entries": entries,
         "daily": daily,
         "db_file": db_file,
     }
@@ -236,7 +233,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
             dispatch(text),
             DRAFT,
             index(),
-            append("## 喜好\n咖啡：美式，不加糖"),
+            remember("咖啡：美式，不加糖", ["喜好"]),
             finish("已记下咖啡偏好"),
             chat_reply("记住啦，美式不加糖～"),
         ],
@@ -245,7 +242,7 @@ def test_dispatch_without_keywords_writes_memory(tmp_path: Path):
     result = ask(env["chat"], text)
     assert result.text == "记住啦，美式不加糖～"
     assert result.recorded is True
-    assert "咖啡：美式，不加糖" in env["structured"].text()
+    assert "咖啡：美式，不加糖" in env["entries"].structured_text()
     assert env["chat_model"].calls == 6
     assert len(events.plan_ids) == 1
     kinds = states(events)
@@ -266,7 +263,7 @@ def test_keyword_message_without_dispatch_writes_nothing(tmp_path: Path):
     env = build_chat(tmp_path, [chat_reply("好呀，我记着。")], events)
     result = ask(env["chat"], "记住，我喜欢美式咖啡")
     assert result.text == "好呀，我记着。"
-    assert env["structured"].text() == ""
+    assert env["entries"].all() == []
     assert env["chat_model"].calls == 1
     assert events.plan_ids == []
     assert "executing" not in states(events)
@@ -285,7 +282,7 @@ def test_legacy_temporary_setting_does_not_block_the_dispatched_write(tmp_path: 
             dispatch(text),
             DRAFT,
             index(),
-            append("## 喜好\n咖啡：美式"),
+            remember("咖啡：美式", ["喜好"]),
             finish("已经写进记忆"),
             chat_reply("记好啦。"),
         ],
@@ -295,7 +292,7 @@ def test_legacy_temporary_setting_does_not_block_the_dispatched_write(tmp_path: 
     result = ask(env["chat"], text)
     assert result.text == "记好啦。"
     assert result.recorded is True
-    assert "咖啡：美式" in env["structured"].text()
+    assert "咖啡：美式" in env["entries"].structured_text()
     assert logged_turns(env["db_file"]) == [
         ("master", text),
         ("assistant", "已经写进记忆"),
@@ -312,7 +309,7 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
             dispatch(text),
             DRAFT,
             index(),
-            append("证件号：11010119900307123X"),
+            remember("证件号：11010119900307123X", ["证件号"]),
             finish("这条没有记下"),
             chat_reply("这个我就不记了。"),
         ],
@@ -320,5 +317,5 @@ def test_sensitive_content_is_refused_by_the_writer(tmp_path: Path):
     )
     result = ask(env["chat"], text)
     assert result.text == "这个我就不记了。"
-    assert "11010119900307123X" not in env["structured"].text()
+    assert "11010119900307123X" not in env["entries"].structured_text()
     assert env["chat_model"].observed("敏感信息不写入记忆")

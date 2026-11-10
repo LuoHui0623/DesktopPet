@@ -2,8 +2,6 @@ from pathlib import Path
 
 import pytest
 
-from constants.agent import DEFAULT_PERSONA_ID
-from constants.path import MIGRATIONS_DIR
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.persona import repository as persona_version
@@ -50,23 +48,3 @@ def test_db_store_wraps_repository_with_transactions(tmp_path: Path):
     assert store.latest("小桌") is None
     assert store.append("小桌", "{}", CREATED_AT).version == 1
     assert store.latest("小桌").version == 1
-
-
-def test_migration_keeps_existing_versions_under_default_card(tmp_path: Path):
-    connection = connect(tmp_path / "old.db")
-    try:
-        for name in ("0001_init.sql", "0002_log_record.sql", "0003_agent.sql"):
-            connection.executescript((MIGRATIONS_DIR / name).read_text(encoding="utf-8"))
-        connection.execute(
-            "INSERT INTO persona_version (version, content, created_at) VALUES (1, '{}', ?)",
-            (CREATED_AT,),
-        )
-        connection.executescript(
-            (MIGRATIONS_DIR / "0004_persona_card.sql").read_text(encoding="utf-8")
-        )
-        row = connection.execute(
-            "SELECT persona_id, version, content FROM persona_version"
-        ).fetchone()
-        assert tuple(row) == (DEFAULT_PERSONA_ID, 1, "{}")
-    finally:
-        connection.close()

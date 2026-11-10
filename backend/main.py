@@ -47,6 +47,7 @@ from module.agent.skills import (
 )
 from module.agent.subagent import SubAgent
 from module.agent.tools.files import make_file_tools
+from module.agent.tools.memory import make_memory_tools
 from module.agent.workspace import prepare_workspace
 from module.avatar.avatar_service import AvatarService
 from module.chat.activity import ChatActivity
@@ -57,11 +58,8 @@ from module.interaction.interaction_service import InteractionService
 from module.llm import DbUsageReader, LlmService, UsageService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
-from module.memory.index import MemoryIndexService
-from module.memory.memory_service import (
-    MemoryWriter,
-    StructuredMemoryDoc,
-)
+from module.memory.entry_service import MemoryEntryService
+from module.memory.recall import RecallService
 from module.memory.recollection_service import RecollectionService
 from module.memory.repository import DbDailyLog
 from module.memory.services import MemoryServices
@@ -148,24 +146,12 @@ def serve(
         timezone=ZoneInfo(settings.timezone),
         chat_active=chat_activity.is_active,
     )
-    memory_dir = settings.data_dir / "memory"
-    structured_file = memory_dir / "structured.md"
-    index_file = memory_dir / "index.json"
     daily_log = DailyLogService(
         DbDailyLog(db_file),
         SettingsService(db_file),
         ZoneInfo(settings.timezone),
     )
-    structured_memory = StructuredMemoryDoc(structured_file)
-    memory_index = MemoryIndexService(structured_memory.lines, daily_log.dates, index_file)
-    structured_memory.add_listener(memory_index.rebuild)
-    try:
-        memory_index.rebuild()
-    except (sqlite3.Error, OSError) as exc:
-        logger.error("记忆索引生成失败：%s", exc)
-        print(f"记忆索引生成失败：{exc}", file=sys.stderr)
-        return 1
-    logger.info("记忆索引已生成")
+    entries = MemoryEntryService(db_file)
     resource_dir = settings.data_dir / "resources"
     try:
         prepare_workspace(resource_dir)
@@ -193,12 +179,7 @@ def serve(
 
     shutdown = ShutdownController()
     event_bus = EventBus()
-    memory_writer = MemoryWriter(structured_memory)
-    memory_services = MemoryServices(
-        structured=structured_memory,
-        writer=memory_writer,
-        daily=daily_log,
-    )
+    memory_services = MemoryServices(entries=entries, daily=daily_log)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
@@ -206,7 +187,7 @@ def serve(
     review = ReviewService()
     file_service = FileService(
         ResourceResolver(settings.data_dir),
-        structured_memory,
+        entries,
         daily_log,
         skills,
         editor=review,
@@ -214,7 +195,11 @@ def serve(
         timezone=ZoneInfo(settings.timezone),
         limit_provider=lambda: subagent_limit(llm_service),
     )
-    subagent = SubAgent(llm_service, make_file_tools(file_service), review=review)
+    subagent = SubAgent(
+        llm_service,
+        [*make_file_tools(file_service), *make_memory_tools(entries)],
+        review=review,
+    )
     orchestrator = Orchestrator(
         subagent,
         DbAgentRuns(db_file),
@@ -225,6 +210,7 @@ def serve(
     )
     approvals = ApprovalRegistry()
     recollection = RecollectionService(orchestrator, daily_log)
+    recall = RecallService(daily_log)
     personas = PersonaService(
         settings.personas_dir,
         SettingsService(db_file),
@@ -258,13 +244,14 @@ def serve(
         templates,
         db_usage_sink(db_file),
         publisher,
-        structured=structured_memory,
+        memory=entries,
         timezone=ZoneInfo(settings.timezone),
         capabilities=merge_capabilities(capabilities, skills.summaries()),
         resources=default_resources(),
         orchestrator=orchestrator,
         approvals=approvals,
         recollection=recollection,
+        recall=recall,
         perception=perception,
         activity=chat_activity,
         interactions=interaction_service,

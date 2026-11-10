@@ -22,7 +22,7 @@ from module.chat.chat_service import ChatError, ChatRequest, ChatService, split_
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
 from module.memory.recollection_service import Recollection
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService, PersonaUnavailableError
@@ -135,7 +135,7 @@ def main() -> int:
         personas,
         load_templates(),
         db_usage_sink(db_file),
-        structured=StructuredMemoryDoc(settings.data_dir / "memory" / "structured.md"),
+        memory=MemoryEntryService(db_file),
         timezone=timezone,
         capabilities=load_capabilities(),
         recollection=SeededRecollection(yesterday),

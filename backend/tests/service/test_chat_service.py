@@ -39,7 +39,9 @@ from module.interaction.interaction_service import InteractionService
 from module.llm import DbUsageReader, LlmService, UsageService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import MemoryReadError, StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
+from module.memory.memory_service import MemoryReadError
+from module.memory.recall import RecallService
 from module.memory.recollection_service import FAILURE_PREFIX, Recollection
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
@@ -131,7 +133,8 @@ class Harness:
         counter_factory=None,
         trace=None,
         recollection=None,
-        structured=None,
+        recall=None,
+        memory=None,
     ):
         self.db_file = tmp_path / "pet.db"
         self.tmp_path = tmp_path
@@ -161,12 +164,13 @@ class Harness:
         self.events = events
         self.orchestrator = orchestrator
         self.interactions = interactions
-        self.structured = structured
+        self.memory = memory or MemoryEntryService(self.db_file)
         self.recollection = (
             recollection(self.daily, trace) if callable(recollection) else recollection
         )
         if self.recollection is not None:
             self.recollection.bind(self.daily, trace)
+        self.recall = recall(self.daily) if callable(recall) else recall
         self.chat = self.new_chat()
 
     def new_chat(self) -> ChatService:
@@ -185,7 +189,8 @@ class Harness:
             interactions=self.interactions,
             usage=UsageService(DbUsageReader(self.db_file)),
             recollection=self.recollection,
-            structured=self.structured,
+            recall=self.recall,
+            memory=self.memory,
         )
 
     def query(self, sql: str) -> list[tuple]:
@@ -217,17 +222,16 @@ def test_system_prompt_comes_first_and_contains_persona(tmp_path: Path):
     assert "你的名字是小桌" in first.content
 
 
-class BrokenStructured:
+class BrokenMemory:
     """模拟结构化记忆读取失败。"""
 
-    def lines(self) -> list[str]:
+    def load(self, **kwargs):
         raise MemoryReadError("坏了")
 
 
 def test_empty_structured_memory_adds_no_notice(tmp_path: Path):
     events = RecordingEvents()
-    structured = StructuredMemoryDoc(tmp_path / "memory" / "structured.md")
-    harness = Harness(tmp_path, [SHORT], events=events, structured=structured)
+    harness = Harness(tmp_path, [SHORT], events=events)
     result = ask(harness.chat, "你好")
 
     assert result.notices == ()
@@ -236,7 +240,7 @@ def test_empty_structured_memory_adds_no_notice(tmp_path: Path):
 
 def test_structured_memory_failure_keeps_the_reply_and_reports_a_notice(tmp_path: Path):
     events = RecordingEvents()
-    harness = Harness(tmp_path, [SHORT], events=events, structured=BrokenStructured())
+    harness = Harness(tmp_path, [SHORT], events=events, memory=BrokenMemory())
     result = ask(harness.chat, "你好")
 
     assert result.text == SHORT
@@ -878,6 +882,51 @@ def test_injected_fragments_carry_their_dates_and_the_citation_rule(tmp_path: Pa
     assert "[引用 日期]" in system
 
 
+class BrokenRecall:
+    def __init__(self, daily) -> None:
+        self._daily = daily
+
+    def recall(self, *args, **kwargs):
+        raise RuntimeError("召回坏了")
+
+
+def test_earlier_chat_is_recalled_into_the_context(tmp_path: Path):
+    harness = Harness(
+        tmp_path,
+        [SHORT],
+        clock=lambda tz: datetime(2026, 11, 9, 12, 0, tzinfo=tz),
+        recall=RecallService,
+    )
+    zone = ZoneInfo("Asia/Shanghai")
+    harness.daily.record_turn(
+        "今天玩了冰汽时代",
+        "冰汽时代太难了",
+        received_at=datetime(2026, 11, 7, 20, 0, tzinfo=zone),
+        replied_at=datetime(2026, 11, 7, 20, 0, 5, tzinfo=zone),
+    )
+
+    ask(harness.chat, "还记得冰汽时代吗")
+
+    system = harness.fake.calls[0][0].content
+    assert "【检索到的记忆】" in system
+    assert "[me] 冰汽时代太难了" in system
+    assert "[引用 日期]" in system
+
+
+def test_chat_survives_recall_failure(tmp_path: Path):
+    harness = Harness(
+        tmp_path,
+        [SHORT],
+        clock=lambda tz: datetime(2026, 11, 9, 12, 0, tzinfo=tz),
+        recall=BrokenRecall,
+    )
+
+    result = ask(harness.chat, "还记得冰汽时代吗")
+
+    assert result.text == SHORT
+    assert "【检索到的记忆】" not in harness.fake.calls[0][0].content
+
+
 def test_reply_with_only_citation_markers_is_a_failure(tmp_path: Path):
     marker = "[引用 2026-10-18]"
     harness = Harness(tmp_path, [marker, marker])
@@ -1021,6 +1070,65 @@ def test_dispatch_runs_the_plan_then_answers_with_chat(tmp_path: Path):
     assert logged[1] == ("assistant", "已写入")
     assert "[finished_plan]" not in logged[1][1]
     assert logged[2] == ("me", "记好啦。")
+
+
+DSML_DISPATCH = (
+    '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="dispatch">'
+    '<｜｜DSML｜｜ parameter name="plan" string="false">'
+    '[{"topic":"记忆写入","task":"记下主人喜欢猫"}]'
+    "</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+)
+
+
+def test_dsml_dispatch_runs_existing_plan_and_gate(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DSML_DISPATCH), "记好啦。"], orchestrator=orchestrator)
+    result = ask(harness.chat, "记一下我喜欢猫")
+
+    assert orchestrator.plans == [[PlanStep("记忆写入", "记下主人喜欢猫")]]
+    assert len(orchestrator.calls) == 1
+    assert result.text == "记好啦。"
+
+
+def test_dsml_dispatch_obeys_disabled_dispatch(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DSML_DISPATCH), "好的。"], orchestrator=orchestrator)
+    result = harness.chat.chat(ChatRequest(trigger_reason="主动问候", allow_dispatch=False))
+    assert result.text == "好的。"
+    assert orchestrator.plans == []
+    assert len(harness.fake.calls) == 2
+
+
+def test_dsml_dispatch_obeys_read_only_mode(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(DSML_DISPATCH), "好的。"], orchestrator=orchestrator)
+    harness.chat.chat(ChatRequest(trigger_reason="主动问候", read_only_dispatch=True))
+    assert orchestrator.read_only_flags == [True]
+
+
+def test_dsml_multiple_calls_retry_without_dispatch(tmp_path: Path):
+    doubled = DSML_DISPATCH.replace(
+        "</｜｜DSML｜｜ calls>",
+        DSML_DISPATCH.partition("<｜｜DSML｜｜ calls>")[2],
+    )
+    orchestrator = FakeOrchestrator()
+    harness = Harness(tmp_path, [Raw(doubled), "好的。"], orchestrator=orchestrator)
+    result = ask(harness.chat, "记一下")
+    assert result.text == "好的。"
+    assert orchestrator.plans == []
+    assert len(harness.fake.calls) == 2
+
+
+def test_second_dsml_dispatch_in_same_turn_is_rejected(tmp_path: Path):
+    orchestrator = FakeOrchestrator()
+    harness = Harness(
+        tmp_path,
+        [Raw(DSML_DISPATCH), Raw(DSML_DISPATCH), Raw(DSML_DISPATCH)],
+        orchestrator=orchestrator,
+    )
+    with pytest.raises(ChatError, match="不能再次派发"):
+        ask(harness.chat, "记一下我喜欢猫")
+    assert len(orchestrator.plans) == 1
 
 
 def test_dispatch_passes_the_current_turn_id_to_the_orchestrator(tmp_path: Path):

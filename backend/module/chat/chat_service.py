@@ -45,6 +45,7 @@ from module.agent.prompt import (
 from module.chat.activity import ChatActivity
 from module.chat.citations import CitedSource, resolve_sources, split_citations
 from module.chat.context import (
+    KIND_DAILY,
     AssembledContext,
     ContextBuilder,
     MemoryFragment,
@@ -56,7 +57,8 @@ from module.interaction.contracts import InteractionReader
 from module.llm import LlmService, LlmUnavailableError, UsageService
 from module.memory.contracts import DailyLogView
 from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import StructuredMemoryDoc
+from module.memory.entry_service import MemoryEntryService
+from module.memory.recall import RecallService
 from module.memory.recollection_service import RecollectionService
 from module.persona.persona_service import PersonaService, PersonaSnapshot, PersonaUnavailableError
 
@@ -278,7 +280,7 @@ class ChatService:
         usage_sink: UsageSink,
         events: ChatEvents | None = None,
         *,
-        structured: StructuredMemoryDoc | None = None,
+        memory: MemoryEntryService | None = None,
         timezone: tzinfo | None = None,
         clock: Callable[[tzinfo], datetime] | None = None,
         capabilities: Sequence[CapabilityDescription] = (),
@@ -290,6 +292,7 @@ class ChatService:
         interactions: InteractionReader | None = None,
         usage: UsageService | None = None,
         recollection: RecollectionService | None = None,
+        recall: RecallService | None = None,
     ) -> None:
         self._llm = llm
         self._daily_log = daily_log
@@ -297,7 +300,7 @@ class ChatService:
         self._events = events or NoChatEvents()
         self._personas = personas
         self._templates = templates
-        self._structured = structured
+        self._memory = memory
         self._timezone = timezone or DEFAULT_TIMEZONE
         self._clock = clock
         self._capabilities = tuple(capabilities)
@@ -309,6 +312,7 @@ class ChatService:
         self._interactions = interactions
         self._usage = usage
         self._recollection = recollection
+        self._recall = recall
         # 被动 query 的 session 级占位：同一时刻只处理一个用户回合（D-22）。
         self._turn_slot = threading.Lock()
         self._transcript = ChatTranscript(
@@ -379,6 +383,8 @@ class ChatService:
         persisted = user_text is None or current_record is not None
         # 回忆可能等待较久，落库之后、拼上下文之前等，跨零点则给新的一天补一次。
         recollection = self._await_recollection(snapshot, turn_id)
+        # 召回只读历史对话；失败或没有命中时静默退回调用方给的片段。
+        fragments = self._recall_fragments(request.fragments, user_text, received_at, snapshot.id)
         # 先构建 chat 系统提示词，再交给上下文构建器拼装历史与记忆（D2、Q4）。
         prompt = build_system_prompt(
             "chat",
@@ -391,7 +397,7 @@ class ChatService:
             snapshot.config,
             self._templates,
             self._timezone,
-            structured=self._structured,
+            memory=self._memory,
             clock=self._clock,
             capabilities=self._capabilities,
             resources=self._resources,
@@ -402,7 +408,7 @@ class ChatService:
         )
         assembled = builder.build(
             user_text,
-            request.fragments,
+            fragments,
             trigger_reason=trigger_reason,
             interaction_lines=self._interaction_lines(user_text is not None),
             received_at=received_at,
@@ -448,6 +454,28 @@ class ChatService:
             )
         finally:
             events.status("idle")
+
+    def _recall_fragments(
+        self,
+        provided: Sequence[MemoryFragment],
+        user_text: str | None,
+        received_at: datetime | None,
+        persona_id: str,
+    ) -> tuple[MemoryFragment, ...]:
+        """本轮召回：只读历史对话，命中失败或无结果时退回调用方片段。"""
+        if user_text is None or self._recall is None:
+            return tuple(provided)
+        today = (received_at or self._now()).date()
+        try:
+            hits = self._recall.recall(user_text, today=today, persona_id=persona_id)
+        except Exception:
+            logger.exception("记忆召回失败，本轮跳过")
+            return tuple(provided)
+        recalled = tuple(
+            MemoryFragment(kind=KIND_DAILY, date=hit.day, text=f"[{hit.role}] {hit.text}")
+            for hit in hits
+        )
+        return (*provided, *recalled)
 
     def _await_recollection(self, snapshot: PersonaSnapshot, turn_id: str | None) -> str:
         """等回忆就绪并返回可注入上下文的正文；跨零点则给新的一天补一次。"""

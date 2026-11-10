@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
+from module.files import token as snapshot_token
 from module.files.resolver import FileError
 
 MAX_FILE_BYTES = 2 * 1024 * 1024
@@ -41,6 +42,11 @@ class StagedSnapshot:
     @property
     def dirty(self) -> bool:
         return self.delete_file or self.change.staged_text != self.change.base_text
+
+    @property
+    def version(self) -> str:
+        """读取留底的版本摘要；base 被刷新即换令牌，旧令牌的编辑会被拒绝。"""
+        return snapshot_token.digest(self.change.path, self.change.base_text)
 
 
 @dataclass

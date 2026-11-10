@@ -22,7 +22,7 @@ EDIT_ACTIONS = (
     ACTION_INSERT,
     ACTION_DELETE,
 )
-WRITE_MODES = ("staged", "immediate", "read_only")
+WRITE_MODES = ("staged", "read_only")
 WRITE_ACTIONS = frozenset(EDIT_ACTIONS)
 
 DRAFT = "draft"
@@ -31,12 +31,11 @@ PERMANENT = "permanent"
 WORLD = "world"
 
 DRAFT_PATH = "resources/草稿本.md"
-STRUCTURED_PATH = "memory/structured.md"
 WORLD_PATH = "resources"
 
 _EXPECTED_WRITE_MODES = {
     DRAFT: "staged",
-    STRUCTURED: "immediate",
+    STRUCTURED: "read_only",
     PERMANENT: "read_only",
     WORLD: "staged",
 }
@@ -100,15 +99,15 @@ RESOURCES: Mapping[str, ResourceSpec] = MappingProxyType(
         STRUCTURED: ResourceSpec(
             id=STRUCTURED,
             label="结构化记忆",
-            path=STRUCTURED_PATH,
+            path=None,
             read_supports=READ_ACTIONS,
-            edit_supports=EDIT_ACTIONS,
-            write_mode="immediate",
+            edit_supports=(),
+            write_mode="read_only",
             requires_path=False,
             can_delete_file=False,
             description=(
-                "长期记忆文档；可编辑、追加、插入、替换和删除内容，"
-                "不能删除文件本体；写入受敏感信息限制"
+                "memory_structured 条目的只读视图：按分区列出条目 id、内容与 tags；"
+                "写入走 memory 工具的 add / enable / disable"
             ),
         ),
         PERMANENT: ResourceSpec(

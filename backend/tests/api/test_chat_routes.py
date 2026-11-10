@@ -19,6 +19,7 @@ from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.contracts import DailyLogRecord, DailyLogRole
 from module.memory.daily_log_service import DailyLogService
+from module.memory.entry_service import MemoryEntryService
 from module.memory.memory_service import MemoryReadError
 from module.memory.repository import DbDailyLog
 from module.persona.persona_service import PersonaService
@@ -87,7 +88,7 @@ class FakeChat:
         return AIMessage(content=outcome)
 
 
-def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None, structured=None):
+def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None, memory=None):
     db_file = tmp_path / "pet.db"
     conn = connect(db_file)
     migrate(conn)
@@ -112,7 +113,7 @@ def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None, struct
         load_templates(),
         db_usage_sink(db_file),
         BusEventPublisher(bus),
-        structured=structured,
+        memory=memory or MemoryEntryService(db_file),
     )
     app = create_app(TOKEN, llm_service=llm, event_bus=bus, chat_service=chat)
     return TestClient(app)
@@ -212,15 +213,15 @@ def test_chat_done_event_carries_every_utterance_of_the_turn(tmp_path: Path):
     assert done["messages"] == response.json()["messages"]
 
 
-class BrokenStructured:
+class BrokenMemory:
     """模拟结构化记忆读取失败。"""
 
-    def lines(self) -> list[str]:
+    def load(self):
         raise MemoryReadError("坏了")
 
 
 def test_memory_read_failure_keeps_the_reply_and_reports_a_notice(tmp_path: Path):
-    client = make_client(tmp_path, ["你好呀。"], structured=BrokenStructured())
+    client = make_client(tmp_path, ["你好呀。"], memory=BrokenMemory())
     with client.websocket_connect("/ws", headers=AUTH) as websocket:
         assert websocket.receive_json() == {"type": "status", "state": "idle"}
         assert websocket.receive_json()["type"] == "usage.panel.snapshot"
