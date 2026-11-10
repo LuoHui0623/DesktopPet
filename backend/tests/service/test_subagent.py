@@ -146,6 +146,69 @@ def test_tool_call_then_finish_succeeds(tmp_path: Path):
     assert "你好" in observation
 
 
+def test_dsml_tool_call_then_finish_uses_existing_tool_flow(tmp_path: Path):
+    reply = (
+        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="tool">'
+        '<｜｜DSML｜｜ parameter name="tool" string="true">echo</｜｜DSML｜｜ parameter>'
+        '<｜｜DSML｜｜ parameter name="args" string="false">{"text":"你好"}'
+        "</｜｜DSML｜｜ parameter></｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+    )
+    chat = ScriptedChat([reply, '{"action": "finish", "output": "回声：你好"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "回声", "请回声你好", "run-1")
+
+    assert result.ok is True
+    assert [step["action"] for step in result.steps] == ["tool", "finish"]
+    assert result.steps[0]["args"] == {"text": "你好"}
+    assert "你好" in chat.calls[1][-1].content
+
+
+def test_dsml_unavailable_tool_is_not_invoked(tmp_path: Path):
+    reply = (
+        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="boom">'
+        '<｜｜DSML｜｜ parameter name="text" string="true">x</｜｜DSML｜｜ parameter>'
+        "</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+    )
+    chat = ScriptedChat([reply, '{"action": "finish", "output": "好了"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "回声", "任务", "run-1")
+
+    assert result.ok is True
+    assert result.steps[0]["ok"] is False
+    assert "工具 boom 不可用" in chat.calls[1][-1].content
+
+
+def test_invalid_dsml_is_retried_without_executing_embedded_action(tmp_path: Path):
+    reply = (
+        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="unknown">'
+        '<｜｜DSML｜｜ parameter name="args" string="false">'
+        '{"action":"finish","output":"不应执行"}</｜｜DSML｜｜ parameter>'
+        "</｜｜DSML｜｜ calls>"
+    )
+    chat = ScriptedChat([reply, '{"action": "finish", "output": "好了"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "回声", "任务", "run-1")
+    assert result.ok is True
+    assert result.output == "好了"
+    assert [step["action"] for step in result.steps] == ["invalid", "finish"]
+    assert INVALID_HINT in chat.calls[1][-1].content
+
+
+def test_dsml_multiple_tool_calls_are_rejected_without_partial_execution(tmp_path: Path):
+    call = (
+        '<｜｜DSML｜｜ invoke name="echo">'
+        '<｜｜DSML｜｜ parameter name="text" string="true">x</｜｜DSML｜｜ parameter>'
+        "</｜｜DSML｜｜ invoke>"
+    )
+    reply = f"<｜｜DSML｜｜ calls>{call}{call}</｜｜DSML｜｜ calls>"
+    chat = ScriptedChat([reply, '{"action": "finish", "output": "好了"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_agent(llm).run(SKILL, "回声", "任务", "run-1")
+    assert result.ok is True
+    assert [step["action"] for step in result.steps] == ["invalid", "finish"]
+    assert INVALID_HINT in chat.calls[1][-1].content
+
+
 def test_tool_reads_the_task_identity_from_the_scope(tmp_path: Path):
     skill = Skill(name="身份", description="读取任务身份。", tools=("identity",))
     chat = ScriptedChat(
@@ -241,9 +304,9 @@ def test_two_json_reply_is_executed_as_its_first_action(tmp_path: Path):
     assert result.steps[0]["args"] == {"text": "看看"}
 
 
-def test_private_tool_marker_before_json_is_ignored():
+def test_incomplete_private_tool_marker_before_json_is_invalid():
     action = parse_action('<｜｜DSML｜｜ calls>\n{"action": "finish", "output": "x"}')
-    assert action == {"action": "finish", "output": "x"}
+    assert action is None
 
 
 def test_reply_with_only_private_markers_is_invalid():
@@ -599,6 +662,23 @@ def test_first_file_call_must_be_index(tmp_path: Path):
     assert "首次工具调用必须是 index" in blocked["error"]
     assert "首次工具调用必须是 index" in chat.calls[1][-1].content
     assert [step["ok"] for step in result.steps] == [False, True, True, True]
+
+
+def test_dsml_file_tool_cannot_skip_first_index(tmp_path: Path):
+    reply = (
+        '<｜｜DSML｜｜ calls><｜｜DSML｜｜ invoke name="read">'
+        '<｜｜DSML｜｜ parameter name="resource" string="true">world</｜｜DSML｜｜ parameter>'
+        '<｜｜DSML｜｜ parameter name="path" string="true">笔记.md</｜｜DSML｜｜ parameter>'
+        "</｜｜DSML｜｜ invoke></｜｜DSML｜｜ calls>"
+    )
+    calls: list = []
+    chat = ScriptedChat([reply, '{"action": "finish", "output": "停止"}'])
+    llm, _ = make_llm(tmp_path, chat)
+    result = make_file_agent(llm, calls).run(FILE_SKILL, "笔记", "读笔记", "run-1")
+    assert result.ok is True
+    assert calls == []
+    assert result.steps[0]["ok"] is False
+    assert "首次工具调用必须是 index" in chat.calls[1][-1].content
 
 
 def test_index_is_injected_when_the_skill_does_not_declare_it(tmp_path: Path):

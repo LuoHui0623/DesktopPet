@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from constants.speech import REPLY_MAX_ITEMS
+from module.agent.dsml import DsmlError, parse_dsml
 
 if TYPE_CHECKING:
     from module.agent.orchestrator import PlanStep
@@ -122,14 +123,23 @@ def parse_chat_output(content: str) -> ChatOutput:
     from module.agent.orchestrator import PlanError, parse_plan_data
 
     try:
-        data = json.loads(_extract_json(content))
-    except ValueError as exc:
-        if "{" in content or "}" in content:
-            raise ModelOutputError("回复不是合法的 JSON") from exc
-        texts = _plain_reply_texts(content)
-        if not texts:
-            raise ModelOutputError("回复不是合法的 JSON") from exc
-        return ChatOutput(kind="chat", texts=_reply_texts(list(texts)))
+        call = parse_dsml(content)
+    except DsmlError as exc:
+        raise ModelOutputError(f"DSML 调用不合法：{exc}") from exc
+    if call is not None:
+        if call.name != "dispatch" or set(call.parameters) != {"plan"}:
+            raise ModelOutputError("DSML 只支持包含 plan 的 dispatch 调用")
+        data = {"type": "dispatch", "plan": call.parameters["plan"]}
+    else:
+        try:
+            data = json.loads(_extract_json(content))
+        except ValueError as exc:
+            if "{" in content or "}" in content:
+                raise ModelOutputError("回复不是合法的 JSON") from exc
+            texts = _plain_reply_texts(content)
+            if not texts:
+                raise ModelOutputError("回复不是合法的 JSON") from exc
+            return ChatOutput(kind="chat", texts=_reply_texts(list(texts)))
     if not isinstance(data, dict) or not data:
         raise ModelOutputError("回复必须是 JSON 对象")
     if next(iter(data)) != "type":

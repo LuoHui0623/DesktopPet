@@ -23,6 +23,7 @@ from constants.agent import (
 from constants.path import PROMPTS_DIR
 from infra.llm.usage import usage_scope
 from module.agent.context import TaskContext, task_scope
+from module.agent.dsml import DsmlError, parse_dsml
 from module.agent.prompt import read_template
 from module.agent.review import ReviewService
 from module.agent.skills import Skill
@@ -42,7 +43,6 @@ Accept = Callable[[dict[str, Any]], "str | None"]
 
 logger = logging.getLogger("pet.agent.subagent")
 
-# 模型偶尔会漏出工具调用私有标记（如 <｜｜DSML｜｜ calls>），整段去掉后再找 JSON
 _PRIVATE_TAG = re.compile(
     r"<[^<>\n]{0,200}DSML[^<>\n]{0,200}>"
     r"|<[|｜][^<>\n]{0,200}[|｜]>"
@@ -79,6 +79,22 @@ class _Loop:
 
 
 def parse_action(text: str) -> dict[str, Any] | None:
+    try:
+        call = parse_dsml(text)
+    except DsmlError:
+        return None
+    if call is not None:
+        if call.name == "tool":
+            if set(call.parameters) != {"tool", "args"}:
+                return None
+            name = call.parameters["tool"]
+            args = call.parameters["args"]
+            if not isinstance(name, str) or not name.strip() or not isinstance(args, dict):
+                return None
+        else:
+            name = call.name
+            args = call.parameters
+        return {"action": "tool", "tool": name, "args": args}
     cleaned = _clean_reply(text)
     decoder = json.JSONDecoder()
     for index, char in enumerate(cleaned):
