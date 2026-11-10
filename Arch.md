@@ -3,7 +3,7 @@
 - 对应需求与技术选型：[桌面宠物PRD.md](桌面宠物PRD.md)
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD。
 - 后端架构：「目标分层职责」至「责任归属与迁移状态」定义目标职责、依赖规则与代表链路；「当前组件落点（迁移基线）」单独记录当前实现落点。除已实现的 LLM 配置解析与 client 装配外，其余目标仍是设计，不表示代码迁移已实施或获批；逐批计划与进度不由本架构文档维护。
-- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task` 且按任务内容路由技能，本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据。
+- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task` 且按任务内容路由技能，本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据；被动对话每轮按输入关键词只读召回早于当天的历史片段（排除当天、`assistant`、`event` 与 `回忆`），失败静默。
 
 ---
 
@@ -262,8 +262,15 @@ backend/
 │  │  └─ repository.py       # app_setting 持久化
 │  ├─ files/
 │  │  ├─ resolver.py         # 资源解析：ID/路径 → 运行时路径，穿越与链接外跳拒绝，草稿本归属修正
-│  │  ├─ service.py          # 八个文件动作：草稿本/小世界写动作进入草稿层，结构化记忆即时写入
-│  │  ├─ staging.py          # 草稿层：按主任务共享 base/staged、作者与写次数，per-path 锁与大小上限
+│  │  ├─ permissions.py      # 资源权限矩阵查询：按 (resource, action) 判定可读/可写/只读
+│  │  ├─ service.py          # 八个文件动作的稳定入口：五段式（校验 → 结算前置 → 路由 → 处理 → 收尾），锁、写入会话与令牌守卫留在此层
+│  │  ├─ handlers.py         # 资源专用处理器：ROUTES 路由表把 (resource, action) 分派到草稿本/小世界/结构化记忆/永久记忆/skill 五个处理器，含读取限流
+│  │  ├─ text.py             # 无状态文本层：行号视图、行区间定位与替换、grep 匹配排序、拼接与截断
+│  │  ├─ format.py           # 展示层：路径展示、字节与时间的中文格式化
+│  │  ├─ token.py            # 快照令牌：文本摘要 digest、读回执末尾的令牌行、编辑期 require_match 与 StaleSnapshot
+│  │  ├─ staging.py          # 草稿层：按主任务共享 base/staged、作者与写次数，令牌基准 version 由 base 派生，per-path 锁与大小上限
+│  │  ├─ outcome.py          # 结算结果枚举：per-file status 常量（提交/拒绝/冲突/失败/跳过）、SettleResult 与 SettlementOutcome
+│  │  ├─ observability.py    # 文件域可观测性：span/traced 装饰器记录阶段与耗时，session 解析与 event=files.action 的 key=value 字段拼接
 │  │  ├─ diff.py             # 差异派生：difflib 生成 hunk、按已接受 hunk 重算文本、base/磁盘/草稿三方合并
 │  │  └─ commit.py           # 唯一落盘入口：base 等值直写、三方合并、冲突区间回报、新建/删除分支与原子写入
 │  ├─ persona/
@@ -277,6 +284,7 @@ backend/
 │  ├─ memory/
 │  │  ├─ memory_service.py   # 结构化记忆（单文件纯文本，空文件初始化，行区间正则替换）读写、行号视图与 helper
 │  │  ├─ daily_log_service.py# 每日对话：写入、读取
+│  │  ├─ recall.py           # 每轮召回：输入关键词 → 早于当天的 master / me 记录（只读）
 │  │  ├─ daily_events.py     # 每日事件结构（从对话中提取）
 │  │  ├─ index.py            # 记忆索引生成：由代码生成，不手工编辑
 │  │  ├─ project.py          # 行与契约转换：DailyLogRow ↔ Record / Entry / View
@@ -289,7 +297,7 @@ backend/
 │  │  ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步；结算回执回注观察
 │  │  ├─ approval.py         # 审批：草案 → 推送前端 → 挂起等待；无超时，按任务/进程作废，支持挂起票据查询
 │  │  ├─ preview.py          # 预览投影：把 hunk 转成审批卡视图（新建/删除、作者、折叠）
-│  │  ├─ review.py           # 审批绑定：逐次读取开票；写后按文件流式结算，拒绝/失败/冲突回执并要求重新读取
+│  │  ├─ review.py           # 审批绑定：逐次读取开票；写后按文件流式结算并逐文件记 status，拒绝/失败/冲突回执并要求重新读取
 │  │  ├─ skills.py           # 技能注册表：登记技能名、说明书文件、工具清单与路由关键词
 │  │  ├─ workspace.py        # 启动准备：保证资源库目录与草稿本存在，已有内容不覆盖
 │  │  ├─ chat_system_prompt.py # Chat 主题注册表：Topic(id, category, render) 与正文常量，不读文件
@@ -518,7 +526,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 | **仓储（CRUD）** | `module/<域>/repository.py` | 各表的读写，只返回数据，不做规则判断；连接与事务原语来自 `infra/store/db.py` |
 | **结构化记忆读写、行号 helper、索引生成** | `module/memory/` | 记忆是 Pet 自身的数据，业务用例；文件 IO 在 `infra/files/` |
 | **文件读写与权限** | `infra/files/io.py`（原子写入等 IO 原语）、`infra/files/access.py`（底层路径白名单） | IO 与穿越防护技术细节 |
-| **受管资源与统一文件动作** | `constants/files.py`（资源注册表与权限矩阵）、`module/files/resolver.py`（ID/路径解析）、`module/files/service.py`（八个动作）、`module/agent/tools/files.py`（工具封装） | 业务规则：哪些资源可读写、路径如何归属、编辑冲突与永久记忆读取上限 |
+| **受管资源与统一文件动作** | `constants/files.py`（资源注册表与权限矩阵）、`module/files/resolver.py`（ID/路径解析）、`module/files/service.py`（八个动作的稳定入口）、`module/files/handlers.py`（`ROUTES` 路由表与五个资源处理器）、`module/files/text.py`（行级文本处理）、`module/files/format.py`（展示格式化）、`module/files/token.py`（快照令牌）、`module/files/outcome.py`（结算结果枚举）、`module/files/observability.py`（阶段日志与耗时）、`module/agent/tools/files.py`（工具封装） | 业务规则：哪些资源可读写、路径如何归属、编辑冲突与永久记忆读取上限 |
 | **sub agent 编排与 ReAct 循环** | `module/agent/orchestrator.py`、`subagent.py` | 业务编排，agent 只使用工具，不直接访问 infra |
 | **记忆写入与记忆来源** | `module/chat/citations.py`（引用过滤）、`module/agent/skills.py`（能力登记） | 业务规则：写不写由主 agent 决定；只有本次注入上下文中的记忆可作为来源 |
 | **技能说明书与统一文件工具** | `resources/skills/*.md`（说明书）、`module/agent/skills.py`（登记与解析）、`module/agent/tools/files.py`（`index` / `read` / `grep` / `edit`，写动作由 `edit.action` 区分） | 业务规则：主 agent 只见能力名，说明书由子代理按需查阅；所有资源共用一套动作与权限 |
@@ -604,6 +612,9 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
        │    结构化写入经 MemoryWriter：敏感信息被拒，成功后重建记忆索引
        │    草稿本与结构化记忆可按行编辑但不能删除文件本体；world 可新建、改写、删除文件
        │    草稿本/world 写入先暂存，结算批准后提交；磁盘已变时三方合并，冲突不覆盖
+       │    文件级 read 结果末尾附一行快照 token，该 token 传给 edit 后，编辑内容若基于旧版本
+       │    会被直接拒绝并提示重新 read；不传 token 时只校验磁盘是否漂移
+       │    结算按文件逐个给出 status（committed / rejected / conflict / failed / skipped）并回执
        │    永久记忆是只读虚拟资源，按 date 或 from/to 读取当前人设，单次结果不得超过
        │    子代理模型（consolidate）的 max_tokens
        └─ module/memory/index 重新生成记忆索引
@@ -991,6 +1002,7 @@ providers:
 - 数据库不可用时，线程输出到 stderr 并丢弃记录，日志调用本身不受影响。
 - `close()` 会封口当前批次，写完所有批次后返回；关闭之后的记录被忽略。
 - 注意：进程被强制结束（如 Windows 上的 `TerminateProcess`）时，尚未写入的记录会丢失，最多为一个未满批次的内容（默认最长 30 秒）。需要完整记录时应使用安全退出通道。
+- 结构化字段以 `key=value` 拼进 message 正文（`DbLogHandler` 只保存 `getMessage()`，不使用 `extra`）。文件域统一用 `event=files.action`（一次动作的阶段与耗时）与 `event=files.settle`（一次结算的汇总）两个事件名，并带 `session=<主任务 id>/<子任务 id>`，可据此串起一次编辑的完整链路。
 
 ### 测试
 - `pytest`，放在 `backend/tests/`，以 service 的纯逻辑为主，另有 api 与 infra 的测试。
