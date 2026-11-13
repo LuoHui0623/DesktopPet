@@ -7,7 +7,7 @@ AI 只经 ``add / enable / disable`` 触达这里；``update / merge`` 留给设
 import logging
 import sqlite3
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -35,8 +35,8 @@ from module.memory.sensitive import sensitive_reason
 
 logger = logging.getLogger("pet")
 
-# 上下文候选池上限（T-04 的账本只在此基础上做二次截断）。
-POOL_LIMIT = 100
+# 无 tags 条目的兜底分区：手改库或历史脏数据降级为空 tags 时仍有可读落点。
+UNCATEGORIZED = "未分类"
 
 
 class MemoryEntryError(Exception):
@@ -71,8 +71,12 @@ class MemoryEntryService:
         *,
         status: str | None = "enabled",
         tags_any: Sequence[str] = (),
-        limit: int | None = POOL_LIMIT,
+        limit: int | None = None,
     ) -> list[MemoryEntry]:
+        """读取条目；默认不设上限（全量注入不得静默截断，Q23）。
+
+        需要分页时由调用方显式传 ``limit``，服务层不替调用方决定截多少。
+        """
         conn = self._connect()
         try:
             return entry_rows(conn, status=status, tags_any=tags_any, limit=limit)
@@ -259,33 +263,92 @@ class MemoryEntryService:
         return connect(self._db_file)
 
 
+@dataclass
+class _Branch:
+    """有序 tags 树的一个节点；``first`` 是该路径首次出现的读入序号。"""
+
+    tag: str
+    first: int
+    children: dict[str, "_Branch"] = field(default_factory=dict)
+    values: list[tuple[int, MemoryEntry]] = field(default_factory=list)
+
+
 def render_entry_lines(
     entries: Sequence[MemoryEntry], *, include_disabled: bool = True
 ) -> list[str]:
-    """按第一个 tag 分组的纯文本视图；T-04 会用账本与卡片渲染替换这段临时格式。"""
-    groups: dict[str, list[MemoryEntry]] = {}
-    for entry in entries:
+    """按有序 tags 组装 Markdown 树（第六节第 24 条），聊天注入与文件虚拟视图共用。
+
+    一条记忆只对应一条有序路径：首个 tag 作 ``##`` 标题，其余 tag 用 ``\\t`` 分层；
+    相同有序路径的正文集中展示，不同顺序按各自路径分别展示、不因顺序筛除。
+    渲染只组织表述：不改写 ``content``、不丢路径语义，也不按重要性排序
+    （同层顺序＝读入顺序，确定性可复现）。
+    """
+    roots: dict[str, _Branch] = {}
+    for index, entry in enumerate(entries):
         if not include_disabled and entry.status_state == "disabled":
             continue
-        section = entry.tags[0] if entry.tags else "未分类"
-        groups.setdefault(section, []).append(entry)
+        path = tuple(tag for tag in entry.tags if tag) or (UNCATEGORIZED,)
+        _branch_at(roots, path, index).values.append((index, entry))
     lines: list[str] = []
-    for section, items in groups.items():
-        lines.append(f"## {section}")
-        lines.extend(_render_entry(entry) for entry in items)
+    for root in roots.values():
+        lines.append(f"## {root.tag}")
+        lines.extend(_render_root_body(root))
     return lines
 
 
-def _render_entry(entry: MemoryEntry) -> str:
-    suffix = " · ".join(entry.tags[1:])
-    state = "[已弃用]" if entry.status_state == "disabled" else ""
-    reason = (
-        f"（{entry.status_reason}）"
-        if entry.status_state == "disabled" and entry.status_reason
-        else ""
-    )
-    body = f"[#{entry.id}]{state} {entry.content}"
-    return f"{body}（{suffix}）{reason}" if suffix else f"{body}{reason}"
+def _branch_at(roots: dict[str, _Branch], path: Sequence[str], index: int) -> _Branch:
+    """沿路径下钻并补齐缺失节点；同层子节点保持首次出现顺序。"""
+    siblings = roots
+    branch: _Branch | None = None
+    for tag in path:
+        branch = siblings.get(tag)
+        if branch is None:
+            branch = _Branch(tag=tag, first=index)
+            siblings[tag] = branch
+        siblings = branch.children
+    assert branch is not None
+    return branch
+
+
+def _render_root_body(root: _Branch) -> list[str]:
+    """一级标签的正文：有子路径时与子节点并列，无子路径时单值成行、多值成列表。"""
+    if root.children:
+        return _render_items(root, 0)
+    labels = [_label(entry) for _, entry in root.values]
+    if len(labels) == 1:
+        return labels
+    return [f"- {label}" for label in labels]
+
+
+def _render_items(branch: _Branch, level: int) -> list[str]:
+    """正文与下级 tag 按首次出现顺序合并，整体缩进 ``level`` 个制表符。"""
+    pad = "\t" * level
+    rows: list[tuple[int, list[str]]] = [
+        (index, [f"{pad}- {_label(entry)}"]) for index, entry in branch.values
+    ]
+    rows.extend((child.first, _render_child(child, level)) for child in branch.children.values())
+    rows.sort(key=lambda row: row[0])
+    lines: list[str] = []
+    for _, chunk in rows:
+        lines.extend(chunk)
+    return lines
+
+
+def _render_child(child: _Branch, level: int) -> list[str]:
+    """非一级标签：末级与正文同行加粗，有下级时自身独占一行并继续下钻。"""
+    pad = "\t" * level
+    if not child.children:
+        labels = "、".join(_label(entry) for _, entry in child.values)
+        return [f"{pad}- **{child.tag}**：{labels}"]
+    return [f"{pad}- {child.tag}", *_render_items(child, level + 1)]
+
+
+def _label(entry: MemoryEntry) -> str:
+    """正文原样输出；停用条目只在人工视图里带标记，注入路径不会看到它。"""
+    if entry.status_state != "disabled":
+        return entry.content
+    reason = f"（{entry.status_reason}）" if entry.status_reason else ""
+    return f"{entry.content}[已弃用]{reason}"
 
 
 def _replace_tag(tags: Sequence[str], source: str, target: str) -> list[str]:

@@ -1,5 +1,8 @@
+"""文件服务契约：索引视图、读取、写动作入队、版本校验、占用与结算。"""
+
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import replace
@@ -12,20 +15,13 @@ from constants.agent import PERSONA_ACTIVE_KEY
 from constants.files import (
     DRAFT,
     PERMANENT,
-    RESOURCES,
     STRUCTURED,
     WORLD,
 )
 from infra.llm.tokens import TokenCount, TokenCountError
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.approval import (
-    ApprovalDraft,
-    ApprovalOutcome,
-    ApprovalRegistry,
-    AutoApprovalGate,
-    ReadApprovalRequest,
-)
+from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
 from module.agent.context import TaskContext, task_scope
 from module.agent.review import ReviewService
 from module.agent.skills import (
@@ -34,14 +30,13 @@ from module.agent.skills import (
     memory_retrieve_skill,
     memory_write_skill,
 )
-from module.chat.chat_service import EventApprovalGate, NoChatEvents
 from module.files.permissions import ResourcePermission, TaskPermissions, system_permissions
 from module.files.resolver import FileDenied, FileError, ResourceResolver
 from module.files.service import FileService, ModelLimit
-from module.files.staging import StagingStore
 from module.memory.contracts import DailyLogRecord, MemoryEntryCreate
 from module.memory.daily_log_service import DailyLogService
 from module.memory.entry_service import MemoryEntryService
+from module.memory.memory_service import MemoryWriteError
 from module.memory.repository import DbDailyLog
 from module.settings.settings_service import SettingsService
 
@@ -55,6 +50,7 @@ TASK = TaskContext(
     source="user",
     permissions=system_permissions(),
 )
+TOKEN_PATTERN = re.compile(r"快照 token：([0-9a-f]{12})")
 
 
 @pytest.fixture(autouse=True)
@@ -91,17 +87,16 @@ class RecordingGate:
         return {draft.run_id: ApprovalOutcome(self.approved, self.reason) for draft in drafts}
 
 
-class RecordingReadGate:
-    """记录逐次读取审批并按预设结果裁决。"""
+class FirstOnlyGate:
+    """只批准每批第一张卡片，用于验证部分批准。"""
 
-    def __init__(self, approved: bool = True, reason: str | None = None) -> None:
-        self.approved = approved
-        self.reason = reason or ("用户拒绝执行" if not approved else None)
-        self.requests: list[tuple[TaskContext, ReadApprovalRequest]] = []
+    def __init__(self) -> None:
+        self.calls: list[list[ApprovalDraft]] = []
 
-    def request_read(self, context: TaskContext, request: ReadApprovalRequest) -> ApprovalOutcome:
-        self.requests.append((context, request))
-        return ApprovalOutcome(self.approved, self.reason)
+    def request(self, plan_id: str, drafts) -> dict[str, ApprovalOutcome]:
+        batch = list(drafts)
+        self.calls.append(batch)
+        return {draft.run_id: ApprovalOutcome(index == 0) for index, draft in enumerate(batch)}
 
 
 def record(event_time: str, role: str, content: str, persona: str = "芙芙") -> DailyLogRecord:
@@ -133,36 +128,40 @@ def stack(tmp_path: Path):
     skills.register(memory_retrieve_skill())
     skills.register(draft_note_skill())
 
-    def build(
-        *,
-        max_tokens: int = 10000,
-        counter=None,
-        tokenizer: str = "estimate",
-        gate=None,
-        read_gate=None,
-        editor: ReviewService | None = None,
-        max_writes: int = 1,
-    ) -> FileService:
-        if editor is None:
-            editor = ReviewService(StagingStore(), max_writes=max_writes)
-            editor.bind(
-                TASK.main_task_id,
-                gate or AutoApprovalGate(),
-                model="test",
-                persona_id=TASK.persona_id,
-                persona_version=TASK.persona_version,
-            )
+    review = ReviewService()
+
+    def make(review_service: ReviewService, **limits) -> FileService:
         return FileService(
             ResourceResolver(data),
             entries,
             daily,
             skills,
-            editor=editor,
-            read_gate=read_gate,
+            sessions=review_service.sessions,
+            guard=review_service.guard,
             timezone=TZ,
-            limit_provider=lambda: ModelLimit(max_tokens, tokenizer),
-            counter_factory=(lambda _name: counter) if counter is not None else None,
+            limit_provider=lambda: ModelLimit(
+                limits.get("max_tokens", 10000), limits.get("tokenizer", "estimate")
+            ),
+            counter_factory=(lambda _name: limits["counter"]) if "counter" in limits else None,
         )
+
+    def bind(review_service: ReviewService, gate) -> None:
+        review_service.bind(
+            TASK.main_task_id,
+            gate,
+            model="test",
+            persona_id=TASK.persona_id,
+            persona_version=TASK.persona_version,
+            source=TASK.source,
+        )
+
+    bind(review, AutoApprovalGate())
+
+    def build(*, gate=None, review_service: ReviewService | None = None, **limits) -> FileService:
+        target = review_service or review
+        if gate is not None:
+            bind(target, gate)
+        return make(target, **limits)
 
     return {
         "tmp": tmp_path,
@@ -171,284 +170,224 @@ def stack(tmp_path: Path):
         "entries": entries,
         "daily": daily,
         "settings": settings,
+        "review": review,
         "service": build(),
         "build": build,
         "store": DbDailyLog(db_file),
     }
 
 
-def test_index_lists_resources_actions_and_skills(stack):
-    payload = json.loads(stack["service"].index())
-    assert payload["kind"] == "overview"
-    assert payload["next"] == "read"
-    assert [item["id"] for item in payload["resources"]] == [
-        DRAFT,
-        STRUCTURED,
-        PERMANENT,
-        WORLD,
+def settle(stack):
+    return stack["review"].finish_task(TASK.main_task_id)
+
+
+def token_of(text: str) -> str:
+    match = TOKEN_PATTERN.search(text)
+    assert match is not None, text
+    return match.group(1)
+
+
+def world(stack, name: str) -> Path:
+    return stack["data"] / "resources" / name
+
+
+# —— 索引 ——
+
+
+def test_index_files_lists_dir_resources_and_action_groups(stack):
+    payload = json.loads(stack["service"].index("FILES"))
+    support = payload["support"]
+    assert support["dir_resources"] == [WORLD]
+    assert [item["action"] for item in support["dir_actions"]] == [
+        "index",
+        "create_dir",
+        "delete_dir",
+        "create_file",
+        "delete_file",
     ]
-    by_id = {item["id"]: item for item in payload["resources"]}
-    for resource_id, spec in RESOURCES.items():
-        assert by_id[resource_id]["read_supports"] == list(spec.read_supports)
-        assert by_id[resource_id]["edit_supports"] == list(spec.edit_supports)
-        assert by_id[resource_id]["supports_edit"] is spec.supports_edit
-        assert by_id[resource_id]["write_mode"] == spec.write_mode
-        assert by_id[resource_id]["requires_path"] is spec.requires_path
-        assert by_id[resource_id]["can_delete_file"] is spec.can_delete_file
-    assert by_id[STRUCTURED]["read_required_before_edit"] is False
-    assert by_id[DRAFT]["read_required_before_edit"] is True
-    assert {"replace_lines", "replace_regex", "append", "insert", "delete"} <= set(
-        payload["actions"]
-    )
-    assert {item["name"] for item in payload["skills"]} >= {"记忆写入", "记忆检索", "自记笔记"}
-    assert "expect" in payload["parameters"]
-    assert "from/to" in payload["parameters"]
-    assert "max_tokens" in payload["limits"]
-    assert payload["persona"] == "芙芙"
+    assert [item["action"] for item in support["file_actions"]] == [
+        "read",
+        "grep",
+        "append",
+        "insert",
+        "replace_lines",
+        "replace_regex",
+        "delete_lines",
+    ]
+    assert "target：" in support["dir_actions"][0]["args"]
+    append = next(item for item in support["file_actions"] if item["action"] == "append")
+    assert "content：" in append["args"]
+    assert "path：" not in append["args"]
 
 
-def test_index_world_returns_tree_and_metadata(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("便签", encoding="utf-8")
+def test_index_world_directory_reports_types_paths_and_permissions(stack):
+    (world(stack, "笔记.md")).write_text("便签", encoding="utf-8")
+    (world(stack, "子目录")).mkdir()
     payload = json.loads(stack["service"].index(WORLD))
-    assert payload["kind"] == "directory"
-    assert payload["resource"] == WORLD
-    assert payload["write_mode"] == "staged"
-    paths = {item["path"] for item in payload["entries"]}
-    assert "草稿本.md" in paths
-    assert "笔记.md" in paths
+    assert payload["resource_id"] == WORLD
+    by_name = {item["name"]: item for item in payload["entries"]}
+    assert by_name["子目录"]["type"] == "dir"
+    assert by_name["子目录"]["path"] == f"子目录{os.sep}"
+    assert by_name["笔记.md"]["type"] == "file"
+    assert by_name["笔记.md"]["path"] == "笔记.md"
+    # 文件条目只投影 file 组动作；删除本体属于 dir 组的 delete_file。
+    assert by_name["笔记.md"]["action_permissions"] == [
+        "read",
+        "grep",
+        "append",
+        "insert",
+        "replace_lines",
+        "replace_regex",
+        "delete_lines",
+    ]
+    # 草稿本即使放在小世界目录里，也按草稿本规则计算权限。
+    assert "delete_file" not in by_name["草稿本.md"]["action_permissions"]
 
 
-def test_index_structured_reports_entries_tags_and_read_only_view(stack):
-    payload = json.loads(stack["service"].index(STRUCTURED))
-    assert payload["kind"] == "structured"
-    assert payload["entries"] == 2
-    assert payload["enabled"] == 2
-    assert payload["disabled"] == 0
-    assert payload["tags"] == ["主人信息"]
-    assert payload["read_only"] is True
-    assert payload["edit_supports"] == []
-    assert payload["supports_edit"] is False
-    assert payload["read_required_before_edit"] is False
+def test_index_subdirectory_and_rejects_file_or_read_only_targets(stack):
+    (world(stack, "子目录")).mkdir()
+    (world(stack, "子目录") / "更多.md").write_text("苹果汁", encoding="utf-8")
+    payload = json.loads(stack["service"].index("子目录"))
+    assert payload["resource_id"] == WORLD
+    assert [item["path"] for item in payload["entries"]] == ["更多.md"]
+
+    with pytest.raises(FileError, match="不是可索引目录"):
+        stack["service"].index("draft")
+    with pytest.raises(FileError, match="未注册的目录"):
+        stack["service"].index("笔记.md")
+    with pytest.raises(FileError, match="未注册的目录"):
+        stack["service"].index("不存在")
 
 
-def test_index_world_file_reports_metadata_and_missing_path_can_be_created(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("便签", encoding="utf-8")
-    existing = json.loads(stack["service"].index(WORLD, "笔记.md"))
-    assert existing["kind"] == "file"
-    assert existing["path"] == "笔记.md"
-    assert existing["exists"] is True
-    assert existing["lines"] == 1
-    assert existing["size"] == len("便签".encode())
-    assert existing["next"] == "read"
+def test_index_domains_list_skills_tools_and_memory(stack):
+    skills = json.loads(stack["service"].index("SKILLS"))
+    assert skills["domain"] == "SKILLS"
+    assert {item["name"] for item in skills["items"]} >= {"记忆写入", "记忆检索", "自记笔记"}
 
-    missing = json.loads(stack["service"].index(WORLD, "新笔记.md"))
-    assert missing["exists"] is False
-    assert missing["can_create"] is True
-    assert missing["read_required_before_edit"] is False
-    assert missing["next"] == "append"
-    assert missing["can_delete_file"] is True
+    tools = json.loads(stack["service"].index("TOOLS"))
+    assert tools["domain"] == "TOOLS"
+    assert {item["action"] for item in tools["items"]} == {
+        "read",
+        "grep",
+        "append",
+        "insert",
+        "replace_lines",
+        "replace_regex",
+        "delete_lines",
+    }
 
-
-def test_index_permanent_reports_persona_and_dates(stack):
-    stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "早")])
-    payload = json.loads(stack["service"].index(PERMANENT))
-    assert payload["kind"] == "permanent"
-    assert payload["resource"] == PERMANENT
-    assert payload["persona"] == "芙芙"
-    assert payload["read_only"] is True
-    assert payload["edit_supports"] == []
-    assert payload["supports_edit"] is False
-    assert "2026-10-18" in payload["dates"]
-    assert payload["limit"]["max_tokens"] == 10000
+    memory = json.loads(stack["service"].index("MEMORY"))
+    assert memory["domain"] == "MEMORY"
+    assert [item["name"] for item in memory["items"]] == [STRUCTURED, PERMANENT]
 
 
-def test_index_skill_returns_catalog_object(stack):
-    payload = json.loads(stack["service"].index("skill"))
-    assert payload["kind"] == "skills"
-    assert {item["name"] for item in payload["skills"]} >= {"记忆写入", "记忆检索", "自记笔记"}
+def test_index_reports_editing_status_for_own_and_other_tasks(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "二", path="笔记.md")
+
+    own = json.loads(service.index(WORLD))
+    status = next(item for item in own["entries"] if item["name"] == "笔记.md")["editing_status"]
+    assert status["state"] == "editing"
+    assert status["editing_by"] == {"task_id": TASK.main_task_id}
+
+    other = replace(TASK, subtask_id="sub-2", main_task_id="main-2")
+    with task_scope(other):
+        view = json.loads(service.index(WORLD))
+    status = next(item for item in view["entries"] if item["name"] == "笔记.md")["editing_status"]
+    assert status["state"] == "occupied"
+    assert status["notice"] == "可 read；编辑需等待"
 
 
-def test_read_files_returns_numbered_lines_and_ranges(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("一\n二\n三", encoding="utf-8")
-    assert stack["service"].read(WORLD, "笔记.md").startswith("1: 一\n2: 二\n3: 三")
-    assert stack["service"].read(WORLD, "笔记.md", line_ranges=[[2, 3]]).startswith("2: 二\n3: 三")
+# —— 读取 ——
 
 
-def test_read_structured_entries_and_skills(stack):
-    text = stack["service"].read(STRUCTURED)
-    lines = text.splitlines()
+def test_read_world_returns_numbered_body_and_token(stack):
+    world(stack, "笔记.md").write_text("一\n二\n三", encoding="utf-8")
+    text = stack["service"].read(WORLD, "笔记.md")
+    body, _, token_line = text.partition("\n\n")
+    assert body == "1: 一\n2: 二\n3: 三"
+    assert token_line.startswith("快照 token：")
+    ranged = stack["service"].read(WORLD, "笔记.md", line_ranges=[[2, 3]])
+    assert ranged.startswith("2: 二\n3: 三\n\n快照 token：")
+
+
+def test_read_missing_world_file_returns_only_the_snapshot_token(stack):
+    text = stack["service"].read(WORLD, "缺失.md")
+    assert text.startswith("快照 token：")
+    tracked = (
+        stack["review"]
+        .sessions.peek(TASK.main_task_id)
+        .tracked(str(world(stack, "缺失.md").resolve()))
+    )
+    assert tracked is not None and tracked.exists is False
+    assert stack["review"].sessions.peek(TASK.main_task_id).queue.entries() == ()
+
+
+def test_read_missing_virtual_file_is_reported(stack):
+    world(stack, "草稿本.md").unlink()
+    with pytest.raises(FileError, match="文件不存在"):
+        stack["service"].read(DRAFT)
+
+
+def test_read_directory_is_rejected(stack):
+    with pytest.raises(FileError, match="目标是目录"):
+        stack["service"].read(WORLD)
+
+
+def test_read_structured_skill_and_permanent(stack):
+    structured = stack["service"].read(STRUCTURED)
+    lines = structured.splitlines()
     assert lines[0] == "1: ## 主人信息"
     assert sum("名字：小李" in line for line in lines) == 1
-    assert sum("工作地点：杭州" in line for line in lines) == 1
-    assert stack["service"].read(STRUCTURED, line_ranges=[[1, 1]]) == "1: ## 主人信息"
     assert stack["service"].read("skill", name="记忆检索").startswith("# 记忆检索")
 
-
-def test_read_missing_file_is_reported(stack):
-    with pytest.raises(Exception, match="文件不存在"):
-        stack["service"].read(WORLD, "缺失.md")
-
-
-def test_append_creates_world_file_and_reports_lines(stack):
-    message = stack["service"].append(WORLD, "新文件内容\n第二行", path="新文件.md")
-    assert "1-2" in message
-    assert (stack["data"] / "resources" / "新文件.md").read_text(encoding="utf-8") == (
-        "新文件内容\n第二行\n"
-    )
+    stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "喜欢美式")])
+    permanent = stack["service"].read(PERMANENT, day="2026-10-18")
+    assert "[master]喜欢美式" in permanent
+    assert permanent.splitlines()[0].startswith("1: [2026-10-18 09:00:00]")
 
 
-def test_append_draft_keeps_existing_content(stack):
-    stack["service"].read(DRAFT)
-    stack["service"].append(DRAFT, "待办：续费")
-    assert (stack["data"] / "resources" / "草稿本.md").read_text(encoding="utf-8") == (
-        "# 草稿本\n待办：续费\n"
-    )
+def test_read_does_not_queue_or_settle(stack):
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    world(stack, "笔记.md").write_text("一\n", encoding="utf-8")
+    service.read(WORLD, "笔记.md")
+    service.read(WORLD, "笔记.md")
+    assert stack["review"].sessions.peek(TASK.main_task_id).queue.entries() == ()
+    assert gate.calls == []
 
 
-def test_structured_edit_is_rejected_as_read_only(stack):
-    with pytest.raises(FileDenied, match="不支持 append"):
-        stack["service"].append(STRUCTURED, "咖啡偏好\n喜欢美式")
-    with pytest.raises(FileDenied, match="不支持 delete"):
-        stack["service"].delete(STRUCTURED, line_ranges=[[1]])
-    assert len(stack["entries"].all()) == 2
+def test_read_reports_in_flight_entries(stack):
+    world(stack, "笔记.md").write_text("一\n二\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    text = service.read(WORLD, "笔记.md")
+    assert "本文件有 1 条在途改动，尚未写入磁盘" in text
+    assert "在 笔记.md 第 3 行前插入 1 行" in text
 
 
-def editable(stack):
-    """准备一份可编辑的小世界文件并完成首次读取。"""
-    path = stack["data"] / "resources" / "编辑.md"
-    path.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
-    service = stack["build"](max_writes=8)
-    service.read(WORLD, "编辑.md")
-    return service, path
+def test_read_reports_external_change_and_invalidates_intersecting_entries(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    target.write_text("一\n外部\n", encoding="utf-8")
+
+    text = service.read(WORLD, "笔记.md")
+
+    assert "已被外部修改（第 2 行）" in text
+    assert "已作废 1 条相交条目，保留 0 条" in text
+    assert "2: 外部" in text
+    assert gate.calls == []
 
 
-def test_insert_places_content_before_the_line(stack):
-    service, path = editable(stack)
-    message = service.insert(WORLD, 2, "新的一行", path="编辑.md")
-    assert "2-2" in message
-    service.insert(WORLD, 4, "末尾", path="编辑.md")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n新的一行\n工作地点：杭州\n末尾"
-
-
-def test_insert_out_of_range_is_rejected(stack):
-    service, path = editable(stack)
-    with pytest.raises(Exception, match="插入位置"):
-        service.insert(WORLD, 9, "越界", path="编辑.md")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
-
-
-def test_edit_replaces_multiple_ranges_and_checks_expectation(stack):
-    service, path = editable(stack)
-    message = service.edit(
-        WORLD,
-        line_ranges=[[1], [2]],
-        content="已替换",
-        path="编辑.md",
-        expect=["名字：小李", "工作地点：杭州"],
-    )
-    assert "1-2" in message
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "已替换\n已替换"
-
-
-def test_edit_expect_mismatch_does_not_write(stack):
-    service, path = editable(stack)
-    with pytest.raises(Exception, match="expect"):
-        service.edit(WORLD, line_ranges=[[1]], content="新", path="编辑.md", expect="旧")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
-
-
-def test_replace_matches_regex_inside_ranges(stack):
-    service, path = editable(stack)
-    service.replace(WORLD, [[2]], "杭州", "上海", path="编辑.md")
-    with pytest.raises(Exception, match="没有匹配"):
-        service.replace(WORLD, [[1, 2]], "北京", "深圳", path="编辑.md")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海"
-
-
-def test_replace_requires_line_ranges(stack):
-    service, path = editable(stack)
-    with pytest.raises(Exception, match="line_ranges"):
-        service.replace(WORLD, [], "杭州", "上海", path="编辑.md")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
-
-
-def test_delete_lines_keeps_the_file(stack):
-    service, path = editable(stack)
-    service.delete(WORLD, path="编辑.md", line_ranges=[[2]])
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李"
-
-
-def test_delete_expect_mismatch_does_not_write(stack):
-    service, path = editable(stack)
-    with pytest.raises(Exception, match="expect"):
-        service.delete(WORLD, path="编辑.md", line_ranges=[[2]], expect="旧内容")
-
-    service.editor.finish_task(TASK.main_task_id)
-
-    assert path.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州"
-
-
-def test_delete_world_file_is_allowed_but_draft_and_structured_are_not(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("便签", encoding="utf-8")
-    stack["service"].read(WORLD, "笔记.md")
-    stack["service"].delete(WORLD, path="笔记.md")
-    assert not target.exists()
-
-    with pytest.raises(Exception, match="不能删除文件本体"):
-        stack["service"].delete(DRAFT)
-    with pytest.raises(FileDenied, match="不支持 delete"):
-        stack["service"].delete(STRUCTURED)
-    assert (stack["data"] / "resources" / "草稿本.md").exists()
-
-
-def test_world_cannot_bypass_draft_file_delete_rule(stack):
-    with pytest.raises(Exception, match="不能删除文件本体"):
-        stack["service"].delete(WORLD, path="草稿本.md")
-
-
-def test_permanent_read_by_date_uses_active_persona(stack):
-    stack["store"].append(
-        [
-            record("2026-10-18T09:00:00+08:00", "master", "喜欢美式"),
-            record("2026-10-18T09:00:01+08:00", "assistant", "查到：常点美式"),
-            record("2026-10-18T09:00:02+08:00", "me", "记住啦"),
-            record("2026-10-18T09:00:03+08:00", "master", "别人说的", "其他人设"),
-            record("2026-10-18T09:00:04+08:00", "event", '{"type":"x"}'),
-        ]
-    )
-    text = stack["service"].read(PERMANENT, day="2026-10-18")
-    assert "[master]喜欢美式" in text
-    assert "[assistant]查到：常点美式" in text
-    assert "[me]记住啦" in text
-    assert "别人说的" not in text
-    assert "[event]事件：" in text
-    assert text.splitlines()[0].startswith("1: [2026-10-18 09:00:00]")
-
-
-def test_permanent_read_uses_task_persona_even_when_active_persona_differs(stack):
+def test_read_uses_the_task_persona_not_the_active_one(stack):
     stack["settings"].put(PERSONA_ACTIVE_KEY, "芙芙")
     stack["store"].append(
         [
@@ -456,60 +395,214 @@ def test_permanent_read_uses_task_persona_even_when_active_persona_differs(stack
             record("2026-10-18T09:00:01+08:00", "master", "当前人设的话", "芙芙"),
         ]
     )
-    task = TaskContext(
-        persona_id="小桌",
-        persona_version=2,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="system_auto",
-        permissions=system_permissions(),
-    )
+    task = replace(TASK, persona_id="小桌", persona_version=2, turn_id=None, source="system_auto")
     with task_scope(task):
         text = stack["service"].read(PERMANENT, day="2026-10-18")
-
     assert "任务人设的话" in text
     assert "当前人设的话" not in text
 
 
-def test_index_reports_the_task_persona(stack):
-    stack["settings"].put(PERSONA_ACTIVE_KEY, "芙芙")
-    task = TaskContext(
-        persona_id="小桌",
-        persona_version=1,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="user",
-        permissions=system_permissions(),
-    )
-    with task_scope(task):
-        payload = json.loads(stack["service"].index())
-
-    assert payload["persona"] == "小桌"
+# —— 写动作入队 ——
 
 
-def test_settlement_after_a_persona_switch_keeps_the_dispatch_snapshot(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n", encoding="utf-8")
+def test_append_requires_read_and_an_existing_file(stack):
+    world(stack, "笔记.md").write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    with pytest.raises(FileError, match="尚未读取"):
+        service.append(WORLD, "二", path="笔记.md")
+
+    service.read(WORLD, "缺失.md")
+    with pytest.raises(FileError, match="append 不新建文件"):
+        service.append(WORLD, "二", path="缺失.md")
+
+
+def test_append_stages_and_commits_only_after_settlement(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
     gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
+    service = stack["build"](gate=gate)
     service.read(WORLD, "笔记.md")
-    service.append(WORLD, "二", path="笔记.md")
-
-    # 用户此时切换当前人设；进行中的任务仍使用派发时快照。
-    stack["settings"].put(PERSONA_ACTIVE_KEY, "小桌")
-    payload = json.loads(service.index())
-
-    assert payload["persona"] == TASK.persona_id
+    message = service.append(WORLD, "三", path="笔记.md")
+    assert "已提出，尚未写入文件" in message
+    assert "等待 review 批准" in message
     assert target.read_text(encoding="utf-8") == "一\n二\n"
+    assert gate.calls == []
+
+    receipts = settle(stack)
+
+    assert target.read_text(encoding="utf-8") == "一\n二\n三\n"
+    assert receipts == ("结算：笔记.md 已提交 1 条改动。",)
     draft = gate.calls[0][1][0]
+    assert draft.model == "test"
+    assert draft.topic == "文件改动：笔记.md"
+    assert draft.task == "append 笔记.md"
     assert draft.persona_id == TASK.persona_id
-    assert draft.persona_version == TASK.persona_version
+    assert draft.previews[0].hunk_count == 1
+    assert draft.previews[0].hunks[0].added == ("三",)
+
+
+def test_append_to_draft_keeps_existing_content(stack):
+    service = stack["service"]
+    service.read(DRAFT)
+    service.append(DRAFT, "待办：续费")
+    assert world(stack, "草稿本.md").read_text(encoding="utf-8") == "# 草稿本\n"
+    settle(stack)
+    assert world(stack, "草稿本.md").read_text(encoding="utf-8") == "# 草稿本\n待办：续费\n"
+
+
+def test_create_file_needs_no_read_and_stages_until_settlement(stack):
+    target = world(stack, "新文件.md")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    message = service.create_file(WORLD, "新文件.md", "新内容\n第二行")
+    assert "新建文件" in message
+    assert not target.exists()
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "新内容\n第二行\n"
+    assert gate.calls[0][1][0].previews[0].created is True
+
+
+def test_create_file_rejects_existing_target(stack):
+    world(stack, "笔记.md").write_text("便签", encoding="utf-8")
+    with pytest.raises(FileError, match="已存在"):
+        stack["service"].create_file(WORLD, "笔记.md", "覆盖")
+
+
+def test_insert_places_content_before_line_and_validates_range(stack):
+    target = world(stack, "编辑.md")
+    target.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "编辑.md")
+    assert "插入 编辑.md" in service.insert(WORLD, 2, "新的一行", path="编辑.md")
+    with pytest.raises(FileError, match="插入位置 9 超出范围"):
+        service.insert(WORLD, 9, "越界", path="编辑.md")
+    # 插入位置以 H0 为依据；第 3 行不存在，等价于文末插入。
+    service.insert(WORLD, 3, "末尾", path="编辑.md")
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "名字：小李\n新的一行\n工作地点：杭州\n末尾"
+
+
+def test_replace_lines_replaces_ranges_and_checks_expectation(stack):
+    target = world(stack, "编辑.md")
+    target.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "编辑.md")
+    service.replace_lines(
+        WORLD,
+        [[1], [2]],
+        "已替换",
+        path="编辑.md",
+        expect=["名字：小李", "工作地点：杭州"],
+    )
+    with pytest.raises(MemoryWriteError, match="expect"):
+        service.replace_lines(WORLD, [[1]], "新", path="编辑.md", expect="旧")
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "已替换\n已替换"
+
+
+def test_replace_lines_out_of_range_is_rejected(stack):
+    world(stack, "编辑.md").write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "编辑.md")
+    with pytest.raises(FileError, match="行号超出范围"):
+        service.replace_lines(WORLD, [[2, 3]], "新", path="编辑.md")
+
+
+def test_replace_regex_replaces_only_inside_ranges(stack):
+    target = world(stack, "编辑.md")
+    target.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "编辑.md")
+    service.replace_regex(WORLD, [[2]], "杭州", "上海", path="编辑.md")
+    with pytest.raises(FileError, match="没有匹配"):
+        service.replace_regex(WORLD, [[1, 2]], "北京", "深圳", path="编辑.md")
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海"
+
+
+def test_delete_lines_keeps_the_file_and_checks_expectation(stack):
+    target = world(stack, "编辑.md")
+    target.write_text("名字：小李\n工作地点：杭州", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "编辑.md")
+    with pytest.raises(MemoryWriteError, match="expect"):
+        service.delete_lines(WORLD, [[2]], path="编辑.md", expect="旧内容")
+    service.delete_lines(WORLD, [[2]], path="编辑.md")
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "名字：小李"
+
+
+def test_delete_file_stages_and_removes_after_settlement(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("便签", encoding="utf-8")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    message = service.delete_file(WORLD, "笔记.md")
+    assert "删除文件" in message
+    assert target.exists()
+
+    settle(stack)
+
+    assert not target.exists()
+    assert gate.calls[0][1][0].previews[0].deleted is True
+
+
+def test_delete_file_requires_read(stack):
+    world(stack, "笔记.md").write_text("便签", encoding="utf-8")
+    with pytest.raises(FileError, match="尚未读取"):
+        stack["service"].delete_file(WORLD, "笔记.md")
+
+
+def test_read_only_and_draft_resources_reject_edits(stack):
+    service = stack["service"]
+    with pytest.raises(FileDenied, match="不支持 append"):
+        service.append(STRUCTURED, "咖啡偏好")
+    with pytest.raises(FileDenied, match="不支持 append"):
+        service.append(PERMANENT, "x")
+    service.read(WORLD, "草稿本.md")
+    with pytest.raises(FileDenied, match="不支持 delete_file"):
+        service.delete_file(WORLD, "草稿本.md")
+    assert stack["review"].sessions.peek(TASK.main_task_id).queue.entries() == ()
+
+
+# —— 目录动作 ——
+
+
+def test_create_dir_stages_and_commits(stack):
+    target = world(stack, "新目录")
+    message = stack["service"].create_dir(WORLD, "新目录")
+    assert "新建目录" in message
+    assert not target.exists()
+    settle(stack)
+    assert target.is_dir()
+
+
+def test_delete_dir_requires_an_empty_existing_directory(stack):
+    service = stack["service"]
+    with pytest.raises(FileError, match="目录不存在"):
+        service.delete_dir(WORLD, "不存在")
+
+    (world(stack, "非空")).mkdir()
+    (world(stack, "非空") / "a.md").write_text("a", encoding="utf-8")
+    with pytest.raises(FileError, match="目录非空"):
+        service.delete_dir(WORLD, "非空")
+
+    world(stack, "笔记.md").write_text("便签", encoding="utf-8")
+    with pytest.raises(FileError, match="不是目录"):
+        service.delete_dir(WORLD, "笔记.md")
+
+    (world(stack, "空目录")).mkdir()
+    service.delete_dir(WORLD, "空目录")
+    settle(stack)
+    assert not (world(stack, "空目录")).exists()
+
+
+# —— 权限与路径 ——
 
 
 def test_denied_read_does_not_include_file_content(stack):
-    target = stack["data"] / "resources" / "机密.md"
+    target = world(stack, "机密.md")
     target.write_text("不可泄露的正文\n", encoding="utf-8")
     resources = dict(system_permissions().resources)
     resources[WORLD] = ResourcePermission(actions=frozenset({"index"}), can_delete_file=False)
@@ -521,28 +614,18 @@ def test_denied_read_does_not_include_file_content(stack):
     assert "不可泄露的正文" not in str(exc.value)
 
 
-def test_index_projects_the_task_permission_intersection(stack):
+def test_index_support_projects_the_task_permission_intersection(stack):
     resources = dict(system_permissions().resources)
-    resources[DRAFT] = ResourcePermission(
-        actions=frozenset({"index", "read", "append"}), can_delete_file=False
+    resources[WORLD] = ResourcePermission(
+        actions=frozenset({"index", "read", "append", "create_file"}), can_delete_file=False
     )
-    task = TaskContext(
-        persona_id="芙芙",
-        persona_version=1,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="user",
-        permissions=TaskPermissions(resources),
-    )
-
+    task = replace(TASK, permissions=TaskPermissions(resources))
     with task_scope(task):
-        payload = json.loads(stack["service"].index())
+        support = json.loads(stack["service"].index("FILES"))["support"]
 
-    draft = next(item for item in payload["resources"] if item["id"] == DRAFT)
-    assert draft["read_supports"] == ["index", "read"]
-    assert draft["edit_supports"] == ["append"]
-    assert draft["supports_edit"] is True
+    assert support["dir_resources"] == [WORLD]
+    assert [item["action"] for item in support["dir_actions"]] == ["index", "create_file"]
+    assert [item["action"] for item in support["file_actions"]] == ["read", "append"]
 
 
 def test_task_permissions_deny_actions_outside_the_snapshot(stack):
@@ -550,101 +633,317 @@ def test_task_permissions_deny_actions_outside_the_snapshot(stack):
     resources[DRAFT] = ResourcePermission(
         actions=frozenset({"index", "read", "grep"}), can_delete_file=False
     )
-    task = TaskContext(
-        persona_id="芙芙",
-        persona_version=1,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="user",
-        permissions=TaskPermissions(resources),
-    )
-
+    task = replace(TASK, permissions=TaskPermissions(resources))
     with task_scope(task):
         with pytest.raises(FileDenied, match="不支持 append"):
             stack["service"].append(DRAFT, "内容")
 
 
-def test_task_permissions_deny_read_actions_outside_the_snapshot(stack):
-    resources = dict(system_permissions().resources)
-    resources[DRAFT] = ResourcePermission(actions=frozenset({"index"}), can_delete_file=False)
-    task = TaskContext(
-        persona_id="芙芙",
-        persona_version=1,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="user",
-        permissions=TaskPermissions(resources),
-    )
+def test_write_outside_whitelist_is_rejected(stack, tmp_path: Path):
+    outside = tmp_path / "outside.md"
+    with pytest.raises(FileError, match="不在授权资源内"):
+        stack["service"].append(WORLD, "越界", path=str(outside))
+    assert not outside.exists()
 
-    with task_scope(task):
-        with pytest.raises(FileDenied, match="不支持 read"):
-            stack["service"].read(DRAFT)
+    outside.write_text("外部原样\n", encoding="utf-8")
+    with pytest.raises(FileError, match="不在授权资源内"):
+        stack["service"].append(WORLD, "越界", path=str(outside))
+    assert outside.read_text(encoding="utf-8") == "外部原样\n"
 
 
-def test_file_body_delete_follows_the_task_permission_snapshot(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("便签", encoding="utf-8")
-    resources = dict(system_permissions().resources)
-    resources[WORLD] = ResourcePermission(
-        actions=system_permissions().actions_for(WORLD), can_delete_file=False
-    )
-    task = TaskContext(
-        persona_id="芙芙",
-        persona_version=1,
-        main_task_id="main-1",
-        subtask_id="sub-1",
-        turn_id=None,
-        source="user",
-        permissions=TaskPermissions(resources),
-    )
+def test_world_symlink_escape_is_rejected_before_any_content_is_read(stack, tmp_path: Path):
+    outside = tmp_path / "outside.md"
+    outside.write_text("外部机密\n", encoding="utf-8")
+    link = world(stack, "leak.md")
+    try:
+        os.symlink(outside, link)
+    except OSError:
+        pytest.skip("当前环境无法创建符号链接")
 
-    with task_scope(task):
-        with pytest.raises(FileDenied, match="不能删除文件本体"):
-            stack["service"].delete(WORLD, path="笔记.md")
+    with pytest.raises(FileError, match="不在授权资源内") as exc:
+        stack["service"].read(WORLD, "leak.md")
+    assert "外部机密" not in str(exc.value)
 
 
-def test_permanent_range_is_inclusive_and_normalizes_offsets(stack):
-    stack["store"].append(
-        [
-            record("2026-10-18T00:30:00+09:00", "master", "早于开始"),
-            record("2026-10-18T09:00:00+08:00", "master", "开始"),
-            record("2026-10-18T09:30:00+08:00", "master", "中间"),
-            record("2026-10-18T10:00:00+08:00", "master", "结束"),
-            record("2026-10-18T10:00:01+08:00", "master", "晚于结束"),
-        ]
-    )
-    text = stack["service"].read(
-        PERMANENT,
-        start_at="2026-10-18T09:00:00",
-        end_at="2026-10-18T10:00:00+08:00",
-    )
-    assert "开始" in text
-    assert "中间" in text
-    assert "结束" in text
-    assert "早于开始" not in text
-    assert "晚于结束" not in text
-    # +09:00 的 00:30 即 +08:00 的前一天 23:30，归一化后不应落在当天上午
-    assert "23:30:00" not in text
+def test_world_symlink_alias_to_draft_keeps_draft_rules(stack):
+    target = world(stack, "草稿本.md")
+    link = world(stack, "draft-alias.md")
+    try:
+        os.symlink(target, link)
+    except OSError:
+        pytest.skip("当前环境无法创建符号链接")
+
+    service = stack["service"]
+    text = service.read(WORLD, "draft-alias.md")
+    assert "草稿本" in text
+    with pytest.raises(FileDenied, match="不支持 delete_file"):
+        service.delete_file(WORLD, "draft-alias.md")
 
 
-def test_permanent_empty_range_is_reported(stack):
-    with pytest.raises(Exception, match="没有.*记录"):
-        stack["service"].read(PERMANENT, day="2026-10-01")
+# —— 版本与令牌 ——
 
 
-def test_permanent_read_requires_a_time_window(stack):
-    with pytest.raises(Exception, match="date 或 from/to"):
-        stack["service"].read(PERMANENT)
+def test_edit_after_external_change_is_rejected_without_touching_disk(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    target.write_text("一\n外部\n", encoding="utf-8")
+
+    with pytest.raises(FileError, match="在读取之后已被修改") as exc:
+        service.delete_lines(WORLD, [[1]], path="笔记.md")
+    assert "请重新 read 后再提出" in str(exc.value)
+    assert target.read_text(encoding="utf-8") == "一\n外部\n"
 
 
-def test_permanent_read_allows_exact_token_limit_and_rejects_more(stack):
+def test_stale_token_is_rejected_after_the_base_refreshes(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    stale = token_of(service.read(WORLD, "笔记.md"))
+    target.write_text("一\n二\n", encoding="utf-8")
+    current = token_of(service.read(WORLD, "笔记.md"))
+    assert stale != current
+
+    with pytest.raises(FileError, match="快照已变化"):
+        service.append(WORLD, "三", path="笔记.md", token=stale)
+
+    message = service.append(WORLD, "三", path="笔记.md", token=current)
+    assert "已提出" in message
+
+
+def test_disjoint_external_change_is_kept_and_remapped(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    target.write_text("零\n一\n二\n", encoding="utf-8")
+
+    text = service.read(WORLD, "笔记.md")
+    assert "已作废 0 条相交条目，保留 1 条" in text
+
+    settle(stack)
+    assert target.read_text(encoding="utf-8") == "零\n一\n二\n三\n"
+
+
+def test_conflict_at_settlement_reports_without_merging(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    target.write_text("外部改过\n", encoding="utf-8")
+
+    receipts = settle(stack)
+
+    assert target.read_text(encoding="utf-8") == "外部改过\n"
+    assert len(receipts) == 1
+    assert "笔记.md" in receipts[0]
+    assert "检测到哈希不一致" in receipts[0]
+    assert "相交改动未提交" in receipts[0]
+    assert "已提交" not in receipts[0]
+
+
+# —— 占用 ——
+
+
+def test_occupancy_blocks_other_tasks_write_but_not_read(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "二", path="笔记.md")
+    resolved = target.resolve()
+    assert stack["review"].guard.holder(resolved) == TASK.main_task_id
+
+    other = replace(TASK, subtask_id="sub-2", main_task_id="main-2")
+    with task_scope(other):
+        text = service.read(WORLD, "笔记.md")
+        assert "占用：可 read；编辑需等待" in text
+
+    outcome: dict[str, object] = {}
+
+    def run() -> None:
+        with task_scope(other):
+            try:
+                service.append(WORLD, "越界", path="笔记.md")
+            except Exception as exc:  # noqa: BLE001 - 线程内结果回传给主线程断言
+                outcome["error"] = exc
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    time.sleep(0.1)
+    assert worker.is_alive() is True
+    stack["review"].guard.cancel_wait(other.main_task_id)
+    worker.join(timeout=5)
+
+    error = outcome.get("error")
+    assert isinstance(error, FileError)
+    assert "等待占用已取消" in str(error)
+    assert target.read_text(encoding="utf-8") == "一\n"
+    stack["review"].guard.clear_wait(other.main_task_id)
+
+
+def test_commit_releases_occupancy_and_cancel_drops_the_session(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "二", path="笔记.md")
+    settle(stack)
+    assert stack["review"].guard.holder(target.resolve()) is None
+    assert stack["review"].sessions.peek(TASK.main_task_id) is None
+
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+    stack["review"].cancel(TASK.main_task_id)
+    assert stack["review"].guard.holder(target.resolve()) is None
+    assert stack["review"].sessions.peek(TASK.main_task_id) is None
+    assert target.read_text(encoding="utf-8") == "一\n二\n"
+
+
+# —— 审批与结算 ——
+
+
+def test_rejected_settlement_keeps_disk_and_returns_explicit_receipt(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    gate = RecordingGate(approved=False)
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "三", path="笔记.md")
+
+    receipts = settle(stack)
+
+    assert target.read_text(encoding="utf-8") == "一\n二\n"
+    assert receipts == ("结算：笔记.md 的 1 条改动被拒绝（用户拒绝执行）；未写入磁盘",)
+    assert len(gate.calls) == 1
+
+
+def test_partial_approval_commits_only_the_approved_entries(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    gate = FirstOnlyGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "甲", path="笔记.md")
+    service.append(WORLD, "乙", path="笔记.md")
+
+    receipts = settle(stack)
+
+    assert target.read_text(encoding="utf-8") == "一\n甲\n"
+    assert receipts == ("结算：笔记.md 已提交 1 条改动、驳回 1 条（用户拒绝执行）。",)
+
+
+def test_multi_file_settlement_reports_each_file_separately(stack):
+    first = world(stack, "甲.md")
+    second = world(stack, "乙.md")
+    first.write_text("a\n", encoding="utf-8")
+    second.write_text("b\n", encoding="utf-8")
+    service = stack["service"]
+
+    with task_scope(replace(TASK, subtask_id="sub-a")):
+        service.read(WORLD, "甲.md")
+        service.append(WORLD, "x", path="甲.md")
+    with task_scope(replace(TASK, subtask_id="sub-b")):
+        service.read(WORLD, "乙.md")
+        service.append(WORLD, "y", path="乙.md")
+
+    outcome = stack["review"].settle(TASK.main_task_id)
+
+    assert first.read_text(encoding="utf-8") == "a\nx\n"
+    assert second.read_text(encoding="utf-8") == "b\ny\n"
+    assert outcome.counts == {"committed": 2}
+    assert {result.path for result in outcome.results} == {"甲.md", "乙.md"}
+    assert all("已提交 1 条改动" in receipt for receipt in outcome.receipts)
+
+
+def test_settlement_without_a_binding_fails_with_a_receipt(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    review = ReviewService()
+    service = stack["build"](review_service=review)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "二", path="笔记.md")
+
+    outcome = review.settle(TASK.main_task_id)
+
+    assert outcome.counts == {"failed": 1}
+    assert "缺少审批通道" in outcome.receipts[0]
+    assert target.read_text(encoding="utf-8") == "一\n"
+
+
+def test_settlement_keeps_the_dispatch_persona_snapshot(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n", encoding="utf-8")
+    gate = RecordingGate()
+    service = stack["build"](gate=gate)
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "二", path="笔记.md")
+
+    stack["settings"].put(PERSONA_ACTIVE_KEY, "小桌")
+    settle(stack)
+
+    assert target.read_text(encoding="utf-8") == "一\n二\n"
+    draft = gate.calls[0][1][0]
+    assert draft.persona_id == TASK.persona_id
+    assert draft.persona_version == TASK.persona_version
+
+
+# —— 检索 ——
+
+
+def test_grep_searches_file_and_world_recursively(stack):
+    world(stack, "笔记.md").write_text("苹果\n香蕉\n苹果派", encoding="utf-8")
+    service = stack["service"]
+    assert service.grep("苹果", WORLD, "笔记.md") == "1: 苹果\n3: 苹果派"
+
+    (world(stack, "子目录")).mkdir()
+    (world(stack, "子目录") / "更多.md").write_text("苹果汁", encoding="utf-8")
+    found = service.grep("苹果", WORLD)
+    assert "笔记.md:1: 苹果" in found
+    assert "子目录/更多.md:1: 苹果汁" in found
+
+
+def test_grep_uses_approved_overlay_and_validates_the_pattern(stack):
+    target = world(stack, "笔记.md")
+    target.write_text("一\n二\n", encoding="utf-8")
+    service = stack["service"]
+    service.read(WORLD, "笔记.md")
+    service.append(WORLD, "独有内容", path="笔记.md")
+
+    assert service.grep("独有内容", WORLD) == "没有匹配的内容"
+
+    session = stack["review"].sessions.peek(TASK.main_task_id)
+    session.queue.approve(entry.entry_id for entry in session.queue.entries())
+    assert "笔记.md:3: 独有内容" in service.grep("独有内容", WORLD)
+    assert target.read_text(encoding="utf-8") == "一\n二\n"
+
+    with pytest.raises(MemoryWriteError, match="正则不合法"):
+        service.grep("(", WORLD)
+
+
+def test_grep_permanent_and_structured(stack):
+    stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "喜欢美式")])
+    service = stack["service"]
+    assert "美式" in service.grep("美式", PERMANENT, day="2026-10-18")
+    assert "名字：小李" in service.grep("小李", STRUCTURED)
+
+
+# —— 读取上限 ——
+
+
+def test_permanent_read_allows_exact_limit_and_rejects_more(stack):
     stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "早")])
     equal = stack["build"](max_tokens=10, counter=FixedCounter(10))
     assert equal.read(PERMANENT, day="2026-10-18")
 
     over = stack["build"](max_tokens=10, counter=FixedCounter(11, estimated=True))
-    with pytest.raises(Exception, match="超过") as exc:
+    with pytest.raises(FileError, match="超过单次读取上限") as exc:
         over.read(PERMANENT, day="2026-10-18")
     assert "估算" in str(exc.value)
 
@@ -652,425 +951,10 @@ def test_permanent_read_allows_exact_token_limit_and_rejects_more(stack):
 def test_permanent_read_reports_token_count_failure(stack):
     stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "早")])
     service = stack["build"](counter=FailingCounter())
-    with pytest.raises(Exception, match="计数失败"):
+    with pytest.raises(FileError, match="token 计数失败"):
         service.read(PERMANENT, day="2026-10-18")
 
 
-def test_permanent_is_read_only(stack):
-    with pytest.raises(Exception, match="不支持"):
-        stack["service"].append(PERMANENT, "x")
-    with pytest.raises(Exception, match="不支持"):
-        stack["service"].delete(PERMANENT)
-
-
-def test_grep_searches_file_and_world_recursively(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("苹果\n香蕉\n苹果派", encoding="utf-8")
-    assert stack["service"].grep("苹果", WORLD, "笔记.md") == "1: 苹果\n3: 苹果派"
-    (stack["data"] / "resources" / "子目录").mkdir()
-    (stack["data"] / "resources" / "子目录" / "更多.md").write_text("苹果汁", encoding="utf-8")
-    world = stack["service"].grep("苹果", WORLD)
-    assert "笔记.md:1: 苹果" in world
-    assert "子目录/更多.md:1: 苹果汁" in world
-
-
-def test_grep_permanent_and_invalid_pattern(stack):
-    stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "喜欢美式")])
-    text = stack["service"].grep("美式", PERMANENT, day="2026-10-18")
-    assert "美式" in text
-    with pytest.raises(Exception, match="正则"):
-        stack["service"].grep("(", WORLD)
-
-
-def test_write_outside_whitelist_is_rejected(stack, tmp_path: Path):
-    outside = tmp_path / "outside.md"
-    with pytest.raises(Exception, match="不在授权资源内"):
-        stack["service"].append(WORLD, "越界", path=str(outside))
-    assert not outside.exists()
-
-
-def test_external_existing_file_is_never_modified(stack, tmp_path: Path):
-    outside = tmp_path / "existing.md"
-    outside.write_text("外部原样\n", encoding="utf-8")
-
-    with pytest.raises(Exception, match="不在授权资源内"):
-        stack["service"].append(WORLD, "越界", path=str(outside))
-
-    assert outside.read_text(encoding="utf-8") == "外部原样\n"
-
-
-def test_world_symlink_escape_is_rejected_before_any_content_is_read(stack, tmp_path: Path):
-    outside = tmp_path / "outside.md"
-    outside.write_text("外部机密\n", encoding="utf-8")
-    link = stack["data"] / "resources" / "leak.md"
-    try:
-        os.symlink(outside, link)
-    except OSError:
-        pytest.skip("当前环境无法创建符号链接")
-
-    with pytest.raises(Exception, match="不在") as exc:
-        stack["service"].read(WORLD, "leak.md")
-
-    assert "外部机密" not in str(exc.value)
-
-
-def test_world_symlink_alias_to_draft_keeps_draft_rules(stack):
-    target = stack["data"] / "resources" / "草稿本.md"
-    link = stack["data"] / "resources" / "draft-alias.md"
-    try:
-        os.symlink(target, link)
-    except OSError:
-        pytest.skip("当前环境无法创建符号链接")
-
-    service = stack["build"](max_writes=8)
-    text = service.read(WORLD, "draft-alias.md")
-
-    assert "草稿本" in text
-    with pytest.raises(FileDenied, match="不能删除文件本体"):
-        service.delete(WORLD, path="draft-alias.md")
-
-
-def test_world_write_is_staged_without_touching_disk_until_settlement(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n二\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    message = service.append(WORLD, "三", path="笔记.md")
-    assert "已暂存" in message
-    assert "尚未写入文件" in message
-    assert target.read_text(encoding="utf-8") == "一\n二\n"
-    assert gate.calls == []
-
-    text = service.read(WORLD, "笔记.md")
-    assert "1: 一" in text
-    assert "3: 三" in text
-    assert target.read_text(encoding="utf-8") == "一\n二\n三\n"
-    assert len(gate.calls) == 1
-    draft = gate.calls[0][1][0]
-    assert draft.model == "test"
-    assert draft.previews[0].hunk_count == 1
-    assert draft.previews[0].hunks[0].added == ("三",)
-
-
-def test_unread_before_write_is_rejected(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("便签", encoding="utf-8")
-    service = stack["build"](max_writes=8)
-    with pytest.raises(FileError, match="尚未读取"):
-        service.edit(WORLD, [[1]], "新", path="笔记.md")
-    with pytest.raises(FileError, match="尚未读取"):
-        service.delete(WORLD, path="笔记.md")
-
-
-def test_creating_a_new_world_file_does_not_require_read(stack):
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    message = service.append(WORLD, "新内容", path="新文件.md")
-    assert "已暂存" in message
-    target = stack["data"] / "resources" / "新文件.md"
-    assert not target.exists()
-    service.index(WORLD)
-    assert target.read_text(encoding="utf-8") == "新内容\n"
-
-
-def test_rejected_settlement_keeps_disk_and_returns_explicit_receipt(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n二\n", encoding="utf-8")
-    gate = RecordingGate(approved=False)
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    service.append(WORLD, "三", path="笔记.md")
-    text = service.read(WORLD, "笔记.md")
-    assert target.read_text(encoding="utf-8") == "一\n二\n"
-    assert "被拒绝" in text
-    assert "结算" in text
-    assert "1: 一" in text
-    assert len(gate.calls) == 1
-
-
-def test_external_conflict_reads_the_current_disk_and_rebuilds_the_base(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n二\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    service.edit(WORLD, [[2]], "草稿", path="笔记.md")
-    target.write_text("一\n外部\n", encoding="utf-8")
-
-    text = service.read(WORLD, "笔记.md")
-
-    assert "冲突" in text
-    assert "重新 read" in text
-    assert "1: 一" in text
-    assert "2: 外部" in text
-    assert target.read_text(encoding="utf-8") == "一\n外部\n"
-
-    service.append(WORLD, "尾", path="笔记.md")
-    service.index(WORLD)
-    assert target.read_text(encoding="utf-8") == "一\n外部\n尾\n"
-
-
-def test_disjoint_external_change_is_merged_on_settlement(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n二\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    service.append(WORLD, "三", path="笔记.md")
-    target.write_text("零\n一\n二\n", encoding="utf-8")
-
-    text = service.read(WORLD, "笔记.md")
-
-    assert "1: 零" in text
-    assert "4: 三" in text
-    assert target.read_text(encoding="utf-8") == "零\n一\n二\n三\n"
-
-
-def test_switching_file_settles_the_previous_staged_file(stack):
-    first = stack["data"] / "resources" / "甲.md"
-    second = stack["data"] / "resources" / "乙.md"
-    first.write_text("a\n", encoding="utf-8")
-    second.write_text("b\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "甲.md")
-    service.append(WORLD, "x", path="甲.md")
-    service.read(WORLD, "乙.md")
-    assert first.read_text(encoding="utf-8") == "a\nx\n"
-    assert len(gate.calls) == 1
-    assert gate.calls[0][1][0].previews[0].path == "甲.md"
-
-
-def test_write_limit_settles_the_same_file(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=2)
-    service.read(WORLD, "笔记.md")
-    service.append(WORLD, "二", path="笔记.md")
-    assert gate.calls == []
-    service.append(WORLD, "三", path="笔记.md")
-    assert len(gate.calls) == 1
-    assert target.read_text(encoding="utf-8") == "一\n二\n三\n"
-
-
-def test_delete_file_body_is_staged_and_committed_after_approval(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("便签", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    message = service.delete(WORLD, path="笔记.md")
-    assert "已暂存" in message
-    assert "标记删除" in message
-    assert target.exists()
-    service.index(WORLD)
-    assert not target.exists()
-    preview = gate.calls[0][1][0].previews[0]
-    assert preview.deleted is True
-
-
-def test_grep_overlays_another_subtasks_staged_text(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n二\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-    service.read(WORLD, "笔记.md")
-    service.append(WORLD, "独有内容", path="笔记.md")
-    other = TaskContext(
-        persona_id=TASK.persona_id,
-        persona_version=TASK.persona_version,
-        main_task_id=TASK.main_task_id,
-        subtask_id="sub-2",
-        turn_id=TASK.turn_id,
-        source="user",
-        permissions=system_permissions(),
-    )
-    with task_scope(other):
-        found = service.grep("独有内容", WORLD)
-    assert "笔记.md:3: 独有内容" in found
-    assert target.read_text(encoding="utf-8") == "一\n二\n"
-    assert gate.calls == []
-
-
-def test_structured_never_enters_staging(stack):
-    service = stack["build"](max_writes=8)
-    with pytest.raises(FileDenied, match="不支持 append"):
-        service.append(STRUCTURED, "咖啡偏好")
-    assert service.editor.pending(TASK.main_task_id) == ()
-
-
-def test_multi_file_settlement_keeps_successes_and_reports_the_conflict(stack):
-    first = stack["data"] / "resources" / "甲.md"
-    second = stack["data"] / "resources" / "乙.md"
-    first.write_text("a\n", encoding="utf-8")
-    second.write_text("b\n", encoding="utf-8")
-    gate = RecordingGate()
-    service = stack["build"](gate=gate, max_writes=8)
-
-    with task_scope(replace(TASK, subtask_id="sub-a")):
-        service.read(WORLD, "甲.md")
-        service.append(WORLD, "x", path="甲.md")
-    with task_scope(replace(TASK, subtask_id="sub-b")):
-        service.read(WORLD, "乙.md")
-        service.edit(WORLD, [[1]], "草稿", path="乙.md")
-
-    assert first.read_text(encoding="utf-8") == "a\n"
-    assert second.read_text(encoding="utf-8") == "b\n"
-    second.write_text("外部改过\n", encoding="utf-8")
-
-    receipts = service.editor.finish_task(TASK.main_task_id)
-
-    assert first.read_text(encoding="utf-8") == "a\nx\n"
-    assert second.read_text(encoding="utf-8") == "外部改过\n"
-    assert len(receipts) == 1
-    assert "乙.md" in receipts[0]
-    assert "冲突" in receipts[0]
-    assert service.editor.pending(TASK.main_task_id) == ()
-
-
-def test_user_index_read_grep_each_request_one_read_approval(stack):
-    (stack["data"] / "resources" / "笔记.md").write_text("便签内容\n", encoding="utf-8")
-    read_gate = RecordingReadGate()
-    service = stack["build"](read_gate=read_gate, max_writes=8)
-
-    service.index()
-    service.read(WORLD, "笔记.md")
-    service.grep("便签", WORLD, "笔记.md")
-
-    assert len(read_gate.requests) == 3
-    contexts = [context for context, _ in read_gate.requests]
-    assert all(context.source == "user" for context in contexts)
-    requests = [request for _, request in read_gate.requests]
-    assert [request.action for request in requests] == ["index", "read", "grep"]
-    assert requests[0].topic == "读取资源总览"
-    assert requests[1].resource == WORLD
-    assert requests[1].path == "笔记.md"
-    assert requests[1].topic == "读取：world/笔记.md"
-    assert "pattern='便签'" in requests[2].parameters
-    assert "limit=100" in requests[2].parameters
-
-
-def test_read_approval_summarizes_ranges_and_permanent_window(stack):
-    stack["store"].append([record("2026-10-18T09:00:00+08:00", "master", "今天喝了咖啡")])
-    read_gate = RecordingReadGate()
-    service = stack["build"](read_gate=read_gate, max_writes=8)
-
-    service.read(WORLD, "草稿本.md", line_ranges=[[1, 1]])
-    service.read(PERMANENT, day="2026-10-18")
-
-    assert "line_ranges=[[1, 1]]" in read_gate.requests[0][1].parameters
-    assert "date=2026-10-18" in read_gate.requests[1][1].parameters
-    assert read_gate.requests[1][1].resource == PERMANENT
-
-
-def test_rejected_read_returns_a_failure_receipt_without_establishing_the_base(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("一\n", encoding="utf-8")
-    read_gate = RecordingReadGate(approved=False)
-    service = stack["build"](read_gate=read_gate, max_writes=8)
-
-    with pytest.raises(FileError, match="未获批准"):
-        service.read(WORLD, "笔记.md")
-
-    assert len(read_gate.requests) == 1
-    assert target.read_text(encoding="utf-8") == "一\n"
-    # 读取未发生，因此没有建立基准；后续写仍按未读拒绝。
-    with pytest.raises(FileError, match="尚未读取"):
-        service.edit(WORLD, [[1]], "二", path="笔记.md")
-
-
-def test_read_approval_failure_is_reported_as_a_failure_receipt(stack):
-    class BrokenReadGate:
-        def request_read(self, context, request):
-            raise RuntimeError("审批通道不可用")
-
-    service = stack["build"](read_gate=BrokenReadGate(), max_writes=8)
-    with pytest.raises(FileError, match="读取审批失败"):
-        service.index()
-
-
-def test_system_auto_reads_skip_approval_but_keep_permission_checks(stack):
-    read_gate = RecordingReadGate()
-    service = stack["build"](read_gate=read_gate, max_writes=8)
-    auto = TaskContext(
-        persona_id=TASK.persona_id,
-        persona_version=TASK.persona_version,
-        main_task_id=TASK.main_task_id,
-        subtask_id="sub-auto",
-        turn_id=None,
-        source="system_auto",
-        permissions=system_permissions(),
-    )
-    with task_scope(auto):
-        service.index()
-        service.read(WORLD, "草稿本.md")
-    assert read_gate.requests == []
-
-    resources = dict(system_permissions().resources)
-    resources[DRAFT] = ResourcePermission(actions=frozenset({"index"}), can_delete_file=False)
-    denied = TaskContext(
-        persona_id=TASK.persona_id,
-        persona_version=TASK.persona_version,
-        main_task_id=TASK.main_task_id,
-        subtask_id="sub-auto",
-        turn_id=None,
-        source="system_auto",
-        permissions=TaskPermissions(resources),
-    )
-    with task_scope(denied), pytest.raises(FileDenied, match="不支持 read"):
-        service.read(DRAFT)
-    assert read_gate.requests == []
-
-
-def test_cancelled_read_ticket_returns_a_receipt_and_the_task_can_continue(stack):
-    target = stack["data"] / "resources" / "笔记.md"
-    target.write_text("机密正文\n", encoding="utf-8")
-    registry = ApprovalRegistry()
-    gate = EventApprovalGate(NoChatEvents(), registry)
-    editor = ReviewService(StagingStore(), max_writes=8)
-    editor.bind(
-        TASK.main_task_id,
-        gate,
-        model="test",
-        persona_id=TASK.persona_id,
-        persona_version=TASK.persona_version,
-        source="user",
-    )
-    service = stack["build"](editor=editor, read_gate=editor)
-    outcome: dict[str, object] = {}
-
-    def run() -> None:
-        with task_scope(TASK):
-            try:
-                outcome["text"] = service.read(WORLD, "笔记.md")
-            except Exception as exc:  # noqa: BLE001 - 线程内结果回传给主线程断言
-                outcome["error"] = exc
-
-    worker = threading.Thread(target=run)
-    worker.start()
-    deadline = time.monotonic() + 5
-    tickets = ()
-    while time.monotonic() < deadline:
-        tickets = registry.pending_tickets()
-        if tickets:
-            break
-        time.sleep(0.01)
-
-    assert tickets
-    assert tickets[0].draft.action == "read"
-    assert registry.cancel_task(TASK.main_task_id)
-    worker.join(timeout=5)
-
-    assert worker.is_alive() is False
-    error = outcome.get("error")
-    assert isinstance(error, FileError)
-    assert "任务已取消" in str(error)
-    assert "机密正文" not in str(error)
-    assert target.read_text(encoding="utf-8") == "机密正文\n"
-
-    # 拒绝/取消只影响该次调用；任务继续，但未读到的文件不能被编辑。
-    with task_scope(TASK):
-        with pytest.raises(FileError, match="尚未读取"):
-            service.edit(WORLD, [[1]], "新", path="笔记.md")
-        assert "已暂存" in service.append(WORLD, "新内容", path="新文件.md")
-    assert not (stack["data"] / "resources" / "新文件.md").exists()
+def test_permanent_read_requires_a_time_window(stack):
+    with pytest.raises(FileError, match="date 或 from/to"):
+        stack["service"].read(PERMANENT)

@@ -1,15 +1,16 @@
 """本地假模型服务：提供 OpenAI 兼容的 chat/completions 接口，供端到端验证使用。
 
 回复规则固定：
-- 子代理起草“记住主人的喜好”主题时，直接提交一份声明 edit 的草案。
-- 子代理执行“记住主人的喜好”主题时，先 index（资源 structured），再 edit(append)；
-  收到观察后直接结束，观察里带失败原因时就把原因当作结论如实回报。任务里带“改成”时
-  改用 edit(replace_regex) 在行区间内正则替换。
+- 子代理起草“记住主人的喜好”主题时，直接提交一份声明 memory 工具的草案。
+- 子代理执行“记住主人的喜好”主题时，先 index（target 为 MEMORY）看领域清单，再 read
+  资源 structured，然后用 memory(add) 写入；收到观察后直接结束，观察里带失败原因时就把原因
+  当作结论如实回报。结构化读取视图暂不展示条目 id，因此这里不做弃旧改写，只验证新增与复用。
 - 子代理起草“回忆过去的对话”主题时，提交一份声明 index 与 read 的草案；执行时按说明书走
-  ReAct：先 index（resource 为 skill），再 read（资源 skill）打开说明书，再 index
-  （资源 structured）看清单，再 read（资源 structured）读结构化记忆，最后返回片段。
-- 子代理起草“记下待办”主题时，提交一份声明 read 与 edit 的草案；执行时先
-  index 与 read 看草稿本，再 edit(append) 把新条目加到末尾。
+  ReAct：先 index（target 为 SKILLS）看说明书清单，再 read（资源 skill）打开说明书，
+  再 read（资源 structured）读结构化记忆，最后返回片段。
+- 子代理起草“记下待办”主题时，提交一份声明 read 与 append 的草案；执行时先
+  index（target 为 FILES）看文件域，再 read 资源 draft 看草稿本，最后用 append
+  把新条目加到末尾。
 - 主对话中，用户说“请记住…”时返回只含一项「记住主人的喜好」的合法 dispatch，模拟主 agent
   自主决定写入记忆（写不写由主 agent 判断，不再靠关键词触发）。
 - 主对话中，用户说“检索测试”时返回只含一项「回忆过去的对话」的合法 dispatch。
@@ -34,12 +35,9 @@ NOTE_TOPIC = "记下待办"
 DRAFT_MARK = "提交草案"
 DRAFT_CONTENT = "把「喜欢美式咖啡，不加糖」追加到结构化记忆。"
 WRITE_FINISH = "我记住啦：喜欢美式咖啡，不加糖"
-REPLACE_MARK = "改成"
-REPLACE_DRAFT = "把结构化记忆里的「只喝热美式」改成「只喝冰美式」。"
-REPLACE_FINISH = "改好啦：只喝冰美式"
 NOTE_TRIGGER = "记一下"
 NOTE_DRAFT = "先读草稿本，再把「周五问主人要不要续费」追加进去。"
-NOTE_DRAFT_TOOLS = ["read", "edit"]
+NOTE_DRAFT_TOOLS = ["read", "append"]
 NOTE_ENTRY = "周五问主人要不要续费"
 NOTE_FINISH = "记到草稿本了：周五问主人要不要续费"
 
@@ -160,32 +158,41 @@ def _tool_action(name: str, args: dict) -> str:
     return json.dumps({"action": "tool", "tool": name, "args": args}, ensure_ascii=False)
 
 
+def _listing_domain(content: str) -> str:
+    """读取 index 回执里的领域名；回执不是 JSON 时返回空串。"""
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return ""
+    return str(data.get("domain") or "") if isinstance(data, dict) else ""
+
+
 def _retrieve_step(body: dict) -> str:
     """按说明书走：先 index 看清单，再读技能说明书，最后按索引读结构化记忆。"""
     seen = _observations(body)
     last = seen[-1] if seen else None
     if last is None:
-        return _tool_action("index", {"resource": "skill"})
+        return _tool_action("index", {"target": "SKILLS"})
     if last.get("ok") is False:
         return json.dumps(
             {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
         )
     content = str(last.get("content") or "")
-    if last.get("action") == "index" and "skills" in content:
+    if last.get("action") == "index" and _listing_domain(content) == "SKILLS":
         return _tool_action("read", {"resource": "skill", "name": RETRIEVE_SKILL})
     if last.get("action") == "read" and content.startswith("#"):
-        return _tool_action("index", {"resource": "structured"})
+        return _tool_action("read", {"resource": "structured"})
     if last.get("action") == "index":
         return _tool_action("read", {"resource": "structured"})
     return json.dumps({"action": "finish", "output": RETRIEVE_FINISH}, ensure_ascii=False)
 
 
 def _note_step(body: dict) -> str:
-    """按说明书走：先 index 发现资源，再读草稿本现状，最后用 edit(append) 追加。"""
+    """按说明书走：先 index 看文件域，再读草稿本现状，最后用 append 追加。"""
     seen = _observations(body)
     last = seen[-1] if seen else None
     if last is None:
-        return _tool_action("index", {"resource": "draft"})
+        return _tool_action("index", {"target": "FILES"})
     if last.get("ok") is False:
         return json.dumps(
             {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
@@ -194,9 +201,8 @@ def _note_step(body: dict) -> str:
         return _tool_action("read", {"resource": "draft"})
     if last.get("action") == "read":
         return _tool_action(
-            "edit",
+            "append",
             {
-                "action": "append",
                 "resource": "draft",
                 "content": f"- {NOTE_ENTRY}",
             },
@@ -215,10 +221,8 @@ def _reply_text(body: dict) -> str:
             tools, content = NOTE_DRAFT_TOOLS, NOTE_DRAFT
         elif f"【{RETRIEVE_TOPIC}】" in system:
             tools, content = ["index", "read"], RETRIEVE_DRAFT
-        elif REPLACE_MARK in system:
-            tools, content = ["edit"], REPLACE_DRAFT
         else:
-            tools, content = ["edit"], DRAFT_CONTENT
+            tools, content = ["index", "read", "memory"], DRAFT_CONTENT
         return json.dumps(
             {"action": "draft", "content": content, "tools": tools}, ensure_ascii=False
         )
@@ -228,27 +232,22 @@ def _reply_text(body: dict) -> str:
         return _retrieve_step(body)
     if f"【{WRITE_TOPIC}】" in system:
         seen = _observations(body)
-        if not seen:
-            return _tool_action("index", {"resource": "structured"})
-        if seen[-1].get("action") == "index":
-            if REPLACE_MARK in system:
-                return _tool_action(
-                    "edit",
-                    {
-                        "action": "replace_regex",
-                        "resource": "structured",
-                        "line_ranges": [[1, 2]],
-                        "pattern": "热美式",
-                        "content": "冰美式",
-                    },
-                )
-            return _tool_action(
-                "edit",
-                {"action": "append", "resource": "structured", "content": "喜欢美式咖啡，不加糖"},
+        last = seen[-1] if seen else None
+        if last is None:
+            return _tool_action("index", {"target": "MEMORY"})
+        if last.get("ok") is False:
+            return json.dumps(
+                {"action": "finish", "output": str(last.get("error") or "")}, ensure_ascii=False
             )
-        fallback = REPLACE_FINISH if REPLACE_MARK in system else WRITE_FINISH
+        if last.get("action") == "index":
+            return _tool_action("read", {"resource": "structured"})
+        if last.get("action") == "read":
+            return _tool_action(
+                "memory",
+                {"action": "add", "content": "喜欢美式咖啡，不加糖", "tags": ["饮品", "咖啡"]},
+            )
         return json.dumps(
-            {"action": "finish", "output": _observation_error(body) or fallback},
+            {"action": "finish", "output": _observation_error(body) or WRITE_FINISH},
             ensure_ascii=False,
         )
     if "你好" in last_user:

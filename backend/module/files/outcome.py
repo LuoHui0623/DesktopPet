@@ -19,7 +19,6 @@ class SettleResult:
     status: str
     path: str = ""
     hunks: int = 0
-    merged: bool = False
     reason: str | None = None
     receipt: str = ""
 

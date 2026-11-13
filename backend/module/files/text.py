@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Sequence
 from pathlib import Path
 
-from infra.files import io
 from module.files.resolver import FileError
 from module.memory.memory_service import (
     MemoryReadError,
@@ -26,7 +25,7 @@ def text_state(text: str) -> tuple[list[str], bool]:
 
 def lines_of(path: Path) -> list[str]:
     """只切行、不保留末尾状态，供检索等只关心行内容的场景。"""
-    return text_state(io.read_text(path))[0]
+    return text_state(read_text(path))[0]
 
 
 def join_text(lines: Sequence[str], trailing: bool) -> str:
@@ -35,18 +34,23 @@ def join_text(lines: Sequence[str], trailing: bool) -> str:
     return f"{body}\n" if trailing and body else body
 
 
-def read_text(path: Path) -> str:
-    """读取整份文本并统一换行；非 UTF-8 文件转成可展示的错误。"""
+def normalize_bytes(raw: bytes) -> str:
+    """`utf-8-sig` 解码去 BOM，并把换行统一为 `\\n`；解码失败明确报错。"""
     try:
-        return io.read_text(path).replace("\r\n", "\n").replace("\r", "\n")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise FileError(f"不是 UTF-8 文本：{path.name}") from exc
+        raise FileError(f"不是 UTF-8 文本：{exc}") from exc
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def read_text(path: Path) -> str:
+    """读取整份文本并按版本口径归一；非 UTF-8 文件转成可展示的错误。"""
+    return normalize_bytes(path.read_bytes())
 
 
 def read_lines(path: Path) -> tuple[list[str], bool]:
     """索引只关心行数与末尾换行状态，故这里不包装解码错误。"""
-    normalized = io.read_text(path).replace("\r\n", "\n").replace("\r", "\n")
-    return text_state(normalized)
+    return text_state(read_text(path))
 
 
 def require_file(path: Path) -> Path:

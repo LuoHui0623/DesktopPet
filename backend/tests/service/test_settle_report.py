@@ -1,7 +1,8 @@
-"""结算结果枚举：提交/拒绝/冲突/失败各自可分辨，回执文本逐字不变。"""
+"""结算结果枚举：提交/拒绝/冲突/失败各自可分辨，回执与实现逐字一致。"""
 
 from pathlib import Path
 
+from constants.files import LINES_REPLACE
 from module.agent.approval import ApprovalOutcome, AutoApprovalGate
 from module.agent.review import ReviewService
 from module.files.outcome import (
@@ -13,14 +14,12 @@ from module.files.outcome import (
     SettlementOutcome,
     SettleResult,
 )
-from module.files.staging import StagingStore
 
 TASK = "main-1"
 SUB = "sub-1"
-KEY = "world:笔记.md"
 BASE = "名字：小李\n工作地点：杭州\n"
 STAGED = "名字：小李\n工作地点：上海\n"
-DRIFT = "名字：小李\n工作地点：北京\n"
+DRIFT = "别人改过\n"
 
 
 class _Gate:
@@ -39,6 +38,27 @@ class _Gate:
         }
 
 
+def stage(review: ReviewService, target: Path, text: str = BASE, content: str = "工作地点：上海"):
+    session = review.sessions.for_task(TASK)
+    tracked = session.track(
+        resource="world",
+        path=target.name,
+        abs_path=str(target.resolve()),
+        text=text,
+        exists=True,
+    )
+    return session.queue.propose(
+        resource="world",
+        path=tracked.path,
+        abs_path=tracked.abs_path,
+        op=LINES_REPLACE,
+        source_action="replace_lines",
+        range_lines=(2, 3),
+        content=(content,),
+        author=SUB,
+    )
+
+
 def build(
     tmp_path: Path,
     gate: _Gate | None = None,
@@ -49,7 +69,7 @@ def build(
 ):
     target = tmp_path / "笔记.md"
     target.write_text(BASE, encoding="utf-8")
-    review = ReviewService(StagingStore(), max_writes=8)
+    review = ReviewService()
     if bind:
         review.bind(
             TASK,
@@ -59,17 +79,8 @@ def build(
             persona_version=1,
             source="user",
         )
-    review.establish(
-        TASK,
-        resource="world",
-        key=KEY,
-        display="笔记.md",
-        abs_path=target,
-        text=BASE,
-        created=False,
-    )
     if record:
-        review.record(TASK, SUB, KEY, "replace_lines", STAGED, False)
+        stage(review, target)
     if disk is not None:
         target.write_text(disk, encoding="utf-8")
     return review, target
@@ -78,14 +89,13 @@ def build(
 def test_committed_result_carries_status_path_and_hunks(tmp_path: Path):
     review, target = build(tmp_path)
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     assert isinstance(outcome, SettlementOutcome)
     assert [result.status for result in outcome.results] == [STATUS_COMMITTED]
     result = outcome.results[0]
     assert result.path == "笔记.md"
     assert result.hunks == 1
-    assert result.merged is False
     assert result.needs_model is False
     assert outcome.needs_model is False
     assert target.read_text(encoding="utf-8") == STAGED
@@ -94,66 +104,82 @@ def test_committed_result_carries_status_path_and_hunks(tmp_path: Path):
 def test_committed_receipt_text_unchanged(tmp_path: Path):
     review, _ = build(tmp_path)
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
-    assert outcome.receipts == ("结算：笔记.md 已提交 1 处改动。",)
+    assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动。",)
 
 
 def test_rejected_result_marks_model_attention(tmp_path: Path):
     review, target = build(tmp_path, _Gate(approved=False))
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     result = outcome.results[0]
     assert result.status == STATUS_REJECTED
+    assert result.reason == "用户拒绝执行"
     assert outcome.needs_model is True
-    assert "的修改被拒绝" in outcome.receipts[0]
+    assert outcome.receipts == ("结算：笔记.md 的 1 条改动被拒绝（用户拒绝执行）；未写入磁盘",)
     assert target.read_text(encoding="utf-8") == BASE
 
 
-def test_conflict_result_records_reason(tmp_path: Path):
+def test_conflict_result_records_reason_and_spans(tmp_path: Path):
     review, target = build(tmp_path, disk=DRIFT)
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     result = outcome.results[0]
     assert result.status == STATUS_CONFLICT
-    assert result.reason is not None
-    assert "提交冲突" in result.reason
+    assert result.reason == "检测到哈希不一致"
+    assert outcome.receipts == (
+        "结算：笔记.md 检测到哈希不一致（第 1-2 行）；"
+        "作废 1 条相交条目，保留 0 条；相交改动未提交，请重新 read 后再提出",
+    )
     assert outcome.needs_model is True
-    assert "冲突区间" in outcome.receipts[0]
     assert target.read_text(encoding="utf-8") == DRIFT
+
+
+def test_conflict_receipt_does_not_claim_the_overwrite_was_prevented(tmp_path: Path):
+    review, _ = build(tmp_path, disk=DRIFT)
+
+    receipt = review.settle(TASK).receipts[0]
+
+    assert "检测到哈希不一致" in receipt
+    assert "避免了覆盖" not in receipt
+    assert "已阻止" not in receipt
 
 
 def test_failed_result_when_binding_missing(tmp_path: Path):
     review, target = build(tmp_path, bind=False)
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     result = outcome.results[0]
     assert result.status == STATUS_FAILED
-    assert result.reason == "缺少审批通道，暂存草稿无法结算"
-    assert outcome.receipts == ("结算：笔记.md 未提交：缺少审批通道，暂存草稿无法结算",)
+    assert result.reason == "缺少审批通道，待审条目无法结算"
+    assert outcome.receipts == ("结算：未提交：缺少审批通道，待审条目无法结算",)
     assert outcome.needs_model is True
     assert target.read_text(encoding="utf-8") == BASE
 
 
-def test_failed_result_when_gate_raises(tmp_path: Path):
-    review, _ = build(tmp_path, _Gate(error=RuntimeError("通道断开")))
+def test_gate_failure_is_reported_as_rejection_with_its_own_reason(tmp_path: Path):
+    review, target = build(tmp_path, _Gate(error=RuntimeError("通道断开")))
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     result = outcome.results[0]
-    assert result.status == STATUS_FAILED
-    assert result.reason is not None
-    assert "审批失败" in result.reason
+    assert result.status == STATUS_REJECTED
+    assert result.reason == "审批通道异常，未获批准"
     assert outcome.needs_model is True
+    assert outcome.receipts == (
+        "结算：笔记.md 的 1 条改动被拒绝（审批通道异常，未获批准）；未写入磁盘",
+    )
+    assert target.read_text(encoding="utf-8") == BASE
 
 
 def test_clean_snapshot_yields_no_results(tmp_path: Path):
     review, _ = build(tmp_path, record=False)
 
-    outcome = review.settle(TASK, KEY)
+    outcome = review.settle(TASK)
 
     assert outcome.results == ()
     assert outcome.receipts == ()
@@ -181,31 +207,45 @@ def test_skip_status_never_needs_model():
     assert SettleResult(STATUS_FAILED).needs_model is True
 
 
-def test_finish_task_still_returns_only_model_receipts(tmp_path: Path):
+def test_finish_task_returns_receipts_and_releases_the_session(tmp_path: Path):
     review, target = build(tmp_path)
 
-    assert review.finish_task(TASK) == ()
+    receipts = review.finish_task(TASK)
+
+    assert receipts == ("结算：笔记.md 已提交 1 条改动。",)
     assert target.read_text(encoding="utf-8") == STAGED
+    assert review.sessions.peek(TASK) is None
+    assert review.pending(TASK).empty is True
 
 
-def test_pending_receipts_survive_multi_file_settlement(tmp_path: Path):
+def test_multi_file_settlement_reports_each_file(tmp_path: Path):
     review, first = build(tmp_path)
     second = tmp_path / "计划.md"
     second.write_text(BASE, encoding="utf-8")
-    review.establish(
-        TASK,
+    session = review.sessions.for_task(TASK)
+    tracked = session.track(
         resource="world",
-        key="world:计划.md",
-        display="计划.md",
-        abs_path=second,
+        path="计划.md",
+        abs_path=str(second.resolve()),
         text=BASE,
-        created=False,
+        exists=True,
     )
-    review.record(TASK, SUB, "world:计划.md", "replace_lines", STAGED, False)
+    session.queue.propose(
+        resource="world",
+        path=tracked.path,
+        abs_path=tracked.abs_path,
+        op=LINES_REPLACE,
+        source_action="replace_lines",
+        range_lines=(2, 3),
+        content=("工作地点：上海",),
+        author=SUB,
+    )
 
-    outcomes = (review.settle(TASK, KEY), review.settle(TASK, "world:计划.md"))
+    outcome = review.settle(TASK)
 
-    assert [outcome.results[0].path for outcome in outcomes] == ["笔记.md", "计划.md"]
-    assert all(outcome.results[0].status == STATUS_COMMITTED for outcome in outcomes)
+    assert [result.path for result in outcome.results] == ["笔记.md", "计划.md"]
+    assert all(result.status == STATUS_COMMITTED for result in outcome.results)
+    assert outcome.counts == {STATUS_COMMITTED: 2}
+    assert len(outcome.receipts) == 2
     assert first.read_text(encoding="utf-8") == STAGED
     assert second.read_text(encoding="utf-8") == STAGED

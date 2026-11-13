@@ -1,23 +1,25 @@
+"""审批服务契约：逐条开票、预览、冲突分区、取消与并发占用。"""
+
 import threading
 import time
 from pathlib import Path
 
+from constants.files import LINES_REPLACE
 from module.agent.approval import (
     ApprovalDraft,
     ApprovalOutcome,
     ApprovalRegistry,
-    AutoApprovalGate,
     ReadApprovalRequest,
 )
 from module.agent.context import TaskContext
 from module.agent.review import ReviewService
 from module.chat.chat_service import EventApprovalGate, NoChatEvents
 from module.files.permissions import system_permissions
-from module.files.staging import StagingStore
 
 TASK = "main-1"
 SUB = "sub-1"
 MODEL = "deepseek/deepseek-flash"
+BASE = "名字：小李\n工作地点：杭州\n"
 
 
 class RecordingGate:
@@ -33,8 +35,39 @@ class RecordingGate:
         }
 
 
-def make_review(tmp_path: Path, gate: RecordingGate, *, max_writes: int = 8):
-    review = ReviewService(StagingStore(), max_writes=max_writes)
+def stage(
+    review: ReviewService,
+    target: Path,
+    *,
+    text: str = BASE,
+    content: tuple[str, ...] = ("工作地点：上海",),
+    span: tuple[int, int] = (2, 3),
+    author: str = SUB,
+    task: str = TASK,
+    exists: bool = True,
+):
+    session = review.sessions.for_task(task)
+    tracked = session.track(
+        resource="world",
+        path=target.name,
+        abs_path=str(target.resolve()),
+        text=text,
+        exists=exists,
+    )
+    return session.queue.propose(
+        resource="world",
+        path=tracked.path,
+        abs_path=tracked.abs_path,
+        op=LINES_REPLACE,
+        source_action="replace_lines",
+        range_lines=span,
+        content=content,
+        author=author,
+    )
+
+
+def make_review(tmp_path: Path, gate: RecordingGate):
+    review = ReviewService()
     review.bind(
         TASK,
         gate,
@@ -44,24 +77,8 @@ def make_review(tmp_path: Path, gate: RecordingGate, *, max_writes: int = 8):
         source="user",
     )
     target = tmp_path / "笔记.md"
-    target.write_text("名字：小李\n工作地点：杭州\n", encoding="utf-8")
-    review.establish(
-        TASK,
-        resource="world",
-        key="world:笔记.md",
-        display="笔记.md",
-        abs_path=target,
-        text="名字：小李\n工作地点：杭州\n",
-        created=False,
-    )
-    review.record(
-        TASK,
-        SUB,
-        "world:笔记.md",
-        "replace_lines",
-        "名字：小李\n工作地点：上海\n",
-        False,
-    )
+    target.write_text(BASE, encoding="utf-8")
+    stage(review, target)
     return review, target
 
 
@@ -69,10 +86,10 @@ def test_settlement_previews_net_diff_and_carries_model(tmp_path: Path):
     gate = RecordingGate()
     review, target = make_review(tmp_path, gate)
 
-    receipts = review.finish_task(TASK)
+    outcome = review.settle(TASK)
 
-    assert receipts == ()
-    assert len(gate.calls) == 1
+    assert outcome.counts == {"committed": 1}
+    assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动。",)
     plan_id, drafts = gate.calls[0]
     assert plan_id == TASK
     draft = drafts[0]
@@ -82,80 +99,61 @@ def test_settlement_previews_net_diff_and_carries_model(tmp_path: Path):
     assert draft.subtask_id == SUB
     assert draft.main_task_id == TASK
     assert draft.source == "user"
+    assert draft.topic == "文件改动：笔记.md"
+    assert draft.task == "replace_lines 笔记.md"
+    assert draft.tools == ("replace_lines",)
+    assert draft.content == "改写 笔记.md 第 2-2 行，替换为 1 行"
     preview = draft.previews[0]
-    assert (preview.resource, preview.path, preview.op) == (
-        "world",
-        "笔记.md",
-        "replace_lines",
-    )
+    assert (preview.resource, preview.path, preview.op) == ("world", "笔记.md", "M")
     assert preview.created is False
     assert preview.deleted is False
-    assert preview.authors == (SUB,)
+    assert preview.authors == ()
     assert preview.hunk_count == 1
     assert preview.folded is False
     assert preview.hunks[0].removed == ("工作地点：杭州",)
     assert preview.hunks[0].added == ("工作地点：上海",)
-    assert "1 处改动" in draft.content
     assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海\n"
 
 
-def test_rejected_settlement_returns_the_receipt_to_the_model(tmp_path: Path):
+def test_rejected_settlement_keeps_disk_and_returns_the_reason(tmp_path: Path):
     gate = RecordingGate(approved=False)
     review, target = make_review(tmp_path, gate)
 
-    receipts = review.finish(TASK, SUB)
+    receipts = review.finish_task(TASK)
 
-    assert len(receipts) == 1
-    assert "笔记.md" in receipts[0]
-    assert "被拒绝" in receipts[0]
-    assert "工作地点：上海" in receipts[0]
-    assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：杭州\n"
-    assert review.pending(TASK) == ()
+    assert receipts == ("结算：笔记.md 的 1 条改动被拒绝（用户拒绝执行）；未写入磁盘",)
+    assert target.read_text(encoding="utf-8") == BASE
+    assert review.pending(TASK).empty is True
+    assert review.sessions.peek(TASK) is None
 
 
-def test_committed_settlement_needs_no_model_round(tmp_path: Path):
-    gate = RecordingGate()
-    review, _ = make_review(tmp_path, gate)
-
-    assert review.finish(TASK, SUB) == ()
-    assert len(gate.calls) == 1
-
-
-def test_finish_skips_a_draft_held_by_another_author(tmp_path: Path):
+def test_write_actions_do_not_settle_until_review(tmp_path: Path):
     gate = RecordingGate()
     review, target = make_review(tmp_path, gate)
-    review.record(
-        TASK,
-        "sub-2",
-        "world:笔记.md",
-        "append",
-        "名字：小李\n工作地点：杭州\n备注：常驻\n",
-        False,
-    )
 
+    assert review.before_access(TASK, SUB, "replace_lines", "world", "笔记.md") == ()
+    assert review.after_write(TASK, SUB, "笔记.md") == ()
     assert review.finish(TASK, SUB) == ()
     assert gate.calls == []
-    assert review.pending(TASK)[0].change.staged_text.endswith("备注：常驻\n")
+    assert target.read_text(encoding="utf-8") == BASE
 
-    assert review.finish(TASK, "sub-2") == ()
+    assert review.finish_task(TASK) == ("结算：笔记.md 已提交 1 条改动。",)
     assert len(gate.calls) == 1
-    assert target.read_text(encoding="utf-8").endswith("备注：常驻\n")
 
 
-def test_conflict_at_commit_is_reported_without_overwriting(tmp_path: Path):
+def test_conflict_at_settlement_is_reported_without_overwriting(tmp_path: Path):
     gate = RecordingGate()
     review, target = make_review(tmp_path, gate)
     target.write_text("别人改过\n", encoding="utf-8")
 
-    receipts = review.finish_task(TASK)
+    outcome = review.settle(TASK)
 
-    assert len(receipts) == 1
-    assert "未提交" in receipts[0]
+    assert outcome.counts == {"conflict": 1}
     assert target.read_text(encoding="utf-8") == "别人改过\n"
-    assert review.pending(TASK) == ()
+    assert review.pending(TASK).empty is True
 
 
-def test_conflict_receipt_lists_both_sides_and_asks_for_a_fresh_read(tmp_path: Path):
+def test_conflict_receipt_only_claims_a_hash_mismatch(tmp_path: Path):
     gate = RecordingGate()
     review, target = make_review(tmp_path, gate)
     target.write_text("名字：小李\n工作地点：北京\n", encoding="utf-8")
@@ -164,52 +162,46 @@ def test_conflict_receipt_lists_both_sides_and_asks_for_a_fresh_read(tmp_path: P
 
     assert len(receipts) == 1
     receipt = receipts[0]
-    assert "冲突" in receipt
+    assert "检测到哈希不一致" in receipt
+    assert "作废 1 条相交条目，保留 0 条" in receipt
     assert "重新 read" in receipt
-    assert "磁盘" in receipt and "北京" in receipt
-    assert "草稿" in receipt and "上海" in receipt
+    assert "避免了覆盖" not in receipt
+    assert "文件已被外部修改" not in receipt
     assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：北京\n"
 
 
-def test_disjoint_external_change_is_merged_into_the_commit(tmp_path: Path):
+def test_disjoint_external_change_is_rebased_and_explicitly_not_merged(tmp_path: Path):
     gate = RecordingGate()
-    review, target = make_review(tmp_path, gate)
-    target.write_text("名字：小李\n工作地点：杭州\n备注：外部追加\n", encoding="utf-8")
+    review = ReviewService()
+    review.bind(TASK, gate, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    target = tmp_path / "笔记.md"
+    target.write_text("一\n二\n三\n", encoding="utf-8")
+    stage(review, target, text="一\n二\n三\n", content=("甲",), span=(2, 3))
+    target.write_text("零\n一\n二\n三\n", encoding="utf-8")
 
     receipts = review.finish_task(TASK)
 
-    assert receipts == ()
-    assert target.read_text(encoding="utf-8") == ("名字：小李\n工作地点：上海\n备注：外部追加\n")
+    assert target.read_text(encoding="utf-8") == "零\n一\n甲\n三\n"
+    assert len(receipts) == 1
+    assert "检测到哈希不一致" in receipts[0]
+    assert "不再自动合并旧基底" in receipts[0]
+    assert "已提交 1 条改动" in receipts[0]
 
 
-def test_after_a_conflict_a_fresh_read_and_settlement_preview_the_new_base(tmp_path: Path):
+def test_after_a_conflict_a_fresh_proposal_previews_the_new_base(tmp_path: Path):
     gate = RecordingGate()
     review, target = make_review(tmp_path, gate)
     target.write_text("名字：小李\n工作地点：北京\n", encoding="utf-8")
-    assert review.finish_task(TASK)
+    assert review.settle(TASK).counts == {"conflict": 1}
+    # 相交条目在开票前就作废了，冲突不会白问一次审批。
+    assert gate.calls == []
 
-    current = target.read_text(encoding="utf-8")
-    review.establish(
-        TASK,
-        resource="world",
-        key="world:笔记.md",
-        display="笔记.md",
-        abs_path=target,
-        text=current,
-        created=False,
-    )
-    review.record(
-        TASK,
-        SUB,
-        "world:笔记.md",
-        "replace_lines",
-        current.replace("北京", "上海"),
-        False,
-    )
-    assert review.finish_task(TASK) == ()
+    stage(review, target, text=target.read_text(encoding="utf-8"))
+    outcome = review.settle(TASK)
 
-    assert len(gate.calls) == 2
-    preview = gate.calls[1][1][0].previews[0]
+    assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动。",)
+    assert len(gate.calls) == 1
+    preview = gate.calls[0][1][0].previews[0]
     assert preview.hunks[0].removed == ("工作地点：北京",)
     assert preview.hunks[0].added == ("工作地点：上海",)
     assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海\n"
@@ -220,12 +212,11 @@ def test_unreadable_disk_content_is_reported_instead_of_raising(tmp_path: Path):
     review, target = make_review(tmp_path, gate)
     target.write_bytes(b"\xff\xfe")
 
-    receipts = review.finish_task(TASK)
+    outcome = review.settle(TASK)
 
-    assert len(receipts) == 1
-    assert "未提交" in receipts[0]
+    assert outcome.counts == {"failed": 1}
+    assert "无法校验文件版本" in outcome.receipts[0]
     assert target.read_bytes() == b"\xff\xfe"
-    assert review.pending(TASK) == ()
 
 
 def make_context(source: str = "user", subtask: str = SUB) -> TaskContext:
@@ -253,16 +244,14 @@ def make_read_request() -> ReadApprovalRequest:
 
 def test_read_request_opens_one_draft_with_target_parameters_and_model():
     gate = RecordingGate()
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     review.bind(TASK, gate, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
 
     outcome = review.request_read(make_context(), make_read_request())
 
     assert outcome.approved is True
-    assert len(gate.calls) == 1
     plan_id, drafts = gate.calls[0]
     assert plan_id == TASK
-    assert len(drafts) == 1
     draft = drafts[0]
     assert draft.action == "read"
     assert draft.resource == "world"
@@ -272,16 +261,13 @@ def test_read_request_opens_one_draft_with_target_parameters_and_model():
     assert draft.task == "read world/笔记.md"
     assert draft.tools == ("read",)
     assert draft.model == MODEL
-    assert draft.persona_id == "芙芙"
-    assert draft.persona_version == 2
-    assert draft.main_task_id == TASK
     assert draft.subtask_id == SUB
     assert draft.source == "user"
 
 
 def test_read_request_for_system_auto_is_approved_without_a_ticket():
     gate = RecordingGate(approved=False)
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     review.bind(TASK, gate, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
 
     outcome = review.request_read(make_context("system_auto"), make_read_request())
@@ -292,7 +278,7 @@ def test_read_request_for_system_auto_is_approved_without_a_ticket():
 
 def test_read_request_rejection_returns_the_reason():
     gate = RecordingGate(approved=False)
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     review.bind(TASK, gate, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
 
     outcome = review.request_read(make_context(), make_read_request())
@@ -302,7 +288,7 @@ def test_read_request_rejection_returns_the_reason():
 
 
 def test_read_request_without_binding_fails_with_a_receipt():
-    review = ReviewService(StagingStore())
+    review = ReviewService()
 
     outcome = review.request_read(make_context(), make_read_request())
 
@@ -310,94 +296,51 @@ def test_read_request_without_binding_fails_with_a_receipt():
     assert "读取审批失败" in (outcome.reason or "")
 
 
-def stage_for(review: ReviewService, task: str, target: Path, base: str, staged: str) -> None:
-    review.bind(
-        task,
-        AutoApprovalGate(),
-        model=MODEL,
-        persona_id="芙芙",
-        persona_version=2,
-        source="user",
-    )
-    review.establish(
-        task,
-        resource="world",
-        key="world:笔记.md",
-        display="笔记.md",
-        abs_path=target,
-        text=base,
-        created=False,
-    )
-    review.record(task, SUB, "world:笔记.md", "replace_lines", staged, False)
-
-
-def settle_concurrently(
-    review: ReviewService, tasks: tuple[str, str]
-) -> tuple[dict[str, tuple[str, ...]], list[Exception]]:
-    results: dict[str, tuple[str, ...]] = {}
-    errors: list[Exception] = []
-    barrier = threading.Barrier(2)
-
-    def settle(task: str) -> None:
-        try:
-            barrier.wait(timeout=5)
-            results[task] = review.finish_task(task)
-        except Exception as exc:  # noqa: BLE001 - 线程内异常回传给主线程断言
-            errors.append(exc)
-
-    workers = [threading.Thread(target=settle, args=(task,)) for task in tasks]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=5)
-    assert all(worker.is_alive() is False for worker in workers)
-    return results, errors
-
-
-def test_parallel_settlements_of_disjoint_edits_merge_without_losing_changes(tmp_path: Path):
+def test_disjoint_edits_from_two_tasks_are_rebased_without_silent_merge(tmp_path: Path):
     target = tmp_path / "笔记.md"
     base = "一\n二\n三\n"
     target.write_text(base, encoding="utf-8")
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     other = "main-2"
-    stage_for(review, TASK, target, base, "甲\n二\n三\n")
-    stage_for(review, other, target, base, "一\n二\n丙\n")
+    gate_a = RecordingGate()
+    gate_b = RecordingGate()
+    review.bind(TASK, gate_a, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    review.bind(other, gate_b, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    stage(review, target, text=base, content=("甲",), span=(1, 2), task=TASK)
+    stage(review, target, text=base, content=("丙",), span=(3, 4), task=other)
 
-    results, errors = settle_concurrently(review, (TASK, other))
+    assert review.finish_task(TASK) == ("结算：笔记.md 已提交 1 条改动。",)
+    receipts = review.finish_task(other)
 
-    assert errors == []
-    assert results == {TASK: (), other: ()}
     assert target.read_text(encoding="utf-8") == "甲\n二\n丙\n"
-    assert review.pending(TASK) == ()
-    assert review.pending(other) == ()
+    assert "不再自动合并旧基底" in receipts[0]
+    assert review.pending(TASK).empty is True
+    assert review.pending(other).empty is True
 
 
-def test_parallel_settlements_on_the_same_lines_report_a_conflict(tmp_path: Path):
+def test_same_line_edits_from_two_tasks_conflict_instead_of_merging(tmp_path: Path):
     target = tmp_path / "笔记.md"
     base = "一\n二\n三\n"
     target.write_text(base, encoding="utf-8")
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     other = "main-2"
-    stage_for(review, TASK, target, base, "一\n甲\n三\n")
-    stage_for(review, other, target, base, "一\n乙\n三\n")
+    gate_a = RecordingGate()
+    gate_b = RecordingGate()
+    review.bind(TASK, gate_a, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    review.bind(other, gate_b, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    stage(review, target, text=base, content=("甲",), span=(2, 3), task=TASK)
+    stage(review, target, text=base, content=("乙",), span=(2, 3), task=other)
 
-    results, errors = settle_concurrently(review, (TASK, other))
+    assert review.finish_task(TASK) == ("结算：笔记.md 已提交 1 条改动。",)
+    receipts = review.finish_task(other)
 
-    assert errors == []
-    assert target.read_text(encoding="utf-8") in {"一\n甲\n三\n", "一\n乙\n三\n"}
-    committed = [task for task, receipts in results.items() if receipts == ()]
-    conflicted = [task for task, receipts in results.items() if receipts]
-    assert len(committed) == 1
-    assert len(conflicted) == 1
-    receipt = results[conflicted[0]][0]
-    assert "未提交" in receipt
-    assert "冲突" in receipt
-    assert "重新 read" in receipt
-    assert review.pending(TASK) == ()
-    assert review.pending(other) == ()
+    assert target.read_text(encoding="utf-8") == "一\n甲\n三\n"
+    assert "检测到哈希不一致" in receipts[0]
+    assert "相交改动未提交" in receipts[0]
+    assert "乙" not in target.read_text(encoding="utf-8")
 
 
-def test_cancelling_the_task_voids_a_pending_settlement_without_touching_disk(tmp_path: Path):
+def test_cancelling_the_task_reports_the_reason_without_touching_disk(tmp_path: Path):
     registry = ApprovalRegistry()
     gate = EventApprovalGate(NoChatEvents(), registry)
     review, target = make_review(tmp_path, gate)
@@ -428,4 +371,4 @@ def test_cancelling_the_task_voids_a_pending_settlement_without_touching_disk(tm
     assert "笔记.md" in receipts[0]
     assert "任务已取消" in receipts[0]
     assert target.read_text(encoding="utf-8") == original
-    assert review.pending(TASK) == ()
+    assert review.pending(TASK).empty is True

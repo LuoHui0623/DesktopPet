@@ -190,8 +190,8 @@ def serve(
         entries,
         daily_log,
         skills,
-        editor=review,
-        read_gate=review,
+        sessions=review.sessions,
+        guard=review.guard,
         timezone=ZoneInfo(settings.timezone),
         limit_provider=lambda: subagent_limit(llm_service),
     )

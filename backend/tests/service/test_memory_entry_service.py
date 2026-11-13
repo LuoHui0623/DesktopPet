@@ -6,7 +6,7 @@ import pytest
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.memory import entry_service as entry_service_module
-from module.memory.contracts import MemoryEntryCreate, MemoryEntryUpdate
+from module.memory.contracts import MemoryEntry, MemoryEntryCreate, MemoryEntryUpdate
 from module.memory.entry_service import (
     MemoryEntryError,
     MemoryEntryService,
@@ -254,7 +254,7 @@ def test_invalid_tags_json_degrades_to_empty_tags_with_a_warning(
     assert any("不是合法 JSON" in record.getMessage() for record in caplog.records)
 
 
-def test_structured_text_groups_by_first_tag_and_marks_disabled(
+def test_render_builds_ordered_tag_tree_and_marks_disabled(
     service: MemoryEntryService,
 ):
     coffee = make(service, "喜欢美式", ["饮品", "咖啡"]).entry
@@ -265,8 +265,98 @@ def test_structured_text_groups_by_first_tag_and_marks_disabled(
     text = service.structured_text()
 
     assert "## 饮品" in lines
-    assert f"[#{coffee.id}][已弃用] 喜欢美式（咖啡）（改喝拿铁）" in lines
+    assert "- **咖啡**：喜欢美式[已弃用]（改喝拿铁）" in lines
     assert "## 作息" in lines
+    assert "早睡" in lines
     assert text.endswith("\n")
     assert "喜欢美式" not in service.structured_text(include_disabled=False)
     assert "早睡" in service.structured_text(include_disabled=False)
+
+
+def entry(index: int, content: str, *tags: str) -> MemoryEntry:
+    return MemoryEntry(
+        id=index,
+        content=content,
+        tags=tags,
+        priority=2,
+        source_ref=None,
+        created_at="2026-11-01T00:00:00+08:00",
+        updated_at="2026-11-01T00:00:00+08:00",
+        status_state="enabled",
+    )
+
+
+def test_render_follows_the_markdown_tree_rules_of_the_work_order():
+    """第 24 条：首 tag 作 `##` 标题、其余按 `\\t` 分层、末级加粗同行、同路径集中。
+
+    样例取自 Task2 第三节的 Markdown 示例，逐字比对，防止渲染规则漂移。
+    """
+    entries = [
+        entry(1, "喜欢读书", "主人"),
+        entry(2, "喜欢电影", "主人"),
+        entry(3, "橙子", "主人", "不喜欢", "水果"),
+        entry(4, "葡萄柚", "主人", "不喜欢", "水果"),
+        entry(5, "甜食", "主人", "喜欢"),
+        entry(6, "零食", "主人", "喜欢"),
+        entry(7, "苹果", "主人", "喜欢", "水果"),
+        entry(8, "草莓", "不喜欢", "主人", "水果"),
+        entry(9, "喜欢睡觉", "宠物"),
+        entry(10, "喜欢散步", "宠物"),
+        entry(11, "喜欢听歌", "小宠"),
+    ]
+
+    assert "\n".join(render_entry_lines(entries)) == (
+        "## 主人\n"
+        "- 喜欢读书\n"
+        "- 喜欢电影\n"
+        "- 不喜欢\n"
+        "\t- **水果**：橙子、葡萄柚\n"
+        "- 喜欢\n"
+        "\t- 甜食\n"
+        "\t- 零食\n"
+        "\t- **水果**：苹果\n"
+        "## 不喜欢\n"
+        "- 主人\n"
+        "\t- **水果**：草莓\n"
+        "## 宠物\n"
+        "- 喜欢睡觉\n"
+        "- 喜欢散步\n"
+        "## 小宠\n"
+        "喜欢听歌"
+    )
+
+
+def test_render_keeps_same_content_on_different_paths_apart():
+    """同正文、标签顺序不同＝不同路径，分别展示且不筛除（不按顺序去重）。"""
+    entries = [
+        entry(1, "草莓", "主人", "水果"),
+        entry(2, "草莓", "水果", "主人"),
+    ]
+
+    assert render_entry_lines(entries) == [
+        "## 主人",
+        "- **水果**：草莓",
+        "## 水果",
+        "- **主人**：草莓",
+    ]
+
+
+def test_render_keeps_content_verbatim():
+    """渲染只组织表述：正文的空格、标点与陈述句不得被改写或截断。"""
+    body = "不喜欢 太甜的甜点，除非是生日"
+    entries = [entry(1, body, "主人", "口味")]
+
+    assert render_entry_lines(entries) == ["## 主人", f"- **口味**：{body}"]
+
+
+def test_load_returns_every_enabled_entry_without_a_default_cap(
+    service: MemoryEntryService,
+):
+    """旧 POOL_LIMIT=100 已移除：默认读取不设上限，分页只能由调用方显式指定。"""
+    for index in range(120):
+        make(service, f"第{index}条", ["批量"])
+
+    entries = service.load()
+
+    assert len(entries) == 120
+    assert len(service.load(limit=10)) == 10

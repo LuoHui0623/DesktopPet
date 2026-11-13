@@ -41,10 +41,6 @@ def day_marker(moment: datetime) -> str:
 
 USER_ROLE = "master"
 EVENT_ROLE = "event"
-CITATION_RULE = (
-    "回复引用上面【检索到的记忆】中的内容时，在该句末尾附加 [引用 日期]，"
-    "日期取自对应条目的日期。只引用上面列出的内容，不要编造日期。"
-)
 PROACTIVE_TRIGGER = (
     "【本次触发】{reason}\n【当前时间】{time}\n现在主动说一句话。不要问问题，不要解释你在主动。"
 )
@@ -190,8 +186,6 @@ class ContextBuilder:
             system_text += f"\n\n【检索到的记忆】\n{fragment_block}"
 
         injected = tuple(kept)
-        if injected:
-            system_text += f"\n\n{CITATION_RULE}"
 
         # 历史只来自落库记录；本轮记录按身份从历史中剔除，再由读回内容作为 current 输入。
         timeline = self._history(today, current_record)
@@ -275,7 +269,11 @@ class ContextBuilder:
         return AIMessage(content=text)
 
     def _structured_block(self, warnings: list[ContextWarning]) -> str:
-        """结构化条目按分区平铺注入；预算与卡片渲染留给 T-04。"""
+        """结构化条目全量注入：按有序 tags 组装 Markdown 树，不设上限、不静默截断。
+
+        读取不传 ``limit``，窗口开销只由聊天侧现有的 token 检查兜底（Q6/Q23）；
+        超限逐块降级归 T-05，这里不做裁剪。
+        """
         if self._memory is None:
             return ""
         try:

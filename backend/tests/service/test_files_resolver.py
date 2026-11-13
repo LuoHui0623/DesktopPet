@@ -6,11 +6,12 @@ import pytest
 
 from constants.files import (
     ACTION_APPEND,
-    ACTION_DELETE,
+    ACTION_DELETE_LINES,
+    ACTION_INSERT,
     ACTION_READ,
     ACTION_REPLACE_LINES,
+    ACTION_REPLACE_REGEX,
     DRAFT,
-    EDIT_ACTIONS,
     PERMANENT,
     READ_ACTIONS,
     RESOURCES,
@@ -45,7 +46,13 @@ def test_registry_declares_ids_paths_and_permissions():
     assert RESOURCES[PERMANENT].edit_supports == ()
     assert RESOURCES[PERMANENT].supports_edit is False
     assert RESOURCES[DRAFT].read_supports == READ_ACTIONS
-    assert RESOURCES[DRAFT].edit_supports == EDIT_ACTIONS
+    assert RESOURCES[DRAFT].edit_supports == (
+        ACTION_APPEND,
+        ACTION_INSERT,
+        ACTION_REPLACE_LINES,
+        ACTION_REPLACE_REGEX,
+        ACTION_DELETE_LINES,
+    )
     assert RESOURCES[DRAFT].can_delete_file is False
     assert RESOURCES[STRUCTURED].write_mode == "read_only"
     assert RESOURCES[STRUCTURED].can_delete_file is False
@@ -122,7 +129,7 @@ def test_permission_matrix_is_enforced(resolver: ResourceResolver):
         resolver.require(permanent, ACTION_APPEND)
 
     draft = resolver.resolve(DRAFT)
-    resolver.require(draft, ACTION_DELETE)
+    resolver.require(draft, ACTION_DELETE_LINES)
     assert draft.spec.can_delete_file is False
 
 

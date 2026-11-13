@@ -30,7 +30,6 @@ from module.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT, SettlementOu
 from module.files.permissions import system_permissions
 from module.files.resolver import FileError, ResourceResolver
 from module.files.service import FileService, ModelLimit
-from module.files.staging import StagingStore
 from module.memory.daily_log_service import DailyLogService
 from module.memory.entry_service import MemoryEntryService
 from module.memory.repository import DbDailyLog
@@ -171,8 +170,8 @@ def stack(tmp_path: Path):
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
     skills.register(draft_note_skill())
-    editor = ReviewService(StagingStore(), max_writes=5)
-    editor.bind(
+    review = ReviewService()
+    review.bind(
         TASK.main_task_id,
         AutoApprovalGate(),
         model="test",
@@ -184,7 +183,8 @@ def stack(tmp_path: Path):
         MemoryEntryService(db_file),
         DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ),
         skills,
-        editor=editor,
+        sessions=review.sessions,
+        guard=review.guard,
         timezone=TZ,
         limit_provider=lambda: ModelLimit(10000, "estimate"),
     )
@@ -214,7 +214,7 @@ def test_settlement_logs_session_and_status_tally(caplog):
         )
     )
     with caplog.at_level(logging.INFO, logger="pet.agent.review"):
-        _log_settlement("main-1", "world:笔记.md", outcome)
+        _log_settlement("main-1", outcome)
 
     message = caplog.records[-1].getMessage()
     assert "event=files.settle" in message
@@ -224,6 +224,6 @@ def test_settlement_logs_session_and_status_tally(caplog):
 
 def test_settlement_without_results_stays_quiet(caplog):
     with caplog.at_level(logging.INFO, logger="pet.agent.review"):
-        _log_settlement("main-1", "world:笔记.md", SettlementOutcome())
+        _log_settlement("main-1", SettlementOutcome())
 
     assert caplog.records == []

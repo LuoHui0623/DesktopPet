@@ -1,3 +1,5 @@
+from constants.files import ACTION_ORDER
+
 SUBAGENT_MAX_STEPS = 8
 SUBAGENT_PURPOSE = "subagent"
 DEFAULT_PERSONA_ID = "芙芙"
@@ -6,6 +8,6 @@ PHASE_DRAFT = "draft"
 PHASE_EXECUTE = "execute"
 DRAFT_INVALID_LIMIT = 3  # 草案解析失败重试两次
 READ_ONLY_TOOLS = ("index", "read", "grep")
-# 使用这些工具的子代理任务必须先调用 index 发现能力与路径。
-FILE_TOOLS = ("index", "read", "grep", "edit")
+# 文件域动作即工具；动作名与工具名一一对应，没有聚合的 edit 工具。
+FILE_TOOLS = ACTION_ORDER
 INDEX_TOOL = "index"

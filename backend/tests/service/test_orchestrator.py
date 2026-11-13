@@ -10,6 +10,7 @@ from langchain_core.tools import tool
 
 from config.persona import PersonaConfig
 from config.settings import ModelSettingsSource
+from constants.files import LINES_REPLACE
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
@@ -19,7 +20,6 @@ from module.agent.repository import DbAgentRuns
 from module.agent.review import ReviewService
 from module.agent.skills import SkillRegistry, SkillSpec
 from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
-from module.files.staging import StagingStore
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.persona.persona_service import PersonaSnapshot
@@ -602,19 +602,27 @@ def test_parse_plan_rejects_invalid_plans(text: str):
 
 
 def test_run_plan_settles_leftover_drafts_with_the_dispatch_model(setup):
-    review = ReviewService(StagingStore())
+    review = ReviewService()
     target = setup["tmp"] / "笔记.md"
     target.write_text("旧内容\n", encoding="utf-8")
-    review.establish(
-        "main-x",
+    session = review.sessions.for_task("main-x")
+    tracked = session.track(
         resource="world",
-        key="world:笔记.md",
-        display="笔记.md",
-        abs_path=target,
+        path="笔记.md",
+        abs_path=str(target.resolve()),
         text="旧内容\n",
-        created=False,
+        exists=True,
     )
-    review.record("main-x", "sub-x", "world:笔记.md", "replace_lines", "新内容\n", False)
+    session.queue.propose(
+        resource="world",
+        path=tracked.path,
+        abs_path=tracked.abs_path,
+        op=LINES_REPLACE,
+        source_action="replace_lines",
+        range_lines=(1, 2),
+        content=("新内容",),
+        author="sub-x",
+    )
     gate = FakeGate()
     orchestrator = setup["build"](
         [
@@ -634,4 +642,4 @@ def test_run_plan_settles_leftover_drafts_with_the_dispatch_model(setup):
     assert settlement_drafts[0].model == "deepseek/deepseek-flash"
     assert settlement_drafts[0].source == "user"
     assert settlement_drafts[0].previews[0].path == "笔记.md"
-    assert review.pending("main-x") == ()
+    assert review.pending("main-x").empty is True

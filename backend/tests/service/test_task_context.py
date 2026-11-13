@@ -86,7 +86,9 @@ def test_system_permissions_mirror_the_registry_and_allow_all_current_actions():
 
     assert set(permissions.resources) == {"draft", "structured", "permanent", "world"}
     assert permissions.allows("world", "replace_lines") is True
-    assert permissions.allows("world", "delete") is True
+    assert permissions.allows("world", "delete_lines") is True
+    assert permissions.allows("world", "delete_file") is True
+    assert permissions.allows("world", "create_file") is True
     assert permissions.allows("world", "create") is False
     assert permissions.can_delete_file("world") is True
     assert permissions.can_delete_file("draft") is False

@@ -873,13 +873,14 @@ def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_pa
     assert harness.query("SELECT content FROM daily_log WHERE role = 'me'") == [(result.text,)]
 
 
-def test_injected_fragments_carry_their_dates_and_the_citation_rule(tmp_path: Path):
+def test_injected_fragments_carry_their_dates_without_a_citation_rule(tmp_path: Path):
+    """第 26 条：拒绝 `[引用 日期]` 引用格式，片段只带来源标签、不再附引用规则。"""
     harness = Harness(tmp_path, [SHORT])
     ask(harness.chat, "你好", CITED_FRAGMENTS)
     system = harness.fake.calls[0][0].content
     assert "[结构化记忆 · 2026-10-18] 喜欢美式咖啡，不加糖" in system
     assert "[每日对话 · 2026-10-17] 昨天聊了茶" in system
-    assert "[引用 日期]" in system
+    assert "[引用 日期]" not in system
 
 
 class BrokenRecall:
@@ -890,7 +891,9 @@ class BrokenRecall:
         raise RuntimeError("召回坏了")
 
 
-def test_earlier_chat_is_recalled_into_the_context(tmp_path: Path):
+def test_memory_recall_is_disabled_pending_design(tmp_path: Path):
+    # 记忆召回（RecallService 关键词检索）尚未设计，先禁用（T-03 重议后恢复）：
+    # 即使接上 RecallService 且有可召回历史，也不注入【检索到的记忆】。
     harness = Harness(
         tmp_path,
         [SHORT],
@@ -908,9 +911,8 @@ def test_earlier_chat_is_recalled_into_the_context(tmp_path: Path):
     ask(harness.chat, "还记得冰汽时代吗")
 
     system = harness.fake.calls[0][0].content
-    assert "【检索到的记忆】" in system
-    assert "[me] 冰汽时代太难了" in system
-    assert "[引用 日期]" in system
+    assert "【检索到的记忆】" not in system
+    assert "冰汽时代太难了" not in system
 
 
 def test_chat_survives_recall_failure(tmp_path: Path):

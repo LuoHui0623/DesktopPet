@@ -317,23 +317,22 @@ def _run(api: Api, tap: EventTap, port: int) -> None:
         "通过" if keyword.get("items") else "失败",
     )
 
-    # 3. 记忆管理：手动编辑与索引重建
+    # 3. 记忆管理：结构化记忆为条目存储，整篇覆盖被拒绝
     structured = api.call("GET", "/api/memories").json()["structured"]
-    before_lines = len(structured.splitlines())
     marker = "- 验收合成事实：喜欢在雨天散步"
-    saved = api.call(
-        "PUT", "/api/memories/structured", {"text": structured + marker + "\n"}
-    ).json()["text"]
+    refused = api.call("PUT", "/api/memories/structured", {"text": structured + marker + "\n"})
+    refused_body = refused.json()
+    code = refused_body.get("error", {}).get("code") if isinstance(refused_body, dict) else None
     reloaded = api.call("GET", "/api/memories").json()["structured"]
-    index = json.loads((DATA_DIR / "memory" / "index.json").read_text(encoding="utf-8"))
-    lines = index["index"]["structured"]["lines"]
     record(
         "对话记忆",
-        "PUT /api/memories/structured 后重新读取",
-        "保存生效，索引行数同步重建",
-        f"包含标记={marker in reloaded}, 行数 {before_lines}→{lines}",
-        "通过" if marker in saved and marker in reloaded and lines == before_lines + 1 else "失败",
-        "memory/index.json",
+        "PUT /api/memories/structured",
+        "整篇覆盖返回 409 read_only，读写通道不受影响",
+        f"status={refused.status_code}, code={code}, 内容未变={reloaded == structured}",
+        "通过"
+        if refused.status_code == 409 and code == "read_only" and reloaded == structured
+        else "失败",
+        "结构化记忆改为条目存储，设置页编辑待接入",
     )
 
     # 4. subagent：记忆写入

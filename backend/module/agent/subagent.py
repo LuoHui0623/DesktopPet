@@ -17,6 +17,7 @@ from constants.agent import (
     INDEX_TOOL,
     PHASE_DRAFT,
     PHASE_EXECUTE,
+    READ_ONLY_TOOLS,
     SUBAGENT_MAX_STEPS,
     SUBAGENT_PURPOSE,
 )
@@ -407,7 +408,7 @@ class SubAgent:
                     # 首次工具调用只允许 index：不执行该调用，把原因当观察交回模型。
                     hint_text = (
                         "首次工具调用必须是 index：先用它查看资源能力、路径与下一步提示，"
-                        "再按需 read 或 edit"
+                        "再按需 read 或调用具体写入工具"
                     )
                     steps.append(
                         {
@@ -435,9 +436,12 @@ class SubAgent:
                 "ok": succeeded,
                 "error": None if succeeded else result.get("error"),
             }
-            if name == "edit" and isinstance(action.get("args"), dict):
-                # 审计要看到具体写动作，不能只留一个 edit 工具名。
-                step["tool_action"] = action["args"].get("action")
+            if (
+                name in FILE_TOOLS
+                and name not in READ_ONLY_TOOLS
+                and isinstance(action.get("args"), dict)
+            ):
+                # 审计要看到写入目标，不能只留一个工具名。
                 step["resource"] = action["args"].get("resource")
                 step["path"] = action["args"].get("path")
             steps.append(step)

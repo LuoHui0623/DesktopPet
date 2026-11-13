@@ -120,7 +120,16 @@ MEMORY_RETRIEVE_SKILL = "记忆检索"
 DRAFT_NOTE_SKILL = "自记笔记"
 MEMORY_WRITE_TOOLS = ("index", "read", "grep", "memory")
 MEMORY_RETRIEVE_TOOLS = ("index", "read", "grep")
-DRAFT_NOTE_TOOLS = ("index", "read", "grep", "edit")
+DRAFT_NOTE_TOOLS = (
+    "index",
+    "read",
+    "grep",
+    "append",
+    "insert",
+    "replace_lines",
+    "replace_regex",
+    "delete_lines",
+)
 MEMORY_WRITE_KEYWORDS = (
     "记住",
     "记下",

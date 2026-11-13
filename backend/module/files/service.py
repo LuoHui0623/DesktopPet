@@ -1,28 +1,58 @@
-"""统一文件访问服务：八个动作统一按资源权限执行。"""
+"""统一文件服务：索引、读取、检索与写动作。
+
+写动作只做三件事——归一为 range 条目、入队、返回回执。**不落盘、不审批**：
+落盘发生在 review 之后的提交，人工授权只有 review 一处。
+"""
 
 import json
-from collections.abc import Callable, Sequence
+import os
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, tzinfo
+from pathlib import Path
 
 from constants.files import (
     ACTION_APPEND,
-    ACTION_DELETE,
+    ACTION_CREATE_DIR,
+    ACTION_CREATE_FILE,
+    ACTION_DELETE_DIR,
+    ACTION_DELETE_FILE,
+    ACTION_DELETE_LINES,
     ACTION_GREP,
     ACTION_INDEX,
     ACTION_INSERT,
     ACTION_READ,
     ACTION_REPLACE_LINES,
     ACTION_REPLACE_REGEX,
+    DOMAIN_FILES,
+    DOMAIN_MEMORY,
+    DOMAIN_SKILLS,
+    DOMAIN_TOOLS,
+    LINES_APPEND,
+    LINES_DELETE,
+    LINES_INSERT,
+    LINES_REPLACE,
     PERMANENT,
+    RESOURCES,
+    STRUCTURED,
     WORLD,
+    normalize_domain,
 )
 from infra.llm.tokens import TokenCounter
-from module.agent.approval import ReadApprovalRequest, ReadApprover
-from module.agent.context import SOURCE_USER, TaskContext, TaskContextError, current_task
+from module.agent.context import TaskContext, TaskContextError, current_task
 from module.agent.skills import SkillRegistry
+from module.files import catalog
 from module.files import token as snapshot_token
 from module.files.format import relative_path
+from module.files.guard import (
+    STATE_FREE,
+    FileGuard,
+    check_version,
+    describe_spans,
+    normalize_text,
+    revalidate,
+)
 from module.files.handlers import (
     GREP_LIMIT,
     ROUTES,
@@ -30,33 +60,45 @@ from module.files.handlers import (
     ModelLimit,
     Query,
     ReadLimiter,
-    overview,
-    staging_target,
 )
 from module.files.observability import traced
+from module.files.ranges import (
+    ChangeQueue,
+    LineRange,
+    append_span,
+    apply_actions,
+    closed_ranges,
+    whole_file_span,
+)
 from module.files.resolver import FileDenied, FileError, Resource, ResourceResolver
-from module.files.staging import Editor, StagedSnapshot
-from module.files.text import checked, join_text, read_text, text_state
+from module.files.session import SessionStore, TaskSession, TrackedFile
+from module.files.text import numbered, read_text, text_state
+from module.files.views import (
+    DirEntries,
+    FileIndex,
+    FileSupport,
+    MemoryIndex,
+    SkillIndex,
+    ToolIndex,
+    payload,
+)
 from module.memory.daily_log_service import DailyLogService
 from module.memory.entry_service import MemoryEntryService
-from module.memory.memory_service import (
-    compile_pattern,
-    expect_matches,
-    parse_ranges,
-    replace_ranges,
-)
+from module.memory.memory_service import compile_pattern, expect_matches, parse_ranges
 
 
 @dataclass(frozen=True)
-class _WriteSession:
-    """一次写动作的公共上下文；避免五个写方法各自重复解包同一批字段。"""
+class _Editing:
+    """一次写动作的作用域：会话、读取版本与解析后的资源。"""
 
-    task: str
+    session: TaskSession
+    tracked: TrackedFile
+    resource: Resource
     author: str
-    resource: str
-    key: str
-    display: str
-    receipts: list[str]
+
+    @property
+    def queue(self) -> ChangeQueue:
+        return self.session.queue
 
 
 def _system_now(zone: tzinfo) -> datetime:
@@ -71,8 +113,8 @@ class FileService:
         daily: DailyLogService,
         skills: SkillRegistry,
         *,
-        editor: Editor,
-        read_gate: ReadApprover | None = None,
+        sessions: SessionStore,
+        guard: FileGuard,
         timezone: tzinfo,
         limit_provider: Callable[[], ModelLimit],
         clock: Callable[[tzinfo], datetime] | None = None,
@@ -82,8 +124,8 @@ class FileService:
         self._entries = entries
         self._daily = daily
         self._skills = skills
-        self._editor = editor
-        self._read_gate = read_gate
+        self._sessions = sessions
+        self._guard = guard
         self._timezone = timezone
         self._clock = clock or _system_now
         self._limiter = ReadLimiter(limit_provider, counter_factory=counter_factory)
@@ -91,55 +133,60 @@ class FileService:
             entries=entries,
             daily=daily,
             skills=skills,
-            editor=editor,
             limiter=self._limiter,
             timezone=timezone,
             context=self._context,
         )
 
-    @property
-    def editor(self) -> Editor:
-        return self._editor
+    # —— 索引 ——
 
     @traced(ACTION_INDEX)
-    def index(self, resource: str | None = None, path: str | None = None) -> str:
-        """列出资源索引；流程固定为审批 → 结算 → 交处理器。"""
-        if resource == "skill":
-            if path is not None:
-                raise FileError("技能清单不需要 path")
-            self._approve_read(
-                action=ACTION_INDEX,
-                topic="读取能力清单",
-                task="index：列出可用能力",
-                parameters="无额外参数",
-                resource="skill",
-            )
-            receipts = self._settle_active(ACTION_INDEX, resource, None)
-            payload = ROUTES["skill"].index(self._deps, None, Query())
-            return _json(_with_settlement(payload, receipts))
-        if resource is None and path is None:
-            self._approve_read(
-                action=ACTION_INDEX,
-                topic="读取资源总览",
-                task="index：查看资源、权限与下一步提示",
-                parameters="无额外参数",
-            )
-            receipts = self._settle_active(ACTION_INDEX, resource, None)
-            return _json(_with_settlement(overview(self._deps), receipts))
-        resolved = self._resolver.resolve(resource, path)
-        self._authorize(resolved, ACTION_INDEX)
-        target = _approval_target(resolved)
-        self._approve_read(
-            action=ACTION_INDEX,
-            topic=f"查看：{target}",
-            task=f"index {target}",
-            parameters=f"path={path}" if path else "无额外参数",
-            resource=resolved.spec.id,
-            path=_approval_path(resolved),
+    def index(self, target: str) -> str:
+        """单一入参：命中领域保留字给领域视图，命中目录给目录视图。"""
+        domain = normalize_domain(target)
+        if domain is not None:
+            return _json(payload(self._domain(domain).explore(target)))
+        context = self._context()
+        world = _resolver_world(self._resolver)
+        entries = catalog.entries_for_target(
+            target, world, context.permissions, self._guard, context.main_task_id
         )
-        receipts = self._settle_active(ACTION_INDEX, resource, None)
-        payload = ROUTES[resolved.spec.id].index(self._deps, resolved, Query())
-        return _json(_with_settlement(payload, receipts))
+        return _json(payload(entries))
+
+    def _domain(self, domain: str) -> FileIndex | SkillIndex | ToolIndex | MemoryIndex:
+        if domain == DOMAIN_FILES:
+            return FileIndex(
+                support=self._file_support,
+                entries=lambda target: self._dir_entries(target),
+            )
+        if domain == DOMAIN_SKILLS:
+            return SkillIndex(self._skill_items)
+        if domain == DOMAIN_TOOLS:
+            return ToolIndex(lambda: catalog.tool_listing(self._context().permissions))
+        if domain == DOMAIN_MEMORY:
+            specs = [RESOURCES[STRUCTURED], RESOURCES[PERMANENT]]
+            return MemoryIndex(lambda: catalog.memory_listing(specs))
+        raise FileError(f"未知领域：{domain}")
+
+    def _file_support(self) -> FileSupport:
+        return catalog.file_support(self._context().permissions)
+
+    def _dir_entries(self, target: str) -> DirEntries:
+        context = self._context()
+        return catalog.entries_for_target(
+            target,
+            _resolver_world(self._resolver),
+            context.permissions,
+            self._guard,
+            context.main_task_id,
+        )
+
+    def _skill_items(self) -> list[dict[str, object]]:
+        return catalog.skill_listing(
+            [{"name": item.name, "description": item.description} for item in self._skills.index()]
+        )
+
+    # —— 读取 ——
 
     @traced(ACTION_READ)
     def read(
@@ -154,41 +201,57 @@ class FileService:
     ) -> str:
         if resource == "skill":
             if not name:
-                raise FileError("读取技能说明书需要 name；先用 index（resource 为 skill）查看清单")
-            self._approve_read(
-                action=ACTION_READ,
-                topic=f"读取能力：{name}",
-                task=f"read skill {name}",
-                parameters=f"name={name}",
-                resource="skill",
-                path=name,
-            )
-            receipts = self._settle_active(ACTION_READ, resource, None)
-            content = ROUTES["skill"].read(self._deps, None, Query(name=name))
-            return _with_receipts(content, receipts)
+                raise FileError("读取技能说明书需要 name；先用 index 查看 SKILLS 清单")
+            return ROUTES["skill"].read(self._deps, Query(name=name))
         resolved = self._resolver.resolve(resource, path)
         self._authorize(resolved, ACTION_READ)
-        if resolved.spec.id != PERMANENT and resolved.path is not None and resolved.path.is_dir():
+        if resolved.spec.id in (STRUCTURED, PERMANENT):
+            query = Query(line_ranges=line_ranges, day=day, start_at=start_at, end_at=end_at)
+            return ROUTES[resolved.spec.id].read(self._deps, query)
+        assert resolved.path is not None
+        if resolved.path.is_dir():
             raise FileError("目标是目录，请指定具体文件；用 index 查看目录内容")
-        target = _approval_target(resolved)
-        self._approve_read(
-            action=ACTION_READ,
-            topic=f"读取：{target}",
-            task=f"read {target}",
-            parameters=_read_parameters(line_ranges, day, start_at, end_at),
-            resource=resolved.spec.id,
-            path=_approval_path(resolved),
+        notice = self._read_text_of(resolved, line_ranges)
+        return notice
+
+    def _read_text_of(self, resolved: Resource, line_ranges: Sequence[Sequence[int]] | None) -> str:
+        assert resolved.path is not None
+        context = self._context()
+        session = self._sessions.for_task(context.main_task_id)
+        try:
+            text = read_text(resolved.path)
+            exists = True
+        except FileNotFoundError as exc:
+            if resolved.spec.id != WORLD:
+                raise FileError(f"文件不存在：{resolved.path.name}") from exc
+            text, exists = "", False
+        notes: list[str] = []
+        tracked = session.tracked(str(resolved.path.resolve()))
+        if tracked is not None and tracked.h0_text != text:
+            result = revalidate(session.queue, tracked.abs_path, tracked.h0_text, text)
+            notes.append(
+                f"提示：{self._display(resolved)} 已被外部修改（{describe_spans(result.spans)}）；"
+                f"已作废 {len(result.invalidated)} 条相交条目，保留 {len(result.kept)} 条"
+            )
+        tracked = self._track(session, resolved, text, exists)
+        body = numbered(text_state(text)[0], line_ranges)
+        content = (
+            f"{body}\n\n{snapshot_token.token_line(tracked.version)}"
+            if body
+            else (snapshot_token.token_line(tracked.version))
         )
-        receipts = self._settle_active(ACTION_READ, resource, None)
-        query = Query(
-            name=name,
-            line_ranges=line_ranges,
-            day=day,
-            start_at=start_at,
-            end_at=end_at,
-        )
-        content = ROUTES[resolved.spec.id].read(self._deps, resolved, query)
-        return _with_receipts(content, receipts)
+        in_flight = session.queue.entries_for(tracked.abs_path)
+        if in_flight:
+            notes.append(
+                f"本文件有 {len(in_flight)} 条在途改动，尚未写入磁盘："
+                + "；".join(entry.summary() for entry in in_flight)
+            )
+        status = self._guard.status(resolved.path, context.main_task_id)
+        if status.state != STATE_FREE:
+            notes.append(f"占用：{status.notice}")
+        if notes:
+            content = f"{content}\n" + "\n".join(notes)
+        return content
 
     @traced(ACTION_GREP)
     def grep(
@@ -205,26 +268,66 @@ class FileService:
         regex = compile_pattern(pattern)
         resolved = self._resolver.resolve(resource, path)
         self._authorize(resolved, ACTION_GREP)
-        target = _approval_target(resolved)
-        self._approve_read(
-            action=ACTION_GREP,
-            topic=f"检索：{target}",
-            task=f"grep {target}",
-            parameters=_grep_parameters(pattern, line_ranges, day, start_at, end_at, limit),
-            resource=resolved.spec.id,
-            path=_approval_path(resolved),
-        )
-        receipts = self._settle_active(ACTION_GREP, resource, None)
-        query = Query(
-            line_ranges=line_ranges,
-            day=day,
-            start_at=start_at,
-            end_at=end_at,
-            pattern=pattern,
-            limit=limit,
-        )
-        content = ROUTES[resolved.spec.id].grep(self._deps, resolved, query, regex)
-        return _with_receipts(content, receipts)
+        if resolved.spec.id in (STRUCTURED, PERMANENT):
+            query = Query(
+                line_ranges=line_ranges,
+                day=day,
+                start_at=start_at,
+                end_at=end_at,
+                pattern=pattern,
+                limit=limit,
+            )
+            return ROUTES[resolved.spec.id].grep(self._deps, query, regex)
+        assert resolved.path is not None
+        if resolved.path.is_dir():
+            return self._grep_dir(resolved, regex, limit)
+        session = self._sessions.for_task(self._context().main_task_id)
+        source = self._visible_lines(session, resolved)
+        return _grep_lines(source, regex, line_ranges, limit)
+
+    def _visible_lines(self, session: TaskSession, resolved: Resource) -> list[str]:
+        """编辑者看到自己的已批准条目；其他任务看到磁盘原文。"""
+        assert resolved.path is not None
+        abs_path = str(resolved.path.resolve())
+        tracked = session.tracked(abs_path)
+        if tracked is not None:
+            actions = session.queue.actions_for(abs_path)
+            if actions:
+                return apply_actions(tracked.h0_lines, actions)
+        try:
+            return text_state(read_text(resolved.path))[0]
+        except FileNotFoundError as exc:
+            raise FileError(f"文件不存在：{resolved.path.name}") from exc
+
+    def _grep_dir(self, resolved: Resource, regex, limit: int) -> str:
+        assert resolved.path is not None
+        root = resolved.path
+        session = self._sessions.for_task(self._context().main_task_id)
+        matches: list[str] = []
+        for current, directories, files in os.walk(root):
+            directories[:] = sorted(
+                name for name in directories if not (Path(current) / name).is_symlink()
+            )
+            for name in sorted(files):
+                target = Path(current) / name
+                if target.is_symlink():
+                    continue
+                if session.tracked(str(target.resolve())) is None:
+                    try:
+                        source = text_state(read_text(target))[0]
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                else:
+                    source = self._visible_lines(session, Resource(resolved.spec, target, root))
+                relative = relative_path(target, root)
+                for number, line in enumerate(source, start=1):
+                    if regex.search(line):
+                        matches.append(f"{relative}:{number}: {line}")
+                        if len(matches) >= limit:
+                            return _grep_text(matches, True)
+        return _grep_text(matches, False)
+
+    # —— 写动作：只入队 ——
 
     @traced(ACTION_APPEND)
     def append(
@@ -234,51 +337,24 @@ class FileService:
         path: str | None = None,
         token: str | None = None,
     ) -> str:
-        resolved = self._writable(resource, path, ACTION_APPEND)
         block = _content_block(content)
-        assert resolved.path is not None
-        if resolved.path.is_dir():
-            raise FileError("目标是目录，请指定文件")
-        session = self._open_write(resolved, ACTION_APPEND)
-        with self._editor.lock_for(resolved.path):
-            snapshot = self._editor.snapshot(session.task, session.key)
-            if snapshot is None:
-                if resolved.spec.id == WORLD and not resolved.path.exists():
-                    self._editor.establish(
-                        session.task,
-                        resource=session.resource,
-                        key=session.key,
-                        display=session.display,
-                        abs_path=resolved.path,
-                        text="",
-                        created=True,
-                    )
-                    snapshot = self._editor.snapshot(session.task, session.key)
-                else:
-                    raise FileError(f"尚未读取 {session.display}；请先 read 再编辑")
-            assert snapshot is not None
-            if snapshot.delete_file:
-                raise FileError(f"{session.display} 已暂存为删除，不能再编辑")
-            self._guard(snapshot, resolved, session, token)
-            source, trailing = text_state(snapshot.change.staged_text)
-            if snapshot.created and not source:
-                trailing = True
-            lines = [*source, *block]
-            start = len(lines) - len(block) + 1
-            self._editor.record(
-                session.task,
-                session.author,
-                session.key,
-                ACTION_APPEND,
-                join_text(lines, trailing),
-                False,
+        with self._editing(resource, path, ACTION_APPEND, token) as editing:
+            if not editing.tracked.exists:
+                raise FileError(
+                    f"{editing.tracked.path} 不存在；append 不新建文件，请改用 create_file"
+                )
+            span = append_span(editing.tracked.line_count)
+            entry = editing.queue.propose(
+                resource=editing.tracked.resource,
+                path=editing.tracked.path,
+                abs_path=editing.tracked.abs_path,
+                author=editing.author,
+                op=LINES_APPEND,
+                source_action=ACTION_APPEND,
+                range_lines=span,
+                content=block,
             )
-        session.receipts.extend(self._editor.after_write(session.task, session.author, session.key))
-        message = (
-            f"已暂存，尚未写入文件；已追加至 {session.display} 第 "
-            f"{start}-{start + len(block) - 1} 行"
-        )
-        return _with_receipts(message, session.receipts)
+        return _proposed(editing.tracked, entry.entry_id, len(block), "追加")
 
     @traced(ACTION_INSERT)
     def insert(
@@ -289,37 +365,25 @@ class FileService:
         path: str | None = None,
         token: str | None = None,
     ) -> str:
-        resolved = self._writable(resource, path, ACTION_INSERT)
         block = _content_block(content)
-        assert resolved.path is not None
-        if resolved.path.is_dir():
-            raise FileError("目标是目录，请指定文件")
-        session = self._open_write(resolved, ACTION_INSERT)
-        with self._editor.lock_for(resolved.path):
-            snapshot = self._require_staged(session.task, session.key, session.display)
-            if snapshot.delete_file:
-                raise FileError(f"{session.display} 已暂存为删除，不能再编辑")
-            self._guard(snapshot, resolved, session, token)
-            source, trailing = text_state(snapshot.change.staged_text)
-            if not 1 <= line <= len(source) + 1:
-                raise FileError(f"插入位置 {line} 超出范围：应为 1–{len(source) + 1}")
-            lines = [*source[: line - 1], *block, *source[line - 1 :]]
-            self._editor.record(
-                session.task,
-                session.author,
-                session.key,
-                ACTION_INSERT,
-                join_text(lines, trailing),
-                False,
+        with self._editing(resource, path, ACTION_INSERT, token) as editing:
+            limit = editing.tracked.line_count + 1
+            if not 1 <= line <= limit:
+                raise FileError(f"插入位置 {line} 超出范围：应为 1–{limit}")
+            entry = editing.queue.propose(
+                resource=editing.tracked.resource,
+                path=editing.tracked.path,
+                abs_path=editing.tracked.abs_path,
+                author=editing.author,
+                op=LINES_INSERT,
+                source_action=ACTION_INSERT,
+                range_lines=(line, line),
+                content=block,
             )
-        session.receipts.extend(self._editor.after_write(session.task, session.author, session.key))
-        message = (
-            f"已暂存，尚未写入文件；已插入 {session.display} 第 {line}-{line + len(block) - 1} 行"
-        )
-        return _with_receipts(message, session.receipts)
+        return _proposed(editing.tracked, entry.entry_id, len(block), "插入")
 
     @traced(ACTION_REPLACE_LINES)
-    def edit(
+    def replace_lines(
         self,
         resource: str,
         line_ranges: Sequence[Sequence[int]],
@@ -328,41 +392,26 @@ class FileService:
         expect: str | Sequence[str] | None = None,
         token: str | None = None,
     ) -> str:
-        if not line_ranges:
-            raise FileError("整段替换需要提供行号范围 line_ranges；删除整段内容请用 delete")
-        resolved = self._writable(resource, path, ACTION_REPLACE_LINES)
         block = _content_block(content)
-        assert resolved.path is not None
-        if resolved.path.is_dir():
-            raise FileError("目标是目录，请指定文件")
-        session = self._open_write(resolved, ACTION_REPLACE_LINES)
-        with self._editor.lock_for(resolved.path):
-            snapshot = self._require_staged(session.task, session.key, session.display)
-            if snapshot.delete_file:
-                raise FileError(f"{session.display} 已暂存为删除，不能再编辑")
-            self._guard(snapshot, resolved, session, token)
-            source, trailing = text_state(snapshot.change.staged_text)
-            ranges = checked(source, line_ranges)
-            expect_matches(source, ranges, expect)
-            updated = replace_ranges(source, ranges, block)
-            self._editor.record(
-                session.task,
-                session.author,
-                session.key,
-                ACTION_REPLACE_LINES,
-                join_text(updated, trailing),
-                False,
-            )
-        session.receipts.extend(self._editor.after_write(session.task, session.author, session.key))
-        shift = sum(len(block) - (end - start + 1) for start, end in ranges[:-1])
-        message = (
-            f"已暂存，尚未写入文件；已编辑 {session.display} 第 "
-            f"{ranges[0][0]}-{ranges[-1][0] + shift + len(block) - 1} 行"
-        )
-        return _with_receipts(message, session.receipts)
+        with self._editing(resource, path, ACTION_REPLACE_LINES, token) as editing:
+            spans = self._checked_spans(editing.tracked, line_ranges)
+            if expect is not None:
+                expect_matches(editing.tracked.h0_lines, _closed(spans), expect)
+            for span in spans:
+                editing.queue.propose(
+                    resource=editing.tracked.resource,
+                    path=editing.tracked.path,
+                    abs_path=editing.tracked.abs_path,
+                    author=editing.author,
+                    op=LINES_REPLACE,
+                    source_action=ACTION_REPLACE_LINES,
+                    range_lines=span,
+                    content=block,
+                )
+        return _proposed(editing.tracked, f"{len(spans)} 条", len(block), "整段替换")
 
     @traced(ACTION_REPLACE_REGEX)
-    def replace(
+    def replace_regex(
         self,
         resource: str,
         line_ranges: Sequence[Sequence[int]],
@@ -371,213 +420,254 @@ class FileService:
         path: str | None = None,
         token: str | None = None,
     ) -> str:
-        if not line_ranges:
-            raise FileError("正则替换需要提供行号范围 line_ranges；整段替换请用 replace_lines")
-        resolved = self._writable(resource, path, ACTION_REPLACE_REGEX)
         regex = compile_pattern(pattern)
         replacement = "\n".join(_content_block(content))
-        assert resolved.path is not None
-        if resolved.path.is_dir():
-            raise FileError("目标是目录，请指定文件")
-        session = self._open_write(resolved, ACTION_REPLACE_REGEX)
-        with self._editor.lock_for(resolved.path):
-            snapshot = self._require_staged(session.task, session.key, session.display)
-            if snapshot.delete_file:
-                raise FileError(f"{session.display} 已暂存为删除，不能再编辑")
-            self._guard(snapshot, resolved, session, token)
-            source, trailing = text_state(snapshot.change.staged_text)
-            ranges = checked(source, line_ranges)
-            updated, hits, first, last = _replace_ranges(source, ranges, regex, replacement)
+        with self._editing(resource, path, ACTION_REPLACE_REGEX, token) as editing:
+            spans = self._checked_spans(editing.tracked, line_ranges)
+            hits = 0
+            source = editing.tracked.h0_lines
+            for span in spans:
+                for number in range(span[0], span[1]):
+                    updated, count = regex.subn(lambda _match: replacement, source[number - 1])
+                    if not count:
+                        continue
+                    hits += 1
+                    editing.queue.propose(
+                        resource=editing.tracked.resource,
+                        path=editing.tracked.path,
+                        abs_path=editing.tracked.abs_path,
+                        author=editing.author,
+                        op=LINES_REPLACE,
+                        source_action=ACTION_REPLACE_REGEX,
+                        range_lines=(number, number + 1),
+                        content=tuple(updated.split("\n")),
+                    )
             if not hits:
-                raise FileError(f"正则 {pattern!r} 没有匹配到内容，请先用 read 确认原文")
-            self._editor.record(
-                session.task,
-                session.author,
-                session.key,
-                ACTION_REPLACE_REGEX,
-                join_text(updated, trailing),
-                False,
-            )
-        session.receipts.extend(self._editor.after_write(session.task, session.author, session.key))
-        message = (
-            f"已暂存，尚未写入文件；已替换 {session.display} 共 {hits} 处，位于第 {first}-{last} 行"
-        )
-        return _with_receipts(message, session.receipts)
+                raise FileError(f"正则 {pattern!r} 在指定范围内没有匹配，请先用 read 确认原文")
+        return _proposed(editing.tracked, f"{hits} 条", 1, "正则替换")
 
-    @traced(ACTION_DELETE)
-    def delete(
+    @traced(ACTION_DELETE_LINES)
+    def delete_lines(
         self,
         resource: str,
+        line_ranges: Sequence[Sequence[int]],
         path: str | None = None,
-        line_ranges: Sequence[Sequence[int]] | None = None,
         expect: str | Sequence[str] | None = None,
         token: str | None = None,
     ) -> str:
-        resolved = self._writable(resource, path, ACTION_DELETE)
-        assert resolved.path is not None
-        if resolved.path.is_dir():
-            if resolved.spec.id == WORLD and line_ranges is None:
-                raise FileError("不能删除小世界目录；只允许删除文件")
-            raise FileError("目标是目录，请指定文件")
-        if line_ranges is None and not self._context().permissions.can_delete_file(
-            resolved.spec.id
-        ):
-            raise FileDenied(
-                f"{resolved.spec.label}不能删除文件本体；请提供 line_ranges 只删除内容"
-            )
-        session = self._open_write(resolved, ACTION_DELETE)
-        if line_ranges is None:
-            with self._editor.lock_for(resolved.path):
-                snapshot = self._require_staged(session.task, session.key, session.display)
-                if snapshot.delete_file:
-                    raise FileError(f"{session.display} 已暂存为删除")
-                self._guard(snapshot, resolved, session, token)
-                self._editor.record(
-                    session.task,
-                    session.author,
-                    session.key,
-                    "delete_file",
-                    "",
-                    True,
+        with self._editing(resource, path, ACTION_DELETE_LINES, token) as editing:
+            spans = self._checked_spans(editing.tracked, line_ranges)
+            if expect is not None:
+                expect_matches(editing.tracked.h0_lines, _closed(spans), expect)
+            for span in spans:
+                editing.queue.propose(
+                    resource=editing.tracked.resource,
+                    path=editing.tracked.path,
+                    abs_path=editing.tracked.abs_path,
+                    author=editing.author,
+                    op=LINES_DELETE,
+                    source_action=ACTION_DELETE_LINES,
+                    range_lines=span,
+                    content=(),
                 )
-            session.receipts.extend(
-                self._editor.after_write(session.task, session.author, session.key)
-            )
-            return _with_receipts(
-                f"已暂存，尚未删除文件；已标记删除 {session.display}", session.receipts
-            )
-        with self._editor.lock_for(resolved.path):
-            snapshot = self._require_staged(session.task, session.key, session.display)
-            if snapshot.delete_file:
-                raise FileError(f"{session.display} 已暂存为删除，不能再编辑")
-            self._guard(snapshot, resolved, session, token)
-            source, trailing = text_state(snapshot.change.staged_text)
-            ranges = checked(source, line_ranges)
-            expect_matches(source, ranges, expect)
-            for start, end in reversed(ranges):
-                del source[start - 1 : end]
-            self._editor.record(
-                session.task,
-                session.author,
-                session.key,
-                ACTION_DELETE,
-                join_text(source, trailing),
-                False,
-            )
-        session.receipts.extend(self._editor.after_write(session.task, session.author, session.key))
-        return _with_receipts(
-            f"已暂存，尚未写入文件；已删除 {session.display} 第 {_span_text(line_ranges)} 行",
-            session.receipts,
-        )
+        removed = sum(span[1] - span[0] for span in spans)
+        return _proposed(editing.tracked, f"{len(spans)} 条", removed, "删除内容")
 
-    def _settle_active(self, action: str, resource: str | None, key: str | None) -> tuple[str, ...]:
-        context = self._context()
-        return self._editor.before_access(
-            context.main_task_id,
-            context.subtask_id,
-            action,
-            resource or "",
-            key,
-        )
-
-    def _approve_read(
+    @traced(ACTION_CREATE_FILE)
+    def create_file(
         self,
-        *,
-        action: str,
-        topic: str,
-        task: str,
-        parameters: str,
-        resource: str | None = None,
-        path: str | None = None,
-    ) -> None:
-        """用户来源的读取在真正读取前逐次审批；来源与身份只由后端上下文决定。"""
-        if self._read_gate is None:
-            return
-        context = self._context()
-        if context.source != SOURCE_USER:
-            return
-        try:
-            outcome = self._read_gate.request_read(
-                context,
-                ReadApprovalRequest(
-                    action=action,
-                    topic=topic,
-                    task=task,
-                    parameters=parameters,
-                    resource=resource,
-                    path=path,
-                ),
-            )
-        except Exception as exc:
-            raise FileError(f"「{topic}」读取审批失败：{exc}") from exc
-        if outcome.approved:
-            return
-        reason = outcome.reason or "用户拒绝"
-        raise FileError(f"「{topic}」未获批准（{reason}）；本次未读取，任务可以继续")
-
-    def _require_staged(self, task: str, key: str, display: str) -> StagedSnapshot:
-        snapshot = self._editor.snapshot(task, key)
-        if snapshot is None:
-            raise FileError(f"尚未读取 {display}；请先 read 再编辑")
-        return snapshot
-
-    def _open_write(self, resolved: Resource, action: str) -> _WriteSession:
-        """写动作的公共开场：取身份、定位暂存键、按文件开票。"""
+        resource: str,
+        path: str,
+        content: str | None = None,
+        token: str | None = None,
+    ) -> str:
+        resolved = self._resolver.resolve(resource, path)
         assert resolved.path is not None
         context = self._context()
-        target = staging_target(resolved)
-        assert target is not None
-        resource_id, key, display = target
-        receipts = list(
-            self._editor.before_access(
-                context.main_task_id, context.subtask_id, action, resource_id, key
+        session = self._sessions.for_task(context.main_task_id)
+        owned = self._guard.acquire(resolved.path, context.main_task_id)
+        completed = False
+        try:
+            self._authorize(resolved, ACTION_CREATE_FILE)
+            if resolved.path.exists():
+                raise FileError(f"{self._display(resolved)} 已存在；改内容请用 read 后再编辑")
+            block = _content_block(content) if content is not None else []
+            tracked = session.track(
+                resource=resolved.spec.id,
+                path=self._display(resolved),
+                abs_path=str(resolved.path.resolve()),
+                text="",
+                exists=False,
+                creates_file=True,
             )
-        )
-        return _WriteSession(
-            task=context.main_task_id,
+            entry = session.queue.propose(
+                resource=tracked.resource,
+                path=tracked.path,
+                abs_path=tracked.abs_path,
+                author=context.subtask_id,
+                op=LINES_APPEND,
+                source_action=ACTION_CREATE_FILE,
+                range_lines=(1, 1),
+                content=tuple(block),
+                creates_file=True,
+            )
+            completed = True
+        finally:
+            if not completed and owned:
+                self._guard.release(resolved.path, context.main_task_id)
+        return _proposed(tracked, entry.entry_id, len(block), "新建文件")
+
+    @traced(ACTION_DELETE_FILE)
+    def delete_file(
+        self,
+        resource: str,
+        path: str,
+        token: str | None = None,
+    ) -> str:
+        with self._editing(resource, path, ACTION_DELETE_FILE, token) as editing:
+            if not editing.tracked.exists:
+                raise FileError(f"{editing.tracked.path} 不存在，无需删除")
+            editing.queue.propose(
+                resource=editing.tracked.resource,
+                path=editing.tracked.path,
+                abs_path=editing.tracked.abs_path,
+                author=editing.author,
+                op=LINES_DELETE,
+                source_action=ACTION_DELETE_FILE,
+                range_lines=whole_file_span(editing.tracked.line_count),
+                content=(),
+                removes_file=True,
+            )
+            editing.session.mark(editing.tracked.abs_path, removes_file=True)
+        return _proposed(editing.tracked, "1 条", editing.tracked.line_count, "删除文件")
+
+    @traced(ACTION_CREATE_DIR)
+    def create_dir(self, resource: str, path: str) -> str:
+        resolved = self._writable(resource, path, ACTION_CREATE_DIR)
+        assert resolved.path is not None
+        if resolved.path.exists():
+            raise FileError(f"目录已存在：{self._display(resolved)}")
+        entry = self._propose_structure(resolved, ACTION_CREATE_DIR)
+        return _proposed_structure(resolved, entry.entry_id, "新建目录")
+
+    @traced(ACTION_DELETE_DIR)
+    def delete_dir(self, resource: str, path: str) -> str:
+        resolved = self._writable(resource, path, ACTION_DELETE_DIR)
+        assert resolved.path is not None
+        if not resolved.path.exists():
+            raise FileError(f"目录不存在：{self._display(resolved)}")
+        if not resolved.path.is_dir():
+            raise FileError(f"{self._display(resolved)} 不是目录；删除文件请用 delete_file")
+        remaining = _child_count(resolved.path)
+        if remaining:
+            raise FileError(
+                f"目录非空：{self._display(resolved)} 下还有 {remaining} 个条目；"
+                "请先逐项删除后再删除目录，不提供递归删除"
+            )
+        entry = self._propose_structure(resolved, ACTION_DELETE_DIR)
+        return _proposed_structure(resolved, entry.entry_id, "删除空目录")
+
+    # —— 内部 ——
+
+    def _propose_structure(self, resolved: Resource, action: str):
+        assert resolved.path is not None
+        context = self._context()
+        session = self._sessions.for_task(context.main_task_id)
+        return session.queue.propose(
+            resource=resolved.spec.id,
+            path=self._display(resolved),
+            abs_path=str(resolved.path.resolve()),
             author=context.subtask_id,
-            resource=resource_id,
-            key=key,
-            display=display,
-            receipts=receipts,
+            op=action,
+            source_action=action,
         )
 
-    def _guard(
-        self,
-        snapshot: StagedSnapshot,
-        resolved: Resource,
-        session: _WriteSession,
-        token: str | None,
-    ) -> None:
-        """编辑期两道校验：令牌匹配、磁盘与读取留底一致。
+    @contextmanager
+    def _editing(
+        self, resource: str, path: str | None, action: str, token: str | None
+    ) -> Iterator[_Editing]:
+        """先占后审：检查并取得占用 → 权限校验 → 版本校验 → 计算 range。
 
-        只在该文件尚未写入过时比对磁盘；写入之后 base 冻结，令牌即稳定凭据。
+        占用在成功后继续持有，直到提交、取消或任务结束；任何一步失败都视为本次
+        动作取消，立即释放，不留下空占用。
         """
-        if token is not None:
-            snapshot_token.require_match(snapshot.version, token, session.display)
-        if snapshot.writes or snapshot.created:
-            return
-        assert resolved.path is not None
+        resolved = self._resolver.resolve(resource, path)
+        context = self._context()
+        if resolved.path is None:
+            # 虚拟资源没有可写文件：先走权限校验，给出「不支持该动作」而不是断言。
+            self._authorize(resolved, action)
+            raise FileError(f"{resolved.spec.label}没有可写入的文件")
+        session = self._sessions.for_task(context.main_task_id)
+        abs_path = str(resolved.path.resolve())
+        owned = self._guard.acquire(resolved.path, context.main_task_id)
+        completed = False
         try:
-            disk = read_text(resolved.path)
+            self._authorize(resolved, action)
+            tracked = session.tracked(abs_path)
+            if tracked is None:
+                raise FileError(f"尚未读取 {self._display(resolved)}；请先 read 再编辑")
+            self._verify(session, resolved, tracked)
+            tracked = session.tracked(abs_path)
+            assert tracked is not None
+            if token is not None:
+                snapshot_token.require_match(tracked.version, token, tracked.path)
+            yield _Editing(session, tracked, resolved, context.subtask_id)
+            completed = True
+        finally:
+            if not completed and owned:
+                self._guard.release(resolved.path, context.main_task_id)
+
+    def _verify(self, session: TaskSession, resolved: Resource, tracked: TrackedFile) -> None:
+        """校验磁盘实际内容；不一致即停止本次动作，并按分区处置重置基底。"""
+        assert resolved.path is not None
+        if not tracked.exists:
+            return
+        try:
+            check = check_version(resolved.path, tracked.h0_text)
         except FileNotFoundError as exc:
-            raise snapshot_token.StaleSnapshot(
-                f"{session.display} 已不存在；请重新 index 查看目录后再操作"
-            ) from exc
-        if disk != snapshot.change.base_text:
-            raise snapshot_token.StaleSnapshot(
-                f"{session.display} 在读取之后已被修改；请重新 read 后再编辑"
-            )
+            raise FileError(f"{tracked.path} 已不存在；请重新 index 查看目录后再操作") from exc
+        if check.ok:
+            return
+        h1 = check.h1_text or ""
+        result = revalidate(session.queue, tracked.abs_path, tracked.h0_text, h1)
+        session.refresh(tracked.abs_path, text=h1, exists=True)
+        raise FileError(
+            f"{tracked.path} 在读取之后已被修改（{describe_spans(check.spans)}）；"
+            f"已作废 {len(result.invalidated)} 条相交条目、保留 {len(result.kept)} 条；"
+            "请重新 read 后再提出"
+        )
+
+    def _checked_spans(
+        self, tracked: TrackedFile, line_ranges: Sequence[Sequence[int]]
+    ) -> list[LineRange]:
+        spans = closed_ranges(line_ranges)
+        limit = tracked.line_count + 1
+        for span in spans:
+            if span[1] > limit:
+                raise FileError(
+                    f"行号超出范围：{span[0]}-{span[1] - 1}，文件共 {tracked.line_count} 行"
+                )
+        return spans
+
+    def _track(
+        self, session: TaskSession, resolved: Resource, text: str, exists: bool
+    ) -> TrackedFile:
+        assert resolved.path is not None
+        return session.track(
+            resource=resolved.spec.id,
+            path=self._display(resolved),
+            abs_path=str(resolved.path.resolve()),
+            text=text,
+            exists=exists,
+        )
 
     def _context(self) -> TaskContext:
-        """取任务身份；工具本身不携带身份参数，一律由后端在派发时注入。"""
         try:
             return current_task()
         except TaskContextError as exc:
             raise FileError(f"文件访问缺少任务身份：{exc}") from exc
 
     def _authorize(self, resource: Resource, action: str) -> TaskContext:
-        """先查资源登记的硬限制，再查派发时的权限快照；两关都过才放行。"""
         self._resolver.require(resource, action)
         context = self._context()
         resource_id = resource.spec.id
@@ -593,114 +683,74 @@ class FileService:
             raise FileError(f"{resolved.spec.label}没有可写入的文件")
         return resolved
 
+    def _display(self, resolved: Resource) -> str:
+        spec = resolved.spec
+        if resolved.path is None:
+            return spec.label
+        if spec.id == WORLD:
+            if resolved.path == resolved.root:
+                return "world"
+            return relative_path(resolved.path, resolved.root)
+        return resolved.path.name
 
-def _json(payload: object) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+def _resolver_world(resolver: ResourceResolver) -> Path:
+    return resolver.resolve(WORLD).path  # type: ignore[return-value]
+
+
+def _json(view: object) -> str:
+    return json.dumps(view, ensure_ascii=False, indent=2)
+
+
+def _closed(spans: Sequence[LineRange]) -> list[tuple[int, int]]:
+    """把半开区间换成 `expect_matches` 使用的闭区间；`closed_ranges` 产物恒非零宽。"""
+    return [(start, end - 1) for start, end in spans]
 
 
 def _content_block(content: str) -> list[str]:
-    normalized = content.replace("\r\n", "\n").replace("\r", "\n").strip("\n")
+    normalized = normalize_text(content.encode("utf-8")).strip("\n")
     if not normalized.strip():
         raise FileError("内容不能为空")
     return normalized.split("\n")
 
 
-def _with_receipts(text: str, receipts: Sequence[str]) -> str:
-    if not receipts:
-        return text
-    return f"{text}\n" + "\n".join(receipts)
+def _proposed(tracked: TrackedFile, entry: str, lines: int, label: str) -> str:
+    return (
+        f"已提出，尚未写入文件；{label} {tracked.path}，产生 {entry}"
+        f"（{lines} 行），等待 review 批准；本任务占用 {tracked.path}，提交或任务结束才释放"
+    )
 
 
-def _with_settlement(payload: dict[str, object], receipts: Sequence[str]) -> dict[str, object]:
-    if receipts:
-        payload["settlement"] = list(receipts)
-    return payload
+def _proposed_structure(resolved: Resource, entry: str, label: str) -> str:
+    return f"已提出，尚未写入磁盘；{label}，产生 {entry}，等待 review 批准"
 
 
-def _replace_ranges(
-    source: Sequence[str],
-    ranges: Sequence[tuple[int, int]],
-    regex,
-    replacement: str,
-) -> tuple[list[str], int, int, int]:
-    updated = list(source)
-    hits = 0
-    first = len(source) + 1
-    last = 0
-    for start, end in reversed(ranges):
-        target = "\n".join(updated[start - 1 : end])
-        replaced, count = regex.subn(lambda _match: replacement, target)
-        if not count:
+def _child_count(path: Path) -> int:
+    try:
+        return sum(1 for _ in path.iterdir())
+    except OSError:
+        return 0
+
+
+def _grep_lines(
+    source: Sequence[str], regex, line_ranges: Sequence[Sequence[int]] | None, limit: int
+) -> str:
+    ranges = parse_ranges(line_ranges) if line_ranges else None
+    matches: list[str] = []
+    for number, line in enumerate(source, start=1):
+        if ranges is not None and not any(start <= number <= end for start, end in ranges):
             continue
-        hits += count
-        block = replaced.split("\n")
-        updated[start - 1 : end] = block
-        first = min(first, start)
-        last = max(last, start + len(block) - 1)
-    return updated, hits, first, last
+        if regex.search(line):
+            matches.append(f"{number}: {line}")
+            if len(matches) >= limit:
+                return _grep_text(matches, True)
+    return _grep_text(matches, False)
 
 
-def _approval_target(resource: Resource) -> str:
-    """审批卡展示的目标：带资源前缀的路径，目录与虚拟资源用可读名称。"""
-    spec = resource.spec
-    if resource.path is None:
-        return f"{spec.id}（{spec.label}）"
-    if spec.id == WORLD:
-        if resource.path == resource.root:
-            return "world（目录）"
-        return f"world/{relative_path(resource.path, resource.root)}"
-    if resource.path.is_dir():
-        return f"{spec.id}（{spec.label}）"
-    return f"{spec.id}/{resource.path.name}"
-
-
-def _approval_path(resource: Resource) -> str | None:
-    if resource.path is None or resource.path.is_dir():
-        return None
-    if resource.spec.id == WORLD:
-        return relative_path(resource.path, resource.root)
-    return resource.path.name
-
-
-def _read_parameters(
-    line_ranges: Sequence[Sequence[int]] | None,
-    day: str | None,
-    start_at: str | None,
-    end_at: str | None,
-) -> str:
-    parts: list[str] = []
-    if line_ranges:
-        parts.append(f"line_ranges={[list(item) for item in line_ranges]}")
-    if day:
-        parts.append(f"date={day}")
-    if start_at:
-        parts.append(f"from={start_at}")
-    if end_at:
-        parts.append(f"to={end_at}")
-    return "；".join(parts) or "无额外参数"
-
-
-def _grep_parameters(
-    pattern: str,
-    line_ranges: Sequence[Sequence[int]] | None,
-    day: str | None,
-    start_at: str | None,
-    end_at: str | None,
-    limit: int,
-) -> str:
-    parts = [f"pattern={pattern!r}"]
-    if line_ranges:
-        parts.append(f"line_ranges={[list(item) for item in line_ranges]}")
-    if day:
-        parts.append(f"date={day}")
-    if start_at:
-        parts.append(f"from={start_at}")
-    if end_at:
-        parts.append(f"to={end_at}")
-    parts.append(f"limit={limit}")
-    return "；".join(parts)
-
-
-def _span_text(lines: Sequence[Sequence[int]]) -> str:
-    ranges = parse_ranges(lines)
-    return "、".join(f"{start}" if start == end else f"{start}-{end}" for start, end in ranges)
+def _grep_text(matches: Sequence[str], truncated: bool) -> str:
+    if not matches:
+        return "没有匹配的内容"
+    head = "\n".join(matches)
+    if truncated:
+        return f"{head}\n（已截断：仅显示前 {len(matches)} 条，可提高 limit 或缩小范围）"
+    return head

@@ -1,9 +1,11 @@
-"""预览投影：把 diff hunk 转成审批卡视图模型，不做差异计算。"""
+"""预览投影：把 review 视图转成审批卡视图模型，不做差异计算。
+
+卡片与面板共享同一份 diff：卡片展示 hunk 的头与增删行，面板展示逐行标注。
+"""
 
 from dataclasses import dataclass
 
-from module.files.diff import Hunk
-from module.files.staging import StagedSnapshot
+from module.files.review import KIND_ADD, KIND_REMOVE, FileChange
 
 FOLD_BYTES = 256 * 1024
 
@@ -28,22 +30,25 @@ class FilePreview:
     hunks: tuple[PreviewHunk, ...]
 
 
-def build_preview(snapshot: StagedSnapshot, hunks: list[Hunk]) -> FilePreview:
-    folded = len(snapshot.change.base_text.encode("utf-8")) > FOLD_BYTES
-    previews = ()
+def build_preview(change: FileChange, *, folded: bool = False) -> FilePreview:
+    hunks: tuple[PreviewHunk, ...] = ()
     if not folded:
-        previews = tuple(
-            PreviewHunk(header=hunk.header, removed=hunk.removed, added=hunk.added)
-            for hunk in hunks
+        hunks = tuple(
+            PreviewHunk(
+                header=hunk.header,
+                removed=tuple(line.text for line in hunk.lines if line.kind == KIND_REMOVE),
+                added=tuple(line.text for line in hunk.lines if line.kind == KIND_ADD),
+            )
+            for hunk in change.hunks
         )
     return FilePreview(
-        resource=snapshot.change.resource,
-        path=snapshot.change.path,
-        op=snapshot.change.op,
-        created=snapshot.created,
-        deleted=snapshot.delete_file,
-        authors=snapshot.authors,
-        hunk_count=len(hunks),
+        resource=change.resource,
+        path=change.path,
+        op=change.mark,
+        created=change.mark == "A",
+        deleted=change.mark == "D",
+        authors=(),
+        hunk_count=len(change.hunks),
         folded=folded,
-        hunks=previews,
+        hunks=hunks,
     )

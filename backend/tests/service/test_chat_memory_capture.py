@@ -20,7 +20,6 @@ from module.agent.tools.memory import make_memory_tools
 from module.chat.chat_service import ChatRequest, ChatService
 from module.files.resolver import ResourceResolver
 from module.files.service import FileService, ModelLimit
-from module.files.staging import StagingStore
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
 from module.memory.daily_log_service import DailyLogService
@@ -175,12 +174,14 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
     entries = MemoryEntryService(db_file)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
+    review = ReviewService()
     service = FileService(
         ResourceResolver(tmp_path),
         entries,
         daily,
         skills,
-        editor=ReviewService(StagingStore()),
+        sessions=review.sessions,
+        guard=review.guard,
         timezone=TZ,
         limit_provider=lambda: ModelLimit(10000, "estimate"),
     )

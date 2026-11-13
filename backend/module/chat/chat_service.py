@@ -45,7 +45,6 @@ from module.agent.prompt import (
 from module.chat.activity import ChatActivity
 from module.chat.citations import CitedSource, resolve_sources, split_citations
 from module.chat.context import (
-    KIND_DAILY,
     AssembledContext,
     ContextBuilder,
     MemoryFragment,
@@ -462,20 +461,12 @@ class ChatService:
         received_at: datetime | None,
         persona_id: str,
     ) -> tuple[MemoryFragment, ...]:
-        """本轮召回：只读历史对话，命中失败或无结果时退回调用方片段。"""
-        if user_text is None or self._recall is None:
-            return tuple(provided)
-        today = (received_at or self._now()).date()
-        try:
-            hits = self._recall.recall(user_text, today=today, persona_id=persona_id)
-        except Exception:
-            logger.exception("记忆召回失败，本轮跳过")
-            return tuple(provided)
-        recalled = tuple(
-            MemoryFragment(kind=KIND_DAILY, date=hit.day, text=f"[{hit.role}] {hit.text}")
-            for hit in hits
-        )
-        return (*provided, *recalled)
+        """记忆召回（RecallService 关键词检索）尚未设计，先禁用（T-03 重议后恢复）。
+
+        只退回调用方片段；生产调用方不传片段，故【检索到的记忆】不再注入。
+        RecallService 与 context.py 的片段渲染能力保留休眠，召回策略定稿后再恢复。
+        """
+        return tuple(provided)
 
     def _await_recollection(self, snapshot: PersonaSnapshot, turn_id: str | None) -> str:
         """等回忆就绪并返回可注入上下文的正文；跨零点则给新的一天补一次。"""

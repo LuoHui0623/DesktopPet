@@ -55,7 +55,7 @@ def test_list_returns_rendered_entries_and_daily_index(client):
 
     body = client.get("/api/memories", headers=AUTH).json()
 
-    assert body["structured"] == "## 喜好\n[#1] 咖啡：美式，不加糖\n"
+    assert body["structured"] == "## 喜好\n咖啡：美式，不加糖\n"
     assert body["daily_memory"] == {"2026-10": ["2026-10-18"]}
     assert "temporary_mode" not in body
     assert body["daily_records"] is None

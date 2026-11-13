@@ -206,6 +206,19 @@ def test_structured_block_is_omitted_when_document_is_empty(parts):
     assert "【结构化记忆】" not in text
 
 
+def test_disabled_entries_are_not_injected(parts):
+    """停用条目仍在库里可见（设置页/文件视图），但不进上下文注入。"""
+    kept = parts["add"]("喜欢美式")
+    dropped = parts["add"]("喜欢拿铁")
+    parts["entries"].disable(dropped.id, "改喝美式")
+
+    text = parts["builder"]().build("你好").messages[0].content
+
+    assert "喜欢美式" in text
+    assert "喜欢拿铁" not in text
+    assert kept.id != dropped.id
+
+
 def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch):
     def explode(**kwargs):
         raise MemoryReadError("坏了")
@@ -217,11 +230,12 @@ def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch
 
 
 def test_structured_memory_is_injected_in_full_without_truncation(parts):
-    for index in range(50):
+    """≥101 条启用条目全量注入：去掉旧 POOL_LIMIT=100 上限，不得静默截断（Q23）。"""
+    for index in range(120):
         parts["add"](f"第{index}条：" + "字" * 40)
     result = parts["builder"]().build("你好")
     text = result.messages[0].content
-    assert all(f"第{index}条：" in text for index in range(50))
+    assert all(f"第{index}条：" in text for index in range(120))
     assert "已截断" not in text
     assert result.warnings == ()
 
@@ -294,7 +308,7 @@ def test_several_utterances_are_restored_as_separate_history_lines(parts):
 
 
 def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
-    """段落顺序：基础系统提示词 → 日期分隔符 → 结构化记忆 → 检索片段 → 引用规则。"""
+    """段落顺序：基础系统提示词 → 日期分隔符 → 结构化记忆 → 检索片段。"""
     parts["add"]("喜欢美式咖啡")
     fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
     text = parts["builder"]().build("你好", fragments).messages[0].content
@@ -303,11 +317,10 @@ def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
         "2026/10/18",
         "【结构化记忆】",
         "【检索到的记忆】",
-        context_module.CITATION_RULE,
     ]
     positions = [text.index(token) for token in order]
     assert positions == sorted(positions)
-    assert text.rstrip().endswith(context_module.CITATION_RULE)
+    assert text.rstrip().endswith("昨天聊了茶")
 
 
 def test_day_marker_appears_exactly_once(parts):
@@ -344,7 +357,6 @@ def test_empty_memory_inputs_add_no_blank_sections(parts):
     assert "\n\n\n" not in text
     assert "【结构化记忆】" not in text
     assert "【检索到的记忆】" not in text
-    assert context_module.CITATION_RULE not in text
 
 
 def test_base_prompt_built_by_the_service_is_used_as_is(parts):
@@ -433,7 +445,6 @@ def test_injected_lists_kept_fragments_only(parts):
     result = parts["builder"]().build("你好", fragments)
     assert [fragment.date for fragment in result.injected] == ["2026-10-18"]
     assert result.dropped_fragments == 1
-    assert context_module.CITATION_RULE in result.messages[0].content
 
 
 def test_structured_memory_is_not_citable(parts):
@@ -441,13 +452,13 @@ def test_structured_memory_is_not_citable(parts):
     result = parts["builder"]().build("你好")
     assert result.injected == ()
     assert "【结构化记忆】" in result.messages[0].content
-    assert context_module.CITATION_RULE not in result.messages[0].content
 
 
-def test_citation_rule_is_omitted_when_nothing_is_injected(parts):
-    result = parts["builder"]().build("你好")
-    assert result.injected == ()
-    assert context_module.CITATION_RULE not in result.messages[0].content
+def test_no_citation_rule_is_emitted_for_structured_memory(parts):
+    """第 26 条：拒绝 `[引用 日期]` 面向回复的引用格式，结构化记忆不可引用。"""
+    parts["add"]("喜欢茶")
+    text = parts["builder"]().build("你好").messages[0].content
+    assert "[引用 日期]" not in text
 
 
 def test_perception_events_are_standalone_assistant_messages_in_current(parts):

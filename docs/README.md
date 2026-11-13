@@ -21,6 +21,12 @@
 | [docs/OBSERVER.md](OBSERVER.md) | 观测域：观测器（看）与解析器（判）的边界、契约、消费顺序、阈值归属 | Win32 采集细节、话术、模型 | 已实现 |
 | [docs/PROACTIVE.md](PROACTIVE.md) | 管线：Trigger → chat → 台账 → WS，失败与去重 | 事件阈值、话术模板 | 已实现 |
 | [docs/PERCEPTION.md](PERCEPTION.md) | 采集细节：Win32 调用、过滤规则、判断条件、主题与限额的原始设计 | 分层与契约（以 OBSERVER.md 为准） | 旧稿，待拆分 |
+| [docs/FILES/README.md](FILES/README.md) | 文件域导航：边界、概念、组件分工、八条不变量、代码落点与阅读路径 | 各主题契约正文、任务排期 | 已实现 |
+| [docs/FILES/ADDRESSING.md](FILES/ADDRESSING.md) | 寻址：`index` 单参数两视图、保留字判别、注册约束、两类报错、全量返回 | 视图字段与类型分层、动作清单 | 已实现 |
+| [docs/FILES/ACTIONS.md](FILES/ACTIONS.md) | 动作集：`dir`/`file` 分组判据、逐动作语义、`args` 与 `desc` 派生、权限命名 | 入参判别、条目的入队与合并 | 已实现 |
+| [docs/FILES/VIEW.md](FILES/VIEW.md) | 视图：两视图 JSON、条目字段、`Index`/`FileEntry` 类型分层、序列化约定、旧键移除 | 判别与报错、动作语义 | 已实现 |
+| [docs/FILES/QUEUE.md](FILES/QUEUE.md) | 队列与授权：条目三元组、四种 lines 操作、状态机、并 action、按行 diff、提交边界 | 哈希与外部变更判定、动作参数 | 已实现 |
+| [docs/FILES/VERSION.md](FILES/VERSION.md) | 版本与一致性：归一化哈希、`H0`/`H1`、只读副本边界、分区处置、锁与读取可见性 | 条目合并与 review 呈现 | 已实现 |
 
 ## 阅读顺序
 
@@ -29,6 +35,7 @@
 - 想改形象包、状态或动画：`docs/AVATAR/README.md` → 对应主题（`PACK.md` / `STATE.md` / `ANIMATION.md` / `WINDOW.md`）→ `Arch.md` 的「形象域」（分层与落点）。
 - 想改形象与人设的归属：`docs/AVATAR/GROUP.md` → `PACK.md`（包契约）。
 - 想改某条链路：先读对应域文档的“对外契约”，再读其“失败与降级”与“已定口径”。
+- 想改文件读写、索引或写入审批：`docs/FILES/README.md` → `ADDRESSING.md` / `ACTIONS.md` / `VIEW.md`（发现与契约）→ `QUEUE.md` / `VERSION.md`（写入保护）。
 
 ## 写作规则
 
@@ -48,6 +55,7 @@
   - 已由 OBSERVER.md 取代：主题（能聊什么）（事件→主题、话术门槛）、节制规则（主动消息的刹车）（开口闸门）。两份若冲突，以 OBSERVER.md 为准；主题的话术示例在 chat 的提示词定稿前暂留，仅作参考，不是契约。
   - 后续若要合并，只把状态模型、采集方式、判断条件的有效细节补进 OBSERVER.md，再删除重复段；不整体搬运。
 - **当前/目标边界**：感知当前实现在 `service/perception`；目标逻辑上由 service 提供采样/runtime 工具、感知业务责任解释观测并产生 event，再由 chat 入口通过公开契约消费。该职责方向已在 `Arch.md` 的「责任归属与迁移状态」确认，但目标物理目录及迁移尚未实施；域文档仍按“观测域”描述，不将其实现包名写死。
+- **文件域已按契约实现**：`docs/FILES/` 五份主题文档记录的口径（`index` 单参数两视图、动作集按条目 `type` 分组、条目队列与并 action、全文哈希与分区处置、视图类型分层）已落到 `backend/module/files/` 与 `backend/module/agent/review.py`。工具层按动作拆分、不再有 `edit` 聚合入口；写动作只入队，人工授权只在 review 一处，提交前复核全文哈希，冲突只报告「检测到哈希不一致」且不自动合并。端到端不变量见 [test_files_end_to_end.py](../backend/tests/acceptance/test_files_end_to_end.py)。
 
 ## 域文档的固定结构
 
@@ -95,3 +103,8 @@
 | 状态窗口 | 只展示当前轮次；换轮替换、关窗不落库、重连以服务端快照为准；开发模式显示完整请求、未解析原始响应与归一化回复，正式模式只显示 token 与耗时，边界由服务端裁剪 | [Arch.md](../Arch.md) 的「状态窗口」、[LLM.md](LLM.md) 的「实时事件」 |
 | 记忆预算 | 结构化记忆全文注入、不设预算不截断；只有检索片段受 600 字符预算约束，超限整条舍弃并记 warning | [CHAT.md](CHAT.md) 的「输入顺序」 |
 | 记忆默认落库 | 不再提供临时模式：每轮都写 `daily_log`，结构化记忆写入只受敏感信息规则约束 | [CHAT.md](CHAT.md) 的「daily_log」 |
+| 文件域寻址 | `index` 单参数两视图；四个保留字全大写书写、判别归一大小写；未注册与已注册非目录分别报错；`entries` 与 `dir_resources` 全量返回 | [FILES/ADDRESSING.md](FILES/ADDRESSING.md) 的「单一入参」至「完整性与可见性」 |
+| 文件动作集 | 按受体条目 `type` 分 `dir`/`file` 两组；`create_file`、`delete_file` 归 `dir`；不存在 `edit` 聚合入口 | [FILES/ACTIONS.md](FILES/ACTIONS.md) 的「分组判据」与「独立动作，不设聚合入口」 |
+| 写入授权 | 人工授权只在 review 一处，逐条批准、允许部分批准；并 action 默认允许不经批准；review 为变更列表 + 按行连续 diff | [FILES/QUEUE.md](FILES/QUEUE.md) 的「授权」至「review 呈现」 |
+| 版本与外部变更 | 以 `utf-8-sig` 去 BOM、`\n` 归一后的 SHA-256 为版本；`diff_lines` 相交的条目作废重提，不相交的按偏移保留原批准 | [FILES/VERSION.md](FILES/VERSION.md) 的「版本」至「外部变更的分区处置」 |
+| 文件域不变量 | 提交前文件不变、只提交 `approved`、清空不等于删除、非空目录不删等八条 | [FILES/README.md](FILES/README.md) 的「不变量」 |

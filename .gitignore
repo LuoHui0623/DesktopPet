@@ -39,6 +39,7 @@ Thumbs.db
 # 编辑器
 .vscode/
 .idea/
+.workbuddy/
 
 # 导出的 OpenAPI 中间文件（契约文件 frontend/src/api/api-contracts.json 入 Git）
 backend/openapi.json

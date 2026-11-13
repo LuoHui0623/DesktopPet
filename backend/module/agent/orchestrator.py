@@ -319,7 +319,7 @@ class Orchestrator:
         try:
             receipts = self._review.finish_task(main_task_id)
             if receipts:
-                logger.warning("主任务结束时仍有未提交的草稿：%s", "；".join(receipts))
+                logger.info("主任务结束结算：%s", "；".join(receipts))
         except Exception:
             logger.exception("主任务结束结算草稿失败：%s", main_task_id)
         finally:

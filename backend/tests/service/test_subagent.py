@@ -606,8 +606,8 @@ def test_successful_settlement_ends_the_subtask_without_another_round(tmp_path: 
 
 FILE_SKILL = Skill(
     name="写笔记",
-    description="读取并编辑笔记。",
-    tools=("read", "edit"),
+    description="读取并追加笔记。",
+    tools=("read", "append"),
 )
 
 
@@ -624,18 +624,17 @@ def make_file_agent(llm, calls: list, max_steps: int = 8) -> SubAgent:
         calls.append(("read", {"resource": resource, "path": path}))
         return {"ok": True, "content": "内容"}
 
-    @tool("edit")
-    def edit(
-        action: str,
+    @tool("append")
+    def append(
         resource: str,
+        content: str,
         path: str | None = None,
-        content: str | None = None,
     ) -> dict:
-        """按动作修改文件。"""
-        calls.append(("edit", {"action": action, "resource": resource, "path": path}))
+        """在文件末尾追加内容。"""
+        calls.append(("append", {"resource": resource, "path": path}))
         return {"ok": True, "content": "已暂存"}
 
-    return ScopedSubAgent(llm, [index, read, edit], max_steps=max_steps)
+    return ScopedSubAgent(llm, [index, read, append], max_steps=max_steps)
 
 
 def test_first_file_call_must_be_index(tmp_path: Path):
@@ -698,13 +697,13 @@ def test_index_is_injected_when_the_skill_does_not_declare_it(tmp_path: Path):
     assert result.steps[0]["tool"] == "index"
 
 
-def test_edit_step_records_the_concrete_write_action(tmp_path: Path):
+def test_write_step_records_the_concrete_action_and_target(tmp_path: Path):
     calls: list = []
     chat = ScriptedChat(
         [
             '{"action": "tool", "tool": "index", "args": {}}',
-            '{"action": "tool", "tool": "edit", "args": '
-            '{"action": "append", "resource": "world", "path": "笔记.md", "content": "新"}}',
+            '{"action": "tool", "tool": "append", "args": '
+            '{"resource": "world", "path": "笔记.md", "content": "新"}}',
             '{"action": "finish", "output": "写好了"}',
         ]
     )
@@ -712,8 +711,8 @@ def test_edit_step_records_the_concrete_write_action(tmp_path: Path):
     result = make_file_agent(llm, calls).run(FILE_SKILL, "笔记", "追加一句", "run-1")
 
     step = result.steps[1]
-    assert step["tool"] == "edit"
-    assert step["tool_action"] == "append"
+    assert step["tool"] == "append"
+    assert "tool_action" not in step
     assert step["resource"] == "world"
     assert step["path"] == "笔记.md"
     assert step["ok"] is True

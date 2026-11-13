@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fake_llm import (  # noqa: E402
     MULTI_REPLIES,
     MULTI_TRIGGER,
+    NOTE_ENTRY,
     NOTE_TOPIC,
     PROACTIVE_REPLY,
     PROACTIVE_TEXTS,
@@ -404,7 +405,7 @@ def check_dispatched_write(api: Api, tap: EventTap) -> str:
     item = approvals[0]["items"][0]
     check(item["topic"] == WRITE_TOPIC, f"审批项主题异常：{item}")
     check(item["task"] == "请记住，我喜欢美式咖啡，不加糖", f"审批项应带原始任务：{item}")
-    check(item["tools"] == ["append"], f"审批项应带草案声明的工具：{item}")
+    check(item["tools"] == ["index", "read", "memory"], f"审批项应带草案声明的工具：{item}")
     check(item["content"], "审批项应带草案内容")
     decided = tap.wait_for_approvals(1)
     check(len(decided) == 1 and decided[0]["approved"] is True, f"审批应被接受：{decided}")
@@ -433,50 +434,51 @@ def check_draft_note(api: Api, tap: EventTap, data_dir: Path) -> None:
     check(notice["text"] == "记到草稿本了：周五问主人要不要续费", f"记笔记回复异常：{notice}")
     fresh = tap.wait_until_idle_after(mark)
     approvals = [event for event in fresh if event["type"] == "approval.request"]
-    check(len(approvals) == 1, f"记笔记应推送一次审批：{approvals}")
-    item = approvals[0]["items"][0]
-    check(item["topic"] == NOTE_TOPIC, f"审批项主题异常：{item}")
-    check(item["tools"] == ["read", "append"], f"审批项应带草案声明的工具：{item}")
+    check(len(approvals) == 2, f"记笔记应推送草案与文件改动两次审批：{approvals}")
+    plan_item = approvals[0]["items"][0]
+    check(plan_item["topic"] == NOTE_TOPIC, f"审批项主题异常：{plan_item}")
+    check(plan_item["tools"] == ["read", "append"], f"审批项应带草案声明的工具：{plan_item}")
+    change = approvals[1]["items"][0]
+    check(change["action"] == "append", f"文件改动审批应写明动作：{change}")
+    preview = change["previews"][0]
+    check(preview["path"] == "草稿本.md", f"预览应指向草稿本：{preview}")
+    check(
+        any(NOTE_ENTRY in line for line in preview["hunks"][0]["added"]),
+        f"预览应包含待追加内容：{preview}",
+    )
     text = draft.read_text(encoding="utf-8")
     check(text.startswith("# 草稿本"), f"草稿本标题应保留：{text!r}")
-    check("周五问主人要不要续费" in text, f"应写进草稿本：{text!r}")
-    step("自记笔记：派发后子代理先读草稿本，再用 append 追加新条目，旧内容与标题都还在")
+    check(NOTE_ENTRY in text, f"应写进草稿本：{text!r}")
+    step("自记笔记：草案与文件改动各一次审批，子代理先读草稿本再 append，旧内容与标题都还在")
 
 
-def check_manual_edit(api: Api, data_dir: Path) -> str:
+def check_structured_readonly(api: Api) -> None:
+    """整篇覆盖写入口已关闭：设置页条目编辑接入前，只允许 memory 工具写入。"""
     before = api.call("GET", "/api/memories")["structured"]
-    lines_before = len(before.splitlines())
-    edited = api.call("PUT", "/api/memories/structured", {"text": before + "- 只喝热美式\n"})
-    check("- 只喝热美式" in edited["text"], f"保存未生效：{edited}")
-    listed = api.call("GET", "/api/memories")["structured"]
-    check("- 只喝热美式" in listed, "保存后列表未更新")
-    index = json.loads((data_dir / "memory" / "index.json").read_text(encoding="utf-8"))
-    check(
-        index["index"]["structured"]["lines"] == lines_before + 1,
-        f"保存后行数索引未重建：{index['index']['structured']}",
+    refused = api.call(
+        "PUT", "/api/memories/structured", {"text": before + "- 只喝热美式\n"}, expect=409
     )
-    step("结构化记忆：手动编辑保存后立即生效，行数与索引同步重建")
-    return listed
+    check(refused["error"]["code"] == "read_only", f"整篇覆盖应被拒绝：{refused}")
+    after = api.call("GET", "/api/memories")["structured"]
+    check(after == before, f"拒绝后记忆不应变化：{after!r}")
+    step("结构化记忆：整篇覆盖返回 409 read_only，读写通道仍正常")
 
 
-def check_memory_replace(api: Api, tap: EventTap) -> str:
+def check_memory_reuse(api: Api, tap: EventTap) -> None:
+    """相同正文与标签路径再次写入时复用原条目，不新增重复行。"""
     before = api.call("GET", "/api/memories")["structured"]
-    lines_before = len(before.splitlines())
     mark = len(tap.events)
-    notice = api.call("POST", "/api/chat", {"text": "请记住，把只喝热美式改成只喝冰美式"})
-    check(notice["text"] == "改好啦：只喝冰美式", f"改写回复异常：{notice}")
+    notice = api.call("POST", "/api/chat", {"text": "请记住，我喜欢美式咖啡，不加糖"})
+    check(notice["text"] == "我记住啦：喜欢美式咖啡，不加糖", f"复用写入回复异常：{notice}")
     fresh = tap.wait_until_idle_after(mark)
     approvals = [event for event in fresh if event["type"] == "approval.request"]
-    check(len(approvals) == 1, f"改写应推送一次审批：{approvals}")
-    item = approvals[0]["items"][0]
-    check(item["topic"] == WRITE_TOPIC, f"审批项主题异常：{item}")
-    check(item["tools"] == ["edit"], f"审批项应带改写工具：{item}")
+    check(len(approvals) == 1, f"复用写入应推送一次审批：{approvals}")
     after = api.call("GET", "/api/memories")["structured"]
-    check("只喝冰美式" in after, f"应写入替换后的内容：{after!r}")
-    check("只喝热美式" not in after, f"被替换的原文应消失：{after!r}")
-    check(len(after.splitlines()) == lines_before, f"行内替换不应改变行数：{after!r}")
-    step("记忆改写：子代理在行区间内正则替换，命中后写回，行数不变")
-    return after
+    check(
+        after.count("喜欢美式咖啡，不加糖") == before.count("喜欢美式咖啡，不加糖"),
+        f"相同正文相同路径应复用原条目：{before!r} -> {after!r}",
+    )
+    step("结构化记忆：相同正文与标签路径再次写入时复用原条目，不产生重复")
 
 
 def check_memory_retrieve(api: Api, tap: EventTap) -> None:
@@ -529,12 +531,11 @@ def check_structured_in_prompt(api: Api, tap: EventTap, llm: FakeLlm) -> None:
 
 
 def check_memory_unload_notice(api: Api, tap: EventTap, data_dir: Path) -> None:
-    """把记忆文件临时换成目录制造读取失败，校验 HTTP 与推送都带 memory_unloaded。"""
-    path = data_dir / "memory" / "structured.md"
-    backup = path.with_name("structured.md.bak")
-    path.replace(backup)
-    path.mkdir()
+    """把条目表临时改名制造读取失败，校验 HTTP 与推送都带 memory_unloaded。"""
+    connection = sqlite3.connect(data_dir / "pet.db")
     try:
+        connection.execute("ALTER TABLE memory_structured RENAME TO memory_structured_off")
+        connection.commit()
         mark = len(tap.events)
         reply = api.call("POST", "/api/chat", {"text": "你好"})
         check(reply["text"] == "你好呀，今天过得怎么样？", f"降级时仍应正常回复：{reply}")
@@ -550,9 +551,10 @@ def check_memory_unload_notice(api: Api, tap: EventTap, data_dir: Path) -> None:
             f"chat.done 应透传 notices：{done[0].get('notices')}",
         )
     finally:
-        path.rmdir()
-        backup.replace(path)
-    step("记忆降级：结构化记忆读取失败时本轮继续回复，HTTP 与 chat.done 都提示 memory_unloaded")
+        connection.execute("ALTER TABLE memory_structured_off RENAME TO memory_structured")
+        connection.commit()
+        connection.close()
+    step("记忆降级：条目表不可读时本轮继续回复，HTTP 与 chat.done 都提示 memory_unloaded")
 
 
 def check_daily_records(api: Api) -> None:
@@ -796,8 +798,13 @@ def check_shutdown_outputs(data_dir: Path) -> None:
     log_text = _latest_log(data_dir)
     check("后端已退出，退出原因：stdin 指令" in log_text, "日志中缺少正常退出记录")
     check(TOKEN not in log_text, "令牌不得出现在日志中")
-    check((data_dir / "memory" / "structured.md").is_file(), "记忆文件应写入临时数据目录")
-    step("关闭：stdin 指令正常退出，日志完整，令牌未落盘")
+    connection = sqlite3.connect(data_dir / "pet.db")
+    try:
+        rows = connection.execute("SELECT content FROM memory_structured").fetchall()
+    finally:
+        connection.close()
+    check(any("美式咖啡" in row[0] for row in rows), "结构化记忆应持久化在临时数据目录的 pet.db")
+    step("关闭：stdin 指令正常退出，日志完整，令牌未落盘，条目已持久化")
 
 
 def write_persona_cards(data_dir: Path) -> None:
@@ -829,8 +836,8 @@ def run() -> Path:
             structured = check_dispatched_write(api, tap)
             check_memory_retrieve(api, tap)
             check_write_rejected(api, tap, structured)
-            check_manual_edit(api, data_dir)
-            check_memory_replace(api, tap)
+            check_structured_readonly(api)
+            check_memory_reuse(api, tap)
             check_draft_note(api, tap, data_dir)
             check_structured_in_prompt(api, tap, llm)
             check_memory_unload_notice(api, tap, data_dir)
