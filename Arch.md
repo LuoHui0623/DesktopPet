@@ -3,7 +3,7 @@
 - 对应需求与技术选型：[桌面宠物PRD.md](桌面宠物PRD.md)
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD。
 - 后端架构：「目标分层职责」至「责任归属与迁移状态」定义目标职责、依赖规则与代表链路；「当前组件落点（迁移基线）」单独记录当前实现落点。除已实现的 LLM 配置解析与 client 装配外，其余目标仍是设计，不表示代码迁移已实施或获批；逐批计划与进度不由本架构文档维护。
-- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task` 且按任务内容路由技能，本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据；被动对话每轮按输入关键词只读召回早于当天的历史片段（排除当天、`assistant`、`event` 与 `回忆`），失败静默。
+- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task`；用户派发先由固定的「任务」子代理整理成可并行的任务清单，再按任务内容路由技能；本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据；被动对话每轮按输入关键词只读召回早于当天的历史片段（排除当天、`assistant`、`event` 与 `回忆`），失败静默。
 
 ---
 
@@ -293,19 +293,20 @@ backend/
 │  │  ├─ sensitive.py        # 敏感信息识别（证件号、银行卡、密码、健康细节）
 │  │  └─ services.py         # 记忆服务装配（MemoryServices）
 │  ├─ agent/
-│  │  ├─ orchestrator.py     # 派发：按 task 推断技能、运行子代理、记录 agent_run、逐工具校验只读；绑定审批通道并在结束时兜底结算草稿
-│  │  ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / finish），最多 8 步；结算回执回注观察
+│  │  ├─ orchestrator.py     # 派发：用户派发先固定交给任务规划子代理展开清单，再按 task 推断技能、运行子代理、记录 agent_run、逐工具校验只读；绑定审批通道并在结束时兜底结算草稿
+│  │  ├─ plan.py            # 派发计划契约：PlanStep、字段校验与 1–3 / 1–5 项数上限；主代理派发与任务清单共用
+│  │  ├─ subagent.py         # ReAct 执行循环（文本 JSON 协议：tool / plan / draft / finish），最多 8 步；结算回执回注观察
 │  │  ├─ approval.py         # 审批：草案 → 推送前端 → 挂起等待；无超时，按任务/进程作废，支持挂起票据查询
 │  │  ├─ preview.py          # 预览投影：把 hunk 转成审批卡视图（新建/删除、作者、折叠）
 │  │  ├─ review.py           # 审批绑定：逐次读取开票；写后按文件流式结算并逐文件记 status，拒绝/失败/冲突回执并要求重新读取
-│  │  ├─ skills.py           # 技能注册表：登记技能名、说明书文件、工具清单与路由关键词
+│  │  ├─ skills.py           # 技能注册表：按 spec 幂等登记技能名、说明书、工具与关键词；规划能力隐藏于路由与能力清单
 │  │  ├─ workspace.py        # 启动准备：保证资源库目录与草稿本存在，已有内容不覆盖
 │  │  ├─ chat_system_prompt.py # Chat 主题注册表：Topic(id, category, render) 与正文常量，不读文件
 │  │  ├─ chat_output.py      # 结构化输出解析与审核（chat / dispatch、行动规则正文）
 │  │  ├─ prompt.py           # 主题拼装：compose_chat_prompt、范畴分组与占位符填充
 │  │  ├─ contracts.py        # 派发契约
 │  │  ├─ repository.py       # agent_run 持久化
-│  │  ├─ prompts/            # 子代理提示词模板（subagent.md、subagent_draft.md）
+│  │  ├─ prompts/            # 子代理提示词模板（subagent_plan.md、subagent.md、subagent_draft.md）
 │  │  └─ tools/
 │  │     ├─ files.py         # 统一文件工具：八个动作共用资源注册表与路径解析，写动作先形成草稿
 │  │     └─ result.py        # 工具结果封装：ToolResult 与统一异常转错误
@@ -599,7 +600,10 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 
 ```
 主 agent 输出 {"type": "dispatch", "plan": [{"topic": "...", "task": "..."}]}
-  ─► module/agent/skills 按 task 内容打分路由技能（topic 只用于表达，不参与路由）
+  ─► 用户来源先固定交接「任务」规划子代理：只读核对现状，输出 1–5 项可并行任务
+       ├─ 规划失败：记录失败 agent_run，回退原 topic/task，不阻断本轮
+       └─ 系统自动来源或显式 plan_first=False：跳过后直接使用原 plan
+  ─► module/agent/skills 按展开后的 task 内容打分路由技能（topic 只用于表达，不参与路由）
   ─► module/agent/orchestrator 起草：并行生成各项草案，按技能声明的工具逐项判定只读
   ─► 审批：逐项等待用户确认（topic / task / content / tools；主动轮不审批）
        └─ 用户来源执行时，index / read / grep 每次调用前各开一张读取票据；拒绝只结束该次调用，任务继续
@@ -623,7 +627,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 
 结构化记忆读取失败不中断本轮：`ChatService` 把失败记入 `ChatReply.notices`（当前只有 `memory_unloaded`），HTTP 响应与 `chat.done` / `proactive.message` 都透传该字段，前端据此显示提示；诊断只写日志，不把记忆正文带进提示。被动轮同一会话一次只处理一轮，第二个请求返回 `session_busy`；`master` 落库失败返回 `record_failed`，不调模型、不回复。
 
-拟人化的能力划分放在技能说明书里，代码只登记「技能名 + 说明书文件 + 工具清单 + 路由关键词」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。技能名只用于审计与日志，模型按任务内容描述即可。写入后，用户可在设置页查看与编辑。
+拟人化的能力划分放在技能说明书里，代码只登记「技能名 + 说明书文件 + 工具清单 + 路由关键词」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。技能名只用于审计与日志，模型按任务内容描述即可。写入后，用户可在设置页查看与编辑。另有一份内部 `任务` 能力（`resources/skills/planning.md`），只由派发执行器作为固定第一交接使用：它不参与关键词路由，也不出现在主 agent 的能力清单和子代理的 `SKILLS` 索引里；规划失败会回退原计划。
 
 草稿本（`自记笔记`）是**短期便签**，与 `daily_log` 这份长期记忆分开，在资源注册表中对应 `draft`：`read` 看现状，`edit(action=append/insert)` 追加，`edit(action=replace_lines/replace_regex)` 按行修改，`edit(action=delete)` 提供 `line_ranges` 删除内容但不能删除文件本体。资源库与草稿本在后端启动时由 `module/agent/workspace.prepare_workspace()` 创建，已存在的文件内容不覆盖；资源解析器按 `settings.data_dir` 构造，因此 `PET_DATA_DIR` 换了资源库也跟着走。
 

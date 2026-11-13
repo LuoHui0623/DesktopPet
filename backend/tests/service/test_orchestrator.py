@@ -14,11 +14,12 @@ from constants.files import LINES_REPLACE
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
-from module.agent.context import SOURCE_USER
-from module.agent.orchestrator import Orchestrator, PlanError, PlanStep, parse_plan
+from module.agent.context import SOURCE_SYSTEM_AUTO, SOURCE_USER
+from module.agent.orchestrator import Orchestrator
+from module.agent.plan import PlanError, PlanStep, parse_plan
 from module.agent.repository import DbAgentRuns
 from module.agent.review import ReviewService
-from module.agent.skills import SkillRegistry, SkillSpec
+from module.agent.skills import TASK_SKILL, SkillRegistry, SkillSpec, task_skill
 from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
 from module.llm import LlmService
 from module.llm.repository import db_usage_sink
@@ -88,6 +89,18 @@ def read_note(name: str) -> dict:
     return {"ok": True, "content": f"内容：{name}"}
 
 
+@tool("index")
+def index(resource: str = "") -> dict:
+    """查看资源清单。"""
+    return {"ok": True, "content": f"资源：{resource}"}
+
+
+@tool("grep")
+def grep(pattern: str = "", resource: str = "") -> dict:
+    """检索资源。"""
+    return {"ok": True, "content": f"{resource} 命中：{pattern}"}
+
+
 class Clock:
     def __init__(self) -> None:
         self.tick = 0
@@ -141,7 +154,9 @@ def setup(tmp_path: Path):
     (tmp_path / ".env").write_text(ENV, encoding="utf-8")
     (tmp_path / "llm.yaml").write_text(LLM_YAML, encoding="utf-8")
 
-    def build(outcomes: list, chat=None, review=None, model_provider=None) -> Orchestrator:
+    def build(
+        outcomes: list, chat=None, review=None, model_provider=None, with_task=False
+    ) -> Orchestrator:
         chat = chat if chat is not None else ScriptedChat(outcomes)
         environ = {"DEEPSEEK_API_KEY": "sk-test"}
         llm = LlmService(
@@ -160,8 +175,15 @@ def setup(tmp_path: Path):
         skills.register(SkillSpec("写笔记", "note", ("write_note",), ("记下",)))
         skills.register(SkillSpec("查笔记", "note", ("read",), ("查一下",)))
         skills.register(SkillSpec("混合笔记", "note", ("read", "write_note"), ("读一下",)))
+        if with_task:
+            (skills_dir / "planning.md").write_text(
+                "# 任务规划\n\n> 先只读核对现状，再输出任务清单。\n\n"
+                "## 执行流程\n\n1. 核对现状。\n",
+                encoding="utf-8",
+            )
+            skills.register(task_skill())
         return ScopedOrchestrator(
-            SubAgent(llm, [write_note, read_note]),
+            SubAgent(llm, [write_note, read_note, index, grep]),
             DbAgentRuns(db_file),
             skills,
             TZ,
@@ -417,6 +439,113 @@ class TaskEchoChat:
             return AIMessage(content=draft_reply(f"方案 {task}"))
         payload = {"action": "finish", "output": f"完成 {task}"}
         return AIMessage(content=json.dumps(payload, ensure_ascii=False))
+
+
+class PlanFirstChat:
+    """规划阶段返回固定清单，执行阶段按任务行作答。"""
+
+    def __init__(self, tasks: list[dict]) -> None:
+        self.tasks = tasks
+
+    def invoke(self, messages, config=None, **kwargs):
+        prompt = messages[0].content
+        if "任务规划者" in prompt:
+            payload = {"action": "plan", "tasks": self.tasks}
+            return AIMessage(content=json.dumps(payload, ensure_ascii=False))
+        task = ""
+        if "本次任务：" in prompt:
+            request = prompt.split("本次任务：", 1)[1].strip().splitlines()
+            if len(request) > 1:
+                task = request[1].strip()
+        if DRAFT_MARK in prompt:
+            return AIMessage(content=draft_reply(f"方案 {task}"))
+        return AIMessage(
+            content=json.dumps({"action": "finish", "output": f"完成 {task}"}, ensure_ascii=False)
+        )
+
+
+class PlannerFailureChat:
+    """规划阶段失败，执行阶段仍可完成原任务。"""
+
+    def invoke(self, messages, config=None, **kwargs):
+        prompt = messages[0].content
+        if "任务规划者" in prompt:
+            raise RuntimeError("规划模型不可用")
+        if DRAFT_MARK in prompt:
+            return AIMessage(content=draft_reply("直接执行"))
+        return AIMessage(content='{"action": "finish", "output": "完成原任务"}')
+
+
+TWO_TASKS = [
+    {"topic": "写笔记", "task": "记下牛奶"},
+    {"topic": "查笔记", "task": "查一下咖啡"},
+]
+
+
+def test_run_plan_hands_off_to_the_task_agent_and_expands_tasks(setup):
+    gate = FakeGate()
+    orchestrator = setup["build"]([], chat=PlanFirstChat(TWO_TASKS), with_task=True)
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("牛奶咖啡", "处理牛奶和咖啡")], gate=gate, plan_first=True
+    )
+
+    assert [checkpoint.topic for checkpoint in checkpoints] == ["写笔记", "查笔记"]
+    assert [checkpoint.output for checkpoint in checkpoints] == ["完成 记下牛奶", "完成 查一下咖啡"]
+    assert len(gate.calls) == 1
+    assert [draft.task for draft in gate.calls[0][1]] == ["记下牛奶", "查一下咖啡"]
+
+    stored = rows(setup["db_file"])
+    assert len(stored) == 3
+    planner = [row for row in stored if row[1] == TASK_SKILL]
+    assert len(planner) == 1
+    assert planner[0][2] == "牛奶咖啡：处理牛奶和咖啡"
+    assert planner[0][3] == "succeeded"
+    assert [step["phase"] for step in json.loads(planner[0][6])] == ["plan"]
+
+
+def test_user_dispatch_plans_by_default_when_the_task_skill_is_assembled(setup):
+    orchestrator = setup["build"]([], chat=PlanFirstChat(TWO_TASKS), with_task=True)
+    checkpoints = orchestrator.run_plan([PlanStep("牛奶咖啡", "处理牛奶和咖啡")], gate=GATE)
+
+    assert len(checkpoints) == 2
+    assert TASK_SKILL in {row[1] for row in rows(setup["db_file"])}
+
+
+def test_auto_source_dispatch_skips_planning_by_default(setup):
+    orchestrator = setup["build"]([], chat=PlanFirstChat(TWO_TASKS), with_task=True)
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("写笔记", "记下牛奶")], gate=GATE, source=SOURCE_SYSTEM_AUTO
+    )
+
+    assert len(checkpoints) == 1
+    assert TASK_SKILL not in {row[1] for row in rows(setup["db_file"])}
+
+
+def test_planner_failure_falls_back_to_the_original_plan(setup, caplog):
+    orchestrator = setup["build"]([], chat=PlannerFailureChat(), with_task=True)
+    checkpoints = orchestrator.run_plan(
+        [PlanStep("写笔记", "记下牛奶")], gate=GATE, plan_first=True
+    )
+
+    assert len(checkpoints) == 1
+    assert checkpoints[0].topic == "写笔记"
+    assert checkpoints[0].output == "完成原任务"
+    stored = rows(setup["db_file"])
+    planner = [row for row in stored if row[1] == TASK_SKILL]
+    assert len(planner) == 1
+    assert (planner[0][3], planner[0][4]) == ("failed", "model_failed")
+    assert "按原计划执行" in caplog.text
+
+
+def test_dispatch_merges_expanded_checkpoints(setup):
+    orchestrator = setup["build"]([], chat=PlanFirstChat(TWO_TASKS), with_task=True)
+    checkpoint = orchestrator.dispatch("牛奶咖啡", "处理牛奶和咖啡", gate=GATE, plan_first=True)
+
+    assert checkpoint.ok is True
+    assert checkpoint.status == "succeeded"
+    assert "执行：写笔记" in checkpoint.text
+    assert "执行：查笔记" in checkpoint.text
+    assert checkpoint.output == "完成 记下牛奶\n完成 查一下咖啡"
 
 
 def test_run_plan_keeps_plan_order(setup):

@@ -1,3 +1,4 @@
+import json
 import logging
 from pathlib import Path
 
@@ -5,11 +6,20 @@ from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
 from config.settings import ModelSettingsSource
-from constants.agent import DRAFT_INVALID_LIMIT, PHASE_DRAFT, PHASE_EXECUTE
+from constants.agent import (
+    DRAFT_INVALID_LIMIT,
+    PHASE_DRAFT,
+    PHASE_EXECUTE,
+    PHASE_PLAN,
+    PLAN_INVALID_LIMIT,
+    READ_ONLY_TOOLS,
+    TASK_PLAN_MAX_ITEMS,
+)
 from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.context import TaskContext, current_task
-from module.agent.skills import Skill
+from module.agent.plan import PlanStep
+from module.agent.skills import TASK_SKILL, Skill
 from module.agent.subagent import INVALID_HINT, NO_DRAFT, SubAgent, parse_action
 from module.files.permissions import system_permissions
 from module.llm import LlmService
@@ -56,6 +66,24 @@ def identity() -> dict:
         "ok": True,
         "content": f"{context.persona_id}|{context.subtask_id}|{context.source}",
     }
+
+
+@tool("index")
+def index(resource: str = "") -> dict:
+    """查看资源清单。"""
+    return {"ok": True, "content": f"资源：{resource}"}
+
+
+@tool("read")
+def read(resource: str = "", name: str = "") -> dict:
+    """读取资源内容。"""
+    return {"ok": True, "content": f"{resource}/{name}"}
+
+
+@tool("grep")
+def grep(pattern: str = "", resource: str = "") -> dict:
+    """检索资源内容。"""
+    return {"ok": True, "content": f"{resource} 命中：{pattern}"}
 
 
 TASK = TaskContext(
@@ -123,7 +151,19 @@ SKILL = Skill(
 
 
 def make_agent(llm: LlmService, max_steps: int = 8) -> SubAgent:
-    return ScopedSubAgent(llm, [echo, boom, identity], max_steps=max_steps)
+    return ScopedSubAgent(llm, [echo, boom, identity, index, read, grep], max_steps=max_steps)
+
+
+TASK_MANUAL = "# 任务规划\n\n> 先只读核对现状，再输出任务清单。\n\n## 执行流程\n\n1. 核对现状。\n"
+TASK_SKILL_FOR_TEST = Skill(
+    TASK_SKILL,
+    "先只读核对现状，再输出任务清单。",
+    READ_ONLY_TOOLS,
+    (),
+    TASK_MANUAL,
+    True,
+)
+PLANNER_MARK = "任务规划者"
 
 
 def test_tool_call_then_finish_succeeds(tmp_path: Path):
@@ -716,3 +756,93 @@ def test_write_step_records_the_concrete_action_and_target(tmp_path: Path):
     assert step["resource"] == "world"
     assert step["path"] == "笔记.md"
     assert step["ok"] is True
+
+
+def test_plan_returns_the_task_list(tmp_path: Path):
+    reply = json.dumps(
+        {
+            "action": "plan",
+            "tasks": [
+                {"topic": "写笔记", "task": "记下牛奶"},
+                {"topic": "查笔记", "task": "查一下咖啡"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    chat = ScriptedChat([reply])
+    llm, _ = make_llm(tmp_path, chat)
+    plan = make_agent(llm).plan(
+        TASK_SKILL_FOR_TEST, [PlanStep("总任务", "处理牛奶和咖啡")], "run-1", context=TASK
+    )
+
+    assert plan.ok is True
+    assert plan.tasks == (
+        PlanStep("写笔记", "记下牛奶"),
+        PlanStep("查笔记", "查一下咖啡"),
+    )
+    assert [step["action"] for step in plan.steps] == ["plan"]
+    assert plan.steps[0]["phase"] == PHASE_PLAN
+
+
+def test_plan_prompt_carries_the_manual_and_parallel_boundary(tmp_path: Path):
+    chat = ScriptedChat(['{"action": "plan", "tasks": [{"topic": "写笔记", "task": "记下"}]}'])
+    llm, _ = make_llm(tmp_path, chat)
+    make_agent(llm).plan(
+        TASK_SKILL_FOR_TEST, [PlanStep("总任务", "处理牛奶")], "run-1", context=TASK
+    )
+    system = chat.calls[0][0].content
+    assert PLANNER_MARK in system
+    assert "1. 核对现状。" in system
+    assert "并行" in system
+    assert "- index:" in system
+    assert "- grep:" in system
+    assert "- echo:" not in system
+    assert "本次任务：" in system
+
+
+def test_plan_rejects_more_tasks_than_the_limit(tmp_path: Path):
+    tasks = [
+        {"topic": f"事项{number}", "task": "做点事"} for number in range(TASK_PLAN_MAX_ITEMS + 1)
+    ]
+    reply = json.dumps({"action": "plan", "tasks": tasks}, ensure_ascii=False)
+    chat = ScriptedChat([reply] * PLAN_INVALID_LIMIT)
+    llm, _ = make_llm(tmp_path, chat)
+    plan = make_agent(llm).plan(
+        TASK_SKILL_FOR_TEST, [PlanStep("总任务", "做点事")], "run-1", context=TASK
+    )
+
+    assert plan.ok is False
+    assert plan.error_code == "invalid_output"
+    assert f"1–{TASK_PLAN_MAX_ITEMS}" in plan.error
+    assert len(plan.steps) == PLAN_INVALID_LIMIT
+    assert f"1–{TASK_PLAN_MAX_ITEMS}" in chat.calls[1][-1].content
+
+
+def test_plan_cannot_finish(tmp_path: Path):
+    chat = ScriptedChat(
+        [
+            '{"action": "finish", "output": "好"}',
+            '{"action": "plan", "tasks": [{"topic": "写笔记", "task": "记下"}]}',
+        ]
+    )
+    llm, _ = make_llm(tmp_path, chat)
+    plan = make_agent(llm).plan(
+        TASK_SKILL_FOR_TEST, [PlanStep("总任务", "处理牛奶")], "run-1", context=TASK
+    )
+
+    assert plan.ok is True
+    assert plan.steps[0]["action"] == "invalid"
+    assert "只能使用 tool 或 plan" in chat.calls[1][-1].content
+
+
+def test_plan_tasks_must_be_an_array(tmp_path: Path):
+    reply = '{"action": "plan", "tasks": "写笔记"}'
+    chat = ScriptedChat([reply] * PLAN_INVALID_LIMIT)
+    llm, _ = make_llm(tmp_path, chat)
+    plan = make_agent(llm).plan(
+        TASK_SKILL_FOR_TEST, [PlanStep("总任务", "处理牛奶")], "run-1", context=TASK
+    )
+
+    assert plan.ok is False
+    assert plan.error_code == "invalid_output"
+    assert "JSON 数组" in plan.error

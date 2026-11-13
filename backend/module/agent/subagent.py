@@ -17,14 +17,19 @@ from constants.agent import (
     INDEX_TOOL,
     PHASE_DRAFT,
     PHASE_EXECUTE,
+    PHASE_PLAN,
+    PLAN_INVALID_LIMIT,
     READ_ONLY_TOOLS,
     SUBAGENT_MAX_STEPS,
     SUBAGENT_PURPOSE,
+    TASK_PLAN_MAX_ITEMS,
+    TASK_PLAN_MIN_ITEMS,
 )
 from constants.path import PROMPTS_DIR
 from infra.llm.usage import usage_scope
 from module.agent.context import TaskContext, task_scope
 from module.agent.dsml import DsmlError, parse_dsml
+from module.agent.plan import PlanError, PlanStep, parse_plan_data
 from module.agent.prompt import read_template
 from module.agent.review import ReviewService
 from module.agent.skills import Skill
@@ -34,11 +39,14 @@ SUBAGENT_TEMPLATE = "subagent.md"
 SUBAGENT_PLACEHOLDERS = frozenset({"request", "tools", "max_steps", "draft"})
 SUBAGENT_DRAFT_TEMPLATE = "subagent_draft.md"
 SUBAGENT_DRAFT_PLACEHOLDERS = frozenset({"request", "tools", "declarable", "max_steps"})
-ACTIONS = ("tool", "finish", "draft")
+SUBAGENT_PLAN_TEMPLATE = "subagent_plan.md"
+SUBAGENT_PLAN_PLACEHOLDERS = frozenset({"request", "tools", "max_steps", "manual", "max_tasks"})
+ACTIONS = ("tool", "finish", "draft", "plan")
 INVALID_HINT = "回复不是合法的JSON格式：请只输出一个标准 JSON 对象"
 NO_DRAFT = "（本次没有草案，按任务本身执行）"
 NO_TOOLS = "（本次没有可用工具）"
 NO_DECLARABLE = "（没有其他工具可声明）"
+NO_MANUAL = "（没有额外的规划方法，按任务本身拆解）"
 LOG_TEXT_LIMIT = 2000
 Accept = Callable[[dict[str, Any]], "str | None"]
 
@@ -66,6 +74,17 @@ class SubAgentDraft:
     ok: bool
     content: str | None = None
     tools: tuple[str, ...] = ()
+    error_code: str | None = None
+    error: str | None = None
+    steps: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class SubAgentPlan:
+    """任务规划者的结果：一份可并行的任务清单，或明确的失败原因。"""
+
+    ok: bool
+    tasks: tuple[PlanStep, ...] = ()
     error_code: str | None = None
     error: str | None = None
     steps: list[dict[str, Any]] = field(default_factory=list)
@@ -125,6 +144,12 @@ def render_request(topic: str, task: str) -> str:
     return f"【{topic}】\n{task}"
 
 
+def render_plan_request(plan: Sequence[PlanStep]) -> str:
+    """任务规划者的输入：保留主代理给出的全部主题与任务，按顺序原样呈现。"""
+    blocks = [f"【{step.topic}】\n{step.task}" for step in plan]
+    return "主代理派发了以下任务，请整理成可交付的任务清单：\n\n" + "\n\n".join(blocks)
+
+
 def _text_of(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -163,6 +188,18 @@ def _phase_hint(action: dict[str, Any] | None, terminal: str) -> str | None:
 def _accept_finish(action: dict[str, Any]) -> str | None:
     if not str(action.get("output") or "").strip():
         return "输出不能为空"
+    return None
+
+
+def _accept_plan(action: dict[str, Any]) -> str | None:
+    try:
+        parse_plan_data(
+            action.get("tasks"),
+            min_items=TASK_PLAN_MIN_ITEMS,
+            max_items=TASK_PLAN_MAX_ITEMS,
+        )
+    except PlanError as exc:
+        return f"tasks 不合法：{exc}"
     return None
 
 
@@ -217,9 +254,65 @@ class SubAgent:
         draft_text = read_template(
             prompts_dir, SUBAGENT_DRAFT_TEMPLATE, SUBAGENT_DRAFT_PLACEHOLDERS
         )
+        plan_text = read_template(prompts_dir, SUBAGENT_PLAN_TEMPLATE, SUBAGENT_PLAN_PLACEHOLDERS)
         self._template = Template(text)
         self._draft_template = Template(draft_text)
-        self._digest = sha256((text + draft_text).encode("utf-8")).hexdigest()
+        self._plan_template = Template(plan_text)
+        self._digest = sha256((text + draft_text + plan_text).encode("utf-8")).hexdigest()
+
+    def plan(
+        self,
+        skill: Skill,
+        plan: Sequence[PlanStep],
+        run_id: str,
+        *,
+        context: TaskContext,
+        turn_id: str | None = None,
+    ) -> SubAgentPlan:
+        """固定交接：只读核对现状，把一次派发整理成可并行的任务清单。"""
+        picked, missing = self._pick(skill, skill.tools)
+        if missing:
+            return SubAgentPlan(
+                False, error_code="tool_missing", error=_missing_text(skill, missing)
+            )
+        try:
+            client = self._llm.client_for("consolidate")
+        except LlmUnavailableError as exc:
+            return SubAgentPlan(False, error_code="model_unavailable", error=str(exc))
+        request = render_plan_request(plan)
+        topic = plan[0].topic if plan else ""
+        messages: list[BaseMessage] = [
+            SystemMessage(content=self._plan_prompt(skill, request, picked)),
+            HumanMessage(content=request),
+        ]
+        with task_scope(context):
+            loop = self._react(
+                client=client,
+                messages=messages,
+                run_id=run_id,
+                turn_id=turn_id,
+                tools=picked,
+                terminal="plan",
+                phase=PHASE_PLAN,
+                accept=_accept_plan,
+                invalid_limit=PLAN_INVALID_LIMIT,
+                topic=topic,
+            )
+        if loop.error_code is not None:
+            return SubAgentPlan(
+                False, error_code=loop.error_code, error=loop.error, steps=loop.steps
+            )
+        try:
+            tasks = parse_plan_data(
+                (loop.action or {}).get("tasks"),
+                min_items=TASK_PLAN_MIN_ITEMS,
+                max_items=TASK_PLAN_MAX_ITEMS,
+            )
+        except PlanError as exc:
+            return SubAgentPlan(
+                False, error_code="invalid_output", error=str(exc), steps=loop.steps
+            )
+        return SubAgentPlan(True, tasks=tuple(tasks), steps=loop.steps)
 
     def draft(
         self,
@@ -489,6 +582,15 @@ class SubAgent:
             tools=_tool_lines(tools),
             max_steps=str(self._max_steps),
             draft=draft.strip() or NO_DRAFT,
+        )
+
+    def _plan_prompt(self, skill: Skill, request: str, tools: Sequence[BaseTool]) -> str:
+        return self._plan_template.substitute(
+            request=request,
+            tools=_tool_lines(tools),
+            max_steps=str(self._max_steps),
+            max_tasks=str(TASK_PLAN_MAX_ITEMS),
+            manual=skill.manual.strip() or NO_MANUAL,
         )
 
     def _draft_prompt(

@@ -13,7 +13,7 @@ from constants.speech import REPLY_MAX_ITEMS
 from module.agent.dsml import DsmlError, parse_dsml
 
 if TYPE_CHECKING:
-    from module.agent.orchestrator import PlanStep
+    from module.agent.plan import PlanStep
 
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -120,7 +120,7 @@ def _plain_reply_texts(content: str) -> tuple[str, ...]:
 
 
 def parse_chat_output(content: str) -> ChatOutput:
-    from module.agent.orchestrator import PlanError, parse_plan_data
+    from module.agent.plan import PlanError, parse_plan_data
 
     try:
         call = parse_dsml(content)

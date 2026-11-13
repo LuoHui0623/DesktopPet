@@ -269,7 +269,10 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ```text
 chat 输出 dispatch（plan 项为 topic/task）
-  → skills 按 task 内容推断技能
+  → 用户来源：固定交给「任务」规划子代理（只读），按任务边界整理成 1–5 项可并行任务
+      ├─ 规划失败：记失败运行并回退原 topic/task，不阻断本轮
+      └─ 系统自动来源（自动回忆、主动轮）不经过规划
+  → skills 按展开后的 task 内容推断技能
   → orchestrator 并行起草（只读工具）
   → 被动轮：逐项审批；主动轮：不审批
   → 主动轮按草案声明的工具逐项判定只读，含写入工具即拒绝
@@ -281,6 +284,8 @@ chat 输出 dispatch（plan 项为 topic/task）
 ```
 
 - **任务身份**：入口取得 `PersonaSnapshot`，`run_plan` 生成 `TaskContext`（人设 ID 与版本、主任务 ID、每个子代理的子任务 ID、`turn_id`、来源、权限快照）并写入 `agent_run` 与审批项；子代理在 `task_scope` 内运行，文件访问读取同一快照。来源由入口决定：被动轮为 `user`，自动回忆等系统派发为 `system_auto`。工具签名不接收身份参数，模型无法自行声明或扩大权限。
+- **任务规划者固定交接**：用户来源的 `run_plan`（含单步 `dispatch`）在路由技能前，先把整份派发交给内部「任务」能力。该能力由 `task_skill()` 按说明书 `resources/skills/planning.md` 装配，只暴露 `index`、`read`、`grep`：先只读核对现状，再把需求整理成 1–5 项任务，按可独立验收的边界拆分，并保证任务之间没有先后依赖（必须串行的步骤合并为一项）。规划本身单独写一条 `agent_run`（`skill=任务`，步骤 `phase=plan`），不进入本轮检查点。规划失败（模型不可用、无效输出、说明书缺失）只记录失败运行并按原计划执行，不阻断用户请求；自动回忆显式传 `plan_first=False`，系统自动来源默认不规划。
+- **规划能力隐藏且幂等**：`任务` 不参与关键词路由，也不出现在主 agent 的能力清单和子代理的 `SKILLS` 索引里，只由派发执行器按固定名字取用。相同 `SkillSpec` 可重复登记（重新读取说明书，结果一致），同名但工具、关键词或规划标记不同则直接拒绝，避免装配漂移。
 - `allow_dispatch=false` 时，`dispatch` 视为 `invalid_output`。
 - 主动轮允许派发，但 `read_only_dispatch=true`：判定依据是草案**实际声明的工具**，全部在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里才放行；声明含写入工具时在起草后立即拒绝，执行阶段的非只读过滤只作兜底（D-25/D-28）。混合技能中的纯读取任务因此可以执行，写入型任务仍整项拒绝。
 - 混合计划按项处理：只读项正常执行，写入项单独拒绝；只读项不因同批次的写入项而取消。
@@ -299,8 +304,10 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 记忆写入 | `resources/skills/memory_write.md` | `index`、`read`、`grep`、`edit` | `structured` 资源（`data/memory/structured.md`） |
 | 记忆检索 | `resources/skills/memory_retrieve.md` | `index`、`read`、`grep` | 只读 |
 | 自记笔记 | `resources/skills/draft_note.md` | `index`、`read`、`grep`、`edit` | `draft` 资源（资源库内的 `草稿本.md`） |
+| 任务（规划） | `resources/skills/planning.md` | `index`、`read`、`grep` | 只读；固定第一交接，不参与路由与能力清单 |
 
 - 技能名只用于内部路由与审计（`agent_run.skill` 存推断出的技能名或 `natural`），不是模型派发协议的一部分；模型只给 `topic` 与 `task`，审批卡片展示 `topic` / `task` / 工具 / 草案内容，并标注起草子任务、人设版本与模型；读取卡另展示动作、资源/路径与参数摘要；文件结算卡另展示后端生成的净 diff（新建、删除、改动数与逐 hunk）。
+- 「任务」规划能力的说明书正文直接嵌入规划提示词，不作为可选技能暴露给执行子代理；它产出的 `topic` / `task` 才进入后续路由与审批。
 - 工具清单在 `module/agent/skills.py` 登记；草案阶段只给 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的交集，执行阶段才放开写工具。
 - 每个技能声明的工具都必须在 `SubAgent` 构造时注册过，否则草案阶段直接返回 `tool_missing`。
 - 草稿本是**短期便签**，不是长期记忆：跨天依然成立的偏好与约定走「记忆写入」，临时计划与待办走「自记笔记」。
@@ -311,7 +318,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 
 #### 子代理的输出契约
 
-草案与执行两个阶段都是 ReAct 循环，每轮只消费一个 JSON 动作对象，`action` 取值见 [Arch.md](../Arch.md) 的「核心数据流」派发契约（`tool` / `draft` / `finish` 之类，由阶段决定）。
+规划、草案与执行三个阶段都是 ReAct 循环，每轮只消费一个 JSON 动作对象，`action` 取值见 [Arch.md](../Arch.md) 的「核心数据流」派发契约（`tool` / `plan` / `draft` / `finish`，由阶段决定）。
 
 | 项 | 规则 |
 |---|---|
@@ -320,7 +327,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 清洗 | 对非 DSML 回复去掉零宽字符、控制字符与其他私有标记（`<｜…｜>` 包裹的整段）；DSML 先识别，不能清除标记后回退扫描 |
 | 解析 | 非 DSML 文本从左到右在每个 `{` 位置尝试 `json.JSONDecoder.raw_decode`，取第一个带合法 `action` 的 dict；DSML 按「DSML 兼容」先完整解析 |
 | 解析失败 | 记一条无效动作，向模型返回纠正观测并继续；无效次数或步数耗尽后报错 |
-| 动作不合规 | 动作能解析但当前阶段不允许（如该 `finish` 时又调工具、用了技能未声明的工具）：追加一条纠正观测后继续，草案阶段最多 `DRAFT_INVALID_LIMIT`（3）次，执行阶段受 8 步上限约束 |
+| 动作不合规 | 动作能解析但当前阶段不允许（如规划阶段输出 `finish`、执行阶段又调工具、用了技能未声明的工具）：追加一条纠正观测后继续，规划与草案阶段各最多 3 次（`PLAN_INVALID_LIMIT` / `DRAFT_INVALID_LIMIT`），执行阶段受 8 步上限约束 |
 | 上限用尽 | 记 `invalid_output`；`agent_run.steps` 里每次不合规都是一条 `action="invalid"`，不含原始回复 |
 | 日志 | 原始回复（截断到 `LOG_TEXT_LIMIT`＝2000 字符）写 `pet.agent.subagent`：不合规是 WARNING，模型调用失败、放弃执行、超步数是 ERROR；每条都带能力名、阶段、步号 |
 

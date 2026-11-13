@@ -44,6 +44,7 @@ from module.agent.skills import (
     draft_note_skill,
     memory_retrieve_skill,
     memory_write_skill,
+    task_skill,
 )
 from module.agent.subagent import SubAgent
 from module.agent.tools.files import make_file_tools
@@ -184,6 +185,7 @@ def serve(
     skills.register(memory_write_skill())
     skills.register(memory_retrieve_skill())
     skills.register(draft_note_skill())
+    skills.register(task_skill())
     review = ReviewService()
     file_service = FileService(
         ResourceResolver(settings.data_dir),

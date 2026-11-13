@@ -89,7 +89,16 @@ class FakeOrchestrator:
         self.calls: list[dict] = []
 
     def dispatch(
-        self, topic, task, *, gate, persona=None, source=None, read_only=False, turn_id=None
+        self,
+        topic,
+        task,
+        *,
+        gate,
+        persona=None,
+        source=None,
+        read_only=False,
+        turn_id=None,
+        plan_first=None,
     ):
         self.calls.append(
             {
@@ -100,6 +109,7 @@ class FakeOrchestrator:
                 "source": source,
                 "read_only": read_only,
                 "turn_id": turn_id,
+                "plan_first": plan_first,
             }
         )
         if self.results:
@@ -142,6 +152,7 @@ def test_dispatch_asks_for_yesterday_with_a_read_only_auto_approved_plan(tmp_pat
     assert YESTERDAY in tasks(orchestrator)[0]
     assert "（昨天）" in tasks(orchestrator)[0]
     assert orchestrator.calls[0]["read_only"] is True
+    assert orchestrator.calls[0]["plan_first"] is False
     assert isinstance(orchestrator.calls[0]["gate"], AutoApprovalGate)
     assert orchestrator.calls[0]["turn_id"] == "turn-1"
     assert result.ok is True
@@ -327,7 +338,16 @@ class BlockingOrchestrator(FakeOrchestrator):
         self.release = threading.Event()
 
     def dispatch(
-        self, topic, task, *, gate, persona=None, source=None, read_only=False, turn_id=None
+        self,
+        topic,
+        task,
+        *,
+        gate,
+        persona=None,
+        source=None,
+        read_only=False,
+        turn_id=None,
+        plan_first=None,
     ):
         self.entered.set()
         assert self.release.wait(5)
@@ -339,6 +359,7 @@ class BlockingOrchestrator(FakeOrchestrator):
             source=source,
             read_only=read_only,
             turn_id=turn_id,
+            plan_first=plan_first,
         )
 
 

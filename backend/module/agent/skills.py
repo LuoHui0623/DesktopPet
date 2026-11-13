@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from constants.agent import READ_ONLY_TOOLS
 from constants.path import SKILLS_DIR
 from module.agent.prompt import CapabilityDescription
 
@@ -18,16 +19,23 @@ class Skill:
     description: str
     tools: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
+    manual: str = ""
+    planner: bool = False
 
 
 @dataclass(frozen=True)
 class SkillSpec:
-    """代码侧登记的技能骨架：技能名、说明书文件名、可用工具与路由关键词。"""
+    """代码侧登记的技能骨架：技能名、说明书文件名、可用工具与路由关键词。
+
+    `planner` 标记内部任务规划能力：它由派发执行器固定使用，不参与关键词路由，
+    也不出现在主代理或子代理的能力清单里。
+    """
 
     name: str
     file: str
     tools: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
+    planner: bool = False
 
 
 class SkillRegistry:
@@ -35,23 +43,36 @@ class SkillRegistry:
         self._directory = directory
         self._skills: dict[str, Skill] = {}
         self._files: dict[str, Path] = {}
+        self._specs: dict[str, SkillSpec] = {}
 
     def register(self, spec: SkillSpec) -> None:
+        """按 spec 装配技能；同一 spec 可重复登记，冲突的 spec 直接拒绝。"""
         if not spec.name:
             raise ValueError("技能名不能为空")
-        if spec.name in self._skills:
-            raise ValueError(f"技能 {spec.name} 已注册")
+        registered = self._specs.get(spec.name)
+        if registered is not None and registered != spec:
+            raise ValueError(f"技能 {spec.name} 已注册且配置不一致")
         path = self._directory / f"{spec.file}.md"
-        self._skills[spec.name] = Skill(spec.name, parse_head_note(path), spec.tools, spec.keywords)
+        manual = _read_manual(path)
+        self._skills[spec.name] = Skill(
+            spec.name,
+            _head_note(manual, path.name),
+            spec.tools,
+            spec.keywords,
+            manual,
+            spec.planner,
+        )
         self._files[spec.name] = path
+        self._specs[spec.name] = spec
 
     def route(self, task: str) -> Skill | None:
-        """按任务内容挑选技能；topic 不参与路由（D-23）。"""
+        """按任务内容挑选技能；topic 不参与路由（D-23），规划能力不参与路由。"""
         text = task.strip()
         if not text:
             return None
+        routable = [skill for skill in self._skills.values() if not skill.planner]
         best: tuple[int, int, Skill] | None = None
-        for order, skill in enumerate(self._skills.values()):
+        for order, skill in enumerate(routable):
             score = sum(len(keyword) for keyword in skill.keywords if keyword and keyword in text)
             if score == 0:
                 continue
@@ -61,7 +82,7 @@ class SkillRegistry:
         if best is not None:
             return best[2]
         # 任务里直接点名技能时兜底；关键词优先，避免名字里常见的字压过意图。
-        for skill in self._skills.values():
+        for skill in routable:
             if skill.name and skill.name in text:
                 return skill
         return None
@@ -76,6 +97,7 @@ class SkillRegistry:
         return tuple(
             CapabilityDescription(name=skill.name, description=skill.description)
             for skill in self._skills.values()
+            if not skill.planner
         )
 
     def read(self, name: str) -> str:
@@ -88,19 +110,23 @@ class SkillRegistry:
             raise SkillError(f"能力 {name} 的说明书无法读取：{exc}") from exc
 
     def summaries(self) -> Sequence[CapabilityDescription]:
-        """主 agent 只见能力名，说明书由子代理自行查阅。"""
+        """主 agent 只见能力名，说明书由子代理自行查阅；内部规划能力不暴露。"""
         return [
             CapabilityDescription(name=skill.name, description="")
             for skill in self._skills.values()
+            if not skill.planner
         ]
 
 
-def parse_head_note(path: Path) -> str:
-    """取说明书开头以 > 起头的连续行作为技能说明，正文由子代理查阅。"""
+def _read_manual(path: Path) -> str:
     try:
-        text = path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8")
     except OSError as exc:
         raise SkillError(f"技能说明书 {path.name} 无法读取：{exc}") from exc
+
+
+def _head_note(text: str, name: str) -> str:
+    """取说明书开头以 > 起头的连续行作为技能说明，正文由子代理查阅。"""
     parts: list[str] = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -111,13 +137,19 @@ def parse_head_note(path: Path) -> str:
         parts.append(line[len(HEAD_NOTE_PREFIX) :].strip())
     note = "".join(parts).strip()
     if not note:
-        raise SkillError(f"技能说明书 {path.name} 缺少以 {HEAD_NOTE_PREFIX} 开头的说明行")
+        raise SkillError(f"技能说明书 {name} 缺少以 {HEAD_NOTE_PREFIX} 开头的说明行")
     return note
+
+
+def parse_head_note(path: Path) -> str:
+    return _head_note(_read_manual(path), path.name)
 
 
 MEMORY_WRITE_SKILL = "记忆写入"
 MEMORY_RETRIEVE_SKILL = "记忆检索"
 DRAFT_NOTE_SKILL = "自记笔记"
+TASK_SKILL = "任务"
+TASK_TOOLS = READ_ONLY_TOOLS
 MEMORY_WRITE_TOOLS = ("index", "read", "grep", "memory")
 MEMORY_RETRIEVE_TOOLS = ("index", "read", "grep")
 DRAFT_NOTE_TOOLS = (
@@ -179,3 +211,8 @@ def memory_retrieve_skill() -> SkillSpec:
 
 def draft_note_skill() -> SkillSpec:
     return SkillSpec(DRAFT_NOTE_SKILL, "draft_note", DRAFT_NOTE_TOOLS, DRAFT_NOTE_KEYWORDS)
+
+
+def task_skill() -> SkillSpec:
+    """固定交接的任务规划能力；由派发执行器使用，不参与路由与能力清单。"""
+    return SkillSpec(TASK_SKILL, "planning", TASK_TOOLS, planner=True)

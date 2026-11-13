@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -12,17 +11,13 @@ from constants.agent import PHASE_DRAFT, PHASE_EXECUTE, READ_ONLY_TOOLS
 from module.agent.approval import REJECT_REASON, ApprovalDraft, ApprovalGate, ApprovalOutcome
 from module.agent.context import SOURCE_USER, TaskContext
 from module.agent.contracts import AgentRunRecord
+from module.agent.plan import PlanStep, plan_data
 from module.agent.review import ReviewService
-from module.agent.skills import Skill, SkillRegistry
-from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
+from module.agent.skills import TASK_SKILL, Skill, SkillRegistry
+from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentPlan, SubAgentResult
 from module.files.permissions import TaskPermissions, system_permissions
 from module.persona.persona_service import PersonaSnapshot
 
-FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
-
-PLAN_MIN_ITEMS = 1
-PLAN_MAX_ITEMS = 3
-PLAN_FIELD_MAX_CHARS = 200
 STATUS_SUCCEEDED = "succeeded"
 STATUS_FAILED = "failed"
 STATUS_REJECTED = "rejected"
@@ -34,10 +29,6 @@ NATURAL_SKILL = "natural"
 VALID_PHASES = frozenset({PHASE_DRAFT, PHASE_EXECUTE})
 
 logger = logging.getLogger("pet.agent.orchestrator")
-
-
-class PlanError(Exception):
-    pass
 
 
 class AgentRunStore(Protocol):
@@ -53,12 +44,6 @@ class AgentRunStore(Protocol):
         steps: str,
         finished_at: str,
     ) -> None: ...
-
-
-@dataclass(frozen=True)
-class PlanStep:
-    topic: str
-    task: str
 
 
 @dataclass(frozen=True)
@@ -105,44 +90,6 @@ def _read_only_denial(declared: Sequence[str]) -> str | None:
 
 def _declared_tools(skill: Skill, names: Sequence[str]) -> tuple[str, ...]:
     return tuple(name for name in names if name in skill.tools)
-
-
-def parse_plan(text: str) -> list[PlanStep]:
-    stripped = FENCE.sub("", text.strip()).strip()
-    try:
-        data: Any = json.loads(stripped)
-    except ValueError as exc:
-        raise PlanError(f"执行计划不是合法的 JSON：{exc}") from exc
-    return parse_plan_data(data)
-
-
-def _plan_text(item: dict[str, Any], key: str, index: int, label: str) -> str:
-    value = item.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise PlanError(f"第 {index} 步缺少{label}")
-    text = value.strip()
-    if len(text) > PLAN_FIELD_MAX_CHARS:
-        raise PlanError(f"第 {index} 步的{label}超过 {PLAN_FIELD_MAX_CHARS} 字")
-    return text
-
-
-def parse_plan_data(data: Any) -> list[PlanStep]:
-    if not isinstance(data, list):
-        raise PlanError("执行计划必须是 JSON 数组")
-    if not PLAN_MIN_ITEMS <= len(data) <= PLAN_MAX_ITEMS:
-        raise PlanError(f"执行计划需要 {PLAN_MIN_ITEMS}–{PLAN_MAX_ITEMS} 项，实际 {len(data)} 项")
-    steps: list[PlanStep] = []
-    for index, item in enumerate(data, start=1):
-        if not isinstance(item, dict):
-            raise PlanError(f"第 {index} 步必须是 JSON 对象")
-        extra = sorted(set(item) - {"topic", "task"})
-        if extra:
-            # 旧格式残留的 capability 等字段一律忽略，不参与路由（D-29）。
-            logger.warning("派发计划第 %s 步含多余字段 %s，已忽略", index, extra)
-        topic = _plan_text(item, "topic", index, "任务主题")
-        task = _plan_text(item, "task", index, "任务描述")
-        steps.append(PlanStep(topic=topic, task=task))
-    return steps
 
 
 def _system_now(zone: tzinfo) -> datetime:
@@ -215,8 +162,9 @@ class Orchestrator:
         read_only: bool = False,
         turn_id: str | None = None,
         main_task_id: str | None = None,
+        plan_first: bool | None = None,
     ) -> Checkpoint:
-        return self.run_plan(
+        checkpoints = self.run_plan(
             [PlanStep(topic=topic, task=task)],
             gate=gate,
             persona=persona,
@@ -224,7 +172,9 @@ class Orchestrator:
             plan_id=main_task_id,
             read_only=read_only,
             turn_id=turn_id,
-        )[0]
+            plan_first=plan_first,
+        )
+        return merge_checkpoints(topic, checkpoints)
 
     def run_plan(
         self,
@@ -236,6 +186,7 @@ class Orchestrator:
         plan_id: str | None = None,
         read_only: bool = False,
         turn_id: str | None = None,
+        plan_first: bool | None = None,
     ) -> list[Checkpoint]:
         # 权限在派发时快照一次，任务执行期间新增的配置或登记不会中途放宽。
         main_task_id = plan_id or uuid4().hex
@@ -250,8 +201,17 @@ class Orchestrator:
                 source=source,
             )
         try:
+            steps = plan
+            if plan and self._plans_first(plan_first, source):
+                steps = self._expand(
+                    plan,
+                    main_task_id=main_task_id,
+                    persona=persona,
+                    source=source,
+                    turn_id=turn_id,
+                )
             return self._run_plan(
-                plan,
+                steps,
                 main_task_id=main_task_id,
                 model=model,
                 gate=gate,
@@ -262,6 +222,89 @@ class Orchestrator:
             )
         finally:
             self._finish_review(main_task_id)
+
+    def _plans_first(self, plan_first: bool | None, source: str) -> bool:
+        """默认只在用户来源且装配了任务规划能力时启用；系统自动派发保持精简。"""
+        if plan_first is not None:
+            return plan_first
+        if source != SOURCE_USER:
+            return False
+        skill = self._skills.get(TASK_SKILL)
+        return skill is not None and skill.planner
+
+    def _expand(
+        self,
+        plan: Sequence[PlanStep],
+        *,
+        main_task_id: str,
+        persona: PersonaSnapshot,
+        source: str,
+        turn_id: str | None,
+    ) -> Sequence[PlanStep]:
+        """固定交接任务规划者；规划失败时退回原计划，不阻断本次派发。"""
+        skill = self._skills.get(TASK_SKILL)
+        if skill is None:
+            logger.debug("未装配任务规划能力，按原计划执行")
+            return plan
+        if not skill.planner:
+            logger.warning("能力 %s 不是任务规划能力，按原计划执行", TASK_SKILL)
+            return plan
+        run_id = uuid4().hex
+        started = self._clock(self._timezone)
+        instruction = "；".join(f"{step.topic}：{step.task}" for step in plan)
+        context = TaskContext(
+            persona_id=persona.id,
+            persona_version=persona.version,
+            main_task_id=main_task_id,
+            subtask_id=run_id,
+            turn_id=turn_id,
+            source=source,
+            permissions=system_permissions(),
+        )
+        self._runs.insert(
+            AgentRunRecord(
+                id=run_id,
+                session_id=started.date().isoformat(),
+                skill=TASK_SKILL,
+                instruction=instruction,
+                steps="[]",
+                output=None,
+                status="running",
+                error_code=None,
+                started_at=started.isoformat(timespec="milliseconds"),
+                finished_at=None,
+                turn_id=turn_id,
+                persona_id=persona.id,
+                persona_version=persona.version,
+                main_task_id=main_task_id,
+                source=source,
+            )
+        )
+        try:
+            result = self._subagent.plan(skill, plan, run_id, context=context, turn_id=turn_id)
+        except Exception as exc:
+            logger.exception("任务规划异常：run=%s", run_id)
+            result = SubAgentPlan(False, error_code="planner_failed", error=str(exc))
+        self._runs.finish(
+            run_id,
+            status=STATUS_SUCCEEDED if result.ok else STATUS_FAILED,
+            output=(json.dumps(plan_data(result.tasks), ensure_ascii=False) if result.ok else None),
+            error_code=result.error_code,
+            steps=json.dumps(list(result.steps), ensure_ascii=False),
+            finished_at=self._clock(self._timezone).isoformat(timespec="milliseconds"),
+        )
+        if not result.ok:
+            logger.warning(
+                "任务规划失败，按原计划执行：run=%s code=%s 原因=%s",
+                run_id,
+                result.error_code,
+                result.error,
+            )
+            return plan
+        logger.info(
+            "任务规划完成：%d 项派发 → %d 项任务（run=%s）", len(plan), len(result.tasks), run_id
+        )
+        return result.tasks
 
     def _run_plan(
         self,
@@ -537,3 +580,52 @@ def _checkpoint_text(topic: str, result: SubAgentResult) -> str:
     if result.error_code in (ERROR_REJECTED, ERROR_READ_ONLY):
         return f"执行：{topic}\n拒绝：{result.error}"
     return f"执行：{topic}\n失败：{result.error}"
+
+
+def merge_checkpoints(topic: str, checkpoints: Sequence[Checkpoint]) -> Checkpoint:
+    """把一次派发展开后的多个检查点合成一个，供 `dispatch` 的单结果调用方使用。
+
+    合并只用于兼容旧调用：正文按项拼接，输出与错误分行合并；全部成功才算成功，
+    全部被拒才是 `rejected`，其余失败按 `failed` 处理。运行标识取首项。
+    """
+    if not checkpoints:
+        return Checkpoint(
+            run_id="",
+            topic=topic,
+            ok=False,
+            text=f"执行：{topic}\n失败：没有可执行的任务",
+            error="没有可执行的任务",
+            error_code="empty_plan",
+            status=STATUS_FAILED,
+        )
+    if len(checkpoints) == 1:
+        return checkpoints[0]
+    ok = all(item.ok for item in checkpoints)
+    if ok:
+        status = STATUS_SUCCEEDED
+    elif all(item.status == STATUS_REJECTED for item in checkpoints):
+        status = STATUS_REJECTED
+    else:
+        status = STATUS_FAILED
+    first_failure = next((item for item in checkpoints if not item.ok), None)
+    outputs = [
+        item.output.strip()
+        for item in checkpoints
+        if item.ok and item.output and item.output.strip()
+    ]
+    errors = [
+        item.error.strip()
+        for item in checkpoints
+        if not item.ok and item.error and item.error.strip()
+    ]
+    return Checkpoint(
+        run_id=checkpoints[0].run_id,
+        topic=topic,
+        ok=ok,
+        text="\n\n".join(item.text for item in checkpoints),
+        output="\n".join(outputs) or None,
+        error="\n".join(errors) or None,
+        steps=tuple(step for item in checkpoints for step in item.steps),
+        status=status,
+        error_code=None if ok or first_failure is None else first_failure.error_code,
+    )

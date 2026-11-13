@@ -142,6 +142,8 @@ class RecollectionService:
             source=SOURCE_SYSTEM_AUTO,
             read_only=True,
             turn_id=turn_id,
+            # 回忆任务是固定的“总结这一天”，不需要再拆解；失败会占用当天唯一的回忆位。
+            plan_first=False,
         )
 
     def _choose(self, target: str, persona: PersonaSnapshot) -> tuple[str, bool] | None:

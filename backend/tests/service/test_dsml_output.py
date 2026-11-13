@@ -3,7 +3,7 @@ import sys
 import pytest
 
 from module.agent.chat_output import DispatchRejectedError, ModelOutputError, parse_chat_output
-from module.agent.orchestrator import PlanStep
+from module.agent.plan import PlanStep
 from module.agent.subagent import parse_action
 
 MARK = "｜｜DSML｜｜"

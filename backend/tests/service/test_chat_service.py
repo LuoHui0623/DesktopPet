@@ -14,7 +14,8 @@ from infra.store.db import connect
 from infra.store.migrate import migrate
 from module.agent.approval import ApprovalDraft
 from module.agent.context import SOURCE_USER
-from module.agent.orchestrator import Checkpoint, PlanStep
+from module.agent.orchestrator import Checkpoint
+from module.agent.plan import PlanStep
 from module.agent.prompt import load_templates
 from module.chat.chat_service import (
     ChatError,
