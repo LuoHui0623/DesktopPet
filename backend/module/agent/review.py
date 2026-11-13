@@ -1,7 +1,8 @@
-"""审批服务：逐条授权、按 range 提交，以及读取口径的持有者。
+"""审批服务：按 hunk 授权、按 range 提交，以及读取口径的持有者。
 
 写动作入队后**不阻塞**：条目先进入 `proposed`，模型可以继续提出动作；授权发生在
-唯一的 review 一处，提交时才逐条开票。因此「改一处、卡一次」的旧交互不再存在。
+唯一的 review 一处，提交时才开票。票据以 action 为单位：同一 hunk 内的多条 range
+操作共用一张票，批准或拒绝一次即覆盖整段改动。
 
 `H1`（磁盘当前版本）只在服务端使用，不进入模型上下文；回执只报结局与区间。
 """
@@ -31,7 +32,14 @@ from module.files.outcome import (
     SettlementOutcome,
     SettleResult,
 )
-from module.files.ranges import STATE_APPROVED, STATE_PROPOSED, Action, Entry
+from module.files.ranges import (
+    STATE_APPROVED,
+    STATE_PROPOSED,
+    Action,
+    ChangeQueue,
+    Entry,
+    entry_order,
+)
 from module.files.resolver import FileError
 from module.files.review import LIVE_STATES, FileChange, FileState, ReviewView, build_review
 from module.files.session import SessionStore, TaskSession, TrackedFile
@@ -137,7 +145,7 @@ class ReviewService:
         return build_review(_states(session), session.queue)
 
     def pending(self, task: str) -> ReviewView:
-        """面板视图：含待审条目，供逐条批准/驳回与撤回。"""
+        """面板视图：含待审条目，供按 hunk 批准/驳回与撤回。"""
         session = self.sessions.peek(task)
         if session is None:
             return ReviewView()
@@ -265,14 +273,19 @@ class ReviewService:
     def _authorize(
         self, task: str, binding: _Binding, session: TaskSession
     ) -> tuple[dict[str, int], dict[str, str]]:
-        """逐条开票；返回每个文件被驳回的条目数与驳回原因。"""
+        """按 hunk 开票；返回每个文件被驳回的条目数与驳回原因。
+
+        同一 action 的待审条目共用一张票（`run_id` 取组内首条），一次裁决落到
+        组内全部条目，避免同一段改动被拆成多次审批。
+        """
         proposed = session.queue.entries(states=frozenset({STATE_PROPOSED}))
         if not proposed:
             return {}, {}
         view = build_review(_states(session), session.queue, include=LIVE_STATES)
         by_path = {change.abs_path: change for change in view.files}
+        groups = _approval_groups(session.queue, proposed)
         drafts = [
-            self._draft(task, binding, entry, by_path.get(entry.abs_path)) for entry in proposed
+            self._draft(task, binding, group, by_path.get(group[0].abs_path)) for group in groups
         ]
         try:
             outcomes = binding.gate.request(task, drafts)
@@ -285,14 +298,16 @@ class ReviewService:
         approved: list[str] = []
         rejected: list[str] = []
         reasons: dict[str, str] = {}
-        for entry in proposed:
-            outcome = outcomes.get(entry.entry_id)
+        for group in groups:
+            run_id = group[0].entry_id
+            outcome = outcomes.get(run_id)
+            entry_ids = [entry.entry_id for entry in group]
             if outcome is not None and outcome.approved:
-                approved.append(entry.entry_id)
+                approved.extend(entry_ids)
                 continue
-            rejected.append(entry.entry_id)
+            rejected.extend(entry_ids)
             if outcome is not None and outcome.reason:
-                reasons.setdefault(entry.abs_path, outcome.reason)
+                reasons.setdefault(group[0].abs_path, outcome.reason)
         session.queue.approve(approved)
         session.queue.reject(rejected)
         counts: dict[str, int] = {}
@@ -305,25 +320,27 @@ class ReviewService:
         self,
         task: str,
         binding: _Binding,
-        entry: Entry,
+        group: Sequence[Entry],
         change: FileChange | None,
     ) -> ApprovalDraft:
+        lead = group[0]
+        tools = tuple(dict.fromkeys(entry.source_action for entry in group))
         return ApprovalDraft(
-            run_id=entry.entry_id,
-            topic=f"文件改动：{entry.path}",
-            task=f"{entry.source_action} {entry.path}",
-            content=entry.summary(),
-            tools=(entry.source_action,),
+            run_id=lead.entry_id,
+            topic=f"文件改动：{lead.path}",
+            task=f"{'、'.join(tools)} {lead.path}",
+            content=_group_summary(group),
+            tools=tools,
             persona_id=binding.persona_id,
             persona_version=binding.persona_version,
             main_task_id=task,
-            subtask_id=entry.author,
+            subtask_id=lead.author,
             source=binding.source,
             previews=(build_preview(change),) if change is not None else (),
             model=binding.model,
-            action=entry.source_action,
-            resource=entry.resource,
-            path=entry.path,
+            action=lead.source_action,
+            resource=lead.resource,
+            path=lead.path,
         )
 
     def _commit(
@@ -387,6 +404,36 @@ class ReviewService:
         if binding is None:
             raise FileError("缺少审批通道，待审条目无法结算")
         return binding
+
+
+def _approval_groups(queue: ChangeQueue, proposed: Sequence[Entry]) -> list[list[Entry]]:
+    """按 action（同一 hunk）把待审条目分组；组内按入队顺序。
+
+    结构条目各自成组；若某条目因异常未落入任何 action，退化为单独一组，
+    保证每个待审条目都有裁决。
+    """
+    pending = {entry.entry_id for entry in proposed}
+    groups: list[list[Entry]] = []
+    for action in queue.all_actions(states=LIVE_STATES):
+        members = sorted(
+            (member for member in action.members if member.entry_id in pending),
+            key=entry_order,
+        )
+        if not members:
+            continue
+        groups.append(members)
+        pending.difference_update(member.entry_id for member in members)
+    for entry in proposed:
+        if entry.entry_id in pending:
+            groups.append([entry])
+    return groups
+
+
+def _group_summary(group: Sequence[Entry]) -> str:
+    if len(group) == 1:
+        return group[0].summary()
+    joined = "；".join(entry.summary() for entry in group)
+    return f"合并 {len(group)} 处改动：{joined}"
 
 
 def _states(session: TaskSession) -> list[FileState]:

@@ -826,16 +826,18 @@ def test_rejected_settlement_keeps_disk_and_returns_explicit_receipt(stack):
 
 def test_partial_approval_commits_only_the_approved_entries(stack):
     target = world(stack, "笔记.md")
-    target.write_text("一\n", encoding="utf-8")
+    base = "".join(f"行{index}\n" for index in range(1, 11))
+    target.write_text(base, encoding="utf-8")
     gate = FirstOnlyGate()
     service = stack["build"](gate=gate)
     service.read(WORLD, "笔记.md")
-    service.append(WORLD, "甲", path="笔记.md")
-    service.append(WORLD, "乙", path="笔记.md")
+    # 两处分属不同 hunk，才会各开一张票；同 hunk 的改动会合并审批。
+    service.replace_lines(WORLD, [[1, 1]], "壹", path="笔记.md")
+    service.replace_lines(WORLD, [[10, 10]], "拾", path="笔记.md")
 
     receipts = settle(stack)
 
-    assert target.read_text(encoding="utf-8") == "一\n甲\n"
+    assert target.read_text(encoding="utf-8") == "壹\n" + base.split("\n", 1)[1]
     assert receipts == ("结算：笔记.md 已提交 1 条改动、驳回 1 条（用户拒绝执行）。",)
 
 

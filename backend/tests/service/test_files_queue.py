@@ -36,7 +36,7 @@ def test_every_write_action_normalizes_to_four_lines_ops(env):
     assert removed.op == LINES_DELETE and removed.removes_file
 
 
-def test_disjoint_entries_do_not_depend_on_enqueue_order():
+def test_entries_in_one_hunk_do_not_depend_on_enqueue_order():
     def run(reverse: bool) -> tuple[int, list[str]]:
         queue = ChangeQueue()
         proposals = [
@@ -54,7 +54,28 @@ def test_disjoint_entries_do_not_depend_on_enqueue_order():
         actions = queue.actions_for("/a.md", states=frozenset({"proposed"}))
         return len(actions), apply_actions(["a", "b", "c"], actions)
 
-    assert run(False) == run(True) == (2, ["A", "b", "C"])
+    # 中间只隔一行，属于同一 hunk，操作合并为一条 action，结果与入队顺序无关。
+    assert run(False) == run(True) == (1, ["A", "b", "C"])
+
+
+def test_hunk_gap_merges_operations_and_seven_lines_splits():
+    def actions(second_start: int) -> int:
+        queue = ChangeQueue()
+        for span, text in (((1, 2), "A"), ((second_start, second_start + 1), "B")):
+            entry = queue.propose(
+                resource="world",
+                path="a.md",
+                abs_path="/a.md",
+                op=LINES_REPLACE,
+                source_action="replace_lines",
+                range_lines=span,
+                content=(text,),
+            )
+            queue.approve([entry.entry_id])
+        return len(queue.actions_for("/a.md"))
+
+    assert actions(8) == 1  # 两段之间 6 行未改动，同一 hunk，合并操作
+    assert actions(9) == 2  # 7 行未改动即断开，各自成 action
 
 
 def test_overlap_keeps_later_entry_and_marks_it_covered():

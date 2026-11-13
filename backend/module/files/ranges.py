@@ -1,7 +1,10 @@
-"""条目队列：写动作归一为 range 操作，按条目授权、按 range 合并、从 H0 投影出文本。
+"""条目队列：写动作归一为 range 操作，按 hunk 合并、按 action 授权与撤回，从 H0 投影出文本。
 
-队列的原子单元是**条目**，不是工具调用。一次动作可能展开为多条（`replace_regex`
-命中三处即三条，`delete_lines` 给多个 range 即多条），条目边界即授权与撤回边界。
+队列的内容单元是**条目**，不是工具调用：一次动作可能展开为多条（`replace_regex`
+命中三处即三条，`delete_lines` 给多个 range 即多条）。
+
+审批与撤回单元是**action**：同一 hunk 内的条目按 `HUNK_MERGE_GAP` 合并为一条 action，
+与 review 的并段规则一致，审批一次即覆盖整段改动。
 
 位置一律用**半开区间** `[start, end)`、行号 1 起始表达：
 
@@ -15,6 +18,7 @@ from difflib import SequenceMatcher
 from itertools import count
 
 from constants.files import (
+    HUNK_MERGE_GAP,
     LINES_APPEND,
     LINES_INSERT,
     LINES_OPS,
@@ -34,7 +38,10 @@ LineRange = tuple[int, int]
 
 @dataclass(frozen=True)
 class Entry:
-    """一条待审批改动；结构条目没有 `range_lines`，也没有内容行。"""
+    """一条待审批改动；结构条目没有 `range_lines`，也没有内容行。
+
+    条目是最小内容单元；同一 hunk 内的条目会合并为一条 action，审批以 action 为单位。
+    """
 
     entry_id: str
     resource: str
@@ -75,7 +82,7 @@ class Entry:
 
 @dataclass(frozen=True)
 class Action:
-    """已批准条目按 range 合并后的原子单元；撤回以它为单位。"""
+    """同一 hunk 内条目合并后的原子单元；审批与撤回以它为单位。"""
 
     path: str
     abs_path: str
@@ -255,21 +262,37 @@ def _structure_action(entry: Entry) -> Action:
     )
 
 
-def _merge_lines(entries: list[Entry]) -> list[Action]:
-    """把同一文件的内容条目按 range 归并；入队顺序决定成员次序。"""
-    if not entries:
+def group_within_hunk(entries: Sequence[Entry]) -> list[list[Entry]]:
+    """把内容条目按 review 的并段规则分组；组即审批与撤回单元。
+
+    排序后，若下一条目的起点与当前组已覆盖终点的间隔不超过 `HUNK_MERGE_GAP`
+    行未改动内容，就归入同一组；零宽插入点按所在位置计。
+    """
+    lines = [entry for entry in entries if not entry.is_structure and entry.range_lines is not None]
+    if not lines:
         return []
-    ordered = sorted(entries, key=lambda item: _sort_key(item.range_lines))
+    ordered = sorted(lines, key=lambda item: _sort_key(item.range_lines))
     groups: list[list[Entry]] = [[ordered[0]]]
+    end = ordered[0].range_lines[1]  # type: ignore[index]
     for entry in ordered[1:]:
-        current = groups[-1][-1]
-        if _adjacent(current.range_lines, entry.range_lines):
+        start, stop = entry.range_lines  # type: ignore[misc]
+        if start - end <= HUNK_MERGE_GAP:
             groups[-1].append(entry)
+            end = max(end, stop)
         else:
             groups.append([entry])
+            end = stop
+    return groups
+
+
+def _merge_lines(entries: list[Entry]) -> list[Action]:
+    """把同一文件的内容条目按 hunk 归并；入队顺序决定成员次序。"""
+    if not entries:
+        return []
+    groups = group_within_hunk(entries)
     actions: list[Action] = []
     for group in groups:
-        members = tuple(sorted(group, key=_entry_order))
+        members = tuple(sorted(group, key=entry_order))
         ranges = [member.range_lines for member in members if member.range_lines is not None]
         start = min(item[0] for item in ranges)
         end = max(item[1] for item in ranges)
@@ -291,7 +314,7 @@ def _sort_key(span: LineRange | None) -> tuple[int, int]:
     return span if span is not None else (0, 0)
 
 
-def _entry_order(entry: Entry) -> int:
+def entry_order(entry: Entry) -> int:
     """条目 id 的数值部分即入队顺序；解析失败退化为 0。"""
     _, _, tail = entry.entry_id.partition("-")
     return int(tail) if tail.isdigit() else 0
@@ -306,21 +329,6 @@ def _overlaps(left: LineRange | None, right: LineRange | None) -> bool:
         other = right if left[0] == left[1] else left
         return other[0] <= point <= other[1]
     return left[0] < right[1] and right[0] < left[1]
-
-
-def _adjacent(left: LineRange | None, right: LineRange | None) -> bool:
-    """相邻或重叠即并成一条 action；零宽插入视作紧贴其所在位置。"""
-    if left is None or right is None:
-        return False
-    left_point = left[0] == left[1]
-    right_point = right[0] == right[1]
-    if left_point and right_point:
-        return left[0] == right[0]
-    if left_point:
-        return right[0] <= left[0] <= right[1]
-    if right_point:
-        return left[0] <= right[0] <= left[1]
-    return right[0] <= left[1] and left[0] <= right[1]
 
 
 # —— 投影：从 H0 与已批准 action 重建文本 ——
@@ -469,6 +477,8 @@ __all__ = [
     "apply_actions",
     "changed_spans",
     "closed_ranges",
+    "entry_order",
+    "group_within_hunk",
     "intersects",
     "map_span",
     "offset_table",

@@ -186,28 +186,47 @@ def test_uncommitted_entries_leave_disk_untouched(env):
 # —— 不变量 2 与 8：只提交已批准条目，部分驳回要区分 ——
 
 
+LONG = "".join(f"行{index}\n" for index in range(1, 11))
+
+
 def test_only_approved_entries_reach_disk(env):
-    target = _write(env.world / "笔记.md", BASE)
+    target = _write(env.world / "笔记.md", LONG)
     env.service.read("world", "笔记.md")
     env.service.replace_lines("world", [[1, 1]], "壹", path="笔记.md")
-    env.service.replace_lines("world", [[3, 3]], "叁", path="笔记.md")
+    env.service.replace_lines("world", [[10, 10]], "拾", path="笔记.md")
     first, second = env.session().queue.entries()
     gate = Gate(approve=lambda draft: draft.run_id == first.entry_id)
     env.bind(env.task_a, gate)
 
     outcome = env.review.settle(TASK_A)
 
-    assert target.read_text(encoding="utf-8") == "壹\n二\n三\n四\n"
+    assert target.read_text(encoding="utf-8") == "壹\n" + LONG.split("\n", 1)[1]
     assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动、驳回 1 条（用户拒绝执行）。",)
     assert [draft.run_id for draft in gate.drafts] == [first.entry_id, second.entry_id]
     assert {entry.state for entry in env.session().queue.entries()} == {"approved"}
 
 
-def test_partial_rejection_reports_counts(env):
-    _write(env.world / "笔记.md", BASE)
+def test_one_hunk_opens_one_approval_for_all_its_operations(env):
+    target = _write(env.world / "笔记.md", BASE)
     env.service.read("world", "笔记.md")
-    env.service.append("world", "甲", path="笔记.md")
-    env.service.append("world", "乙", path="笔记.md")
+    env.service.replace_lines("world", [[1, 1]], "壹", path="笔记.md")
+    env.service.replace_lines("world", [[3, 3]], "叁", path="笔记.md")
+    gate = env.gates[TASK_A]
+
+    outcome = env.review.settle(TASK_A)
+
+    # 两处改动同属一个 hunk：只开一张票，审批一次即覆盖两条 range 操作。
+    assert len(gate.drafts) == 1
+    assert outcome.counts == {STATUS_COMMITTED: 1}
+    assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动。",)
+    assert target.read_text(encoding="utf-8") == "壹\n二\n叁\n四\n"
+
+
+def test_partial_rejection_reports_counts(env):
+    _write(env.world / "笔记.md", LONG)
+    env.service.read("world", "笔记.md")
+    env.service.replace_lines("world", [[1, 1]], "壹", path="笔记.md")
+    env.service.replace_lines("world", [[10, 10]], "拾", path="笔记.md")
     first = env.session().queue.entries()[0]
     env.bind(env.task_a, Gate(approve=lambda draft: draft.run_id == first.entry_id))
 

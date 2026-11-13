@@ -33,7 +33,7 @@ def lines_of(change):
     return [line for hunk in change.hunks for line in hunk.lines]
 
 
-def test_one_hunk_can_trace_multiple_actions():
+def test_hunk_merges_its_operations_into_one_action():
     queue = ChangeQueue()
     first = propose(queue, (1, 2), ("A",))
     second = propose(queue, (3, 4), ("C",))
@@ -42,27 +42,29 @@ def test_one_hunk_can_trace_multiple_actions():
     view = build_review([file_state("a\nb\nc\n")], queue, include=frozenset({"approved"}))
     change = view.files[0]
     assert len(change.hunks) == 1
-    assert len(queue.actions_for(PATH)) == 2  # 中间隔一行，不会合并成一条 action
+    actions = queue.actions_for(PATH)
+    assert len(actions) == 1  # 同一 hunk 内的操作合并，审批一起进行
+    assert set(actions[0].entry_ids) == {first.entry_id, second.entry_id}
     added = [line for line in lines_of(change) if line.kind == KIND_ADD]
     assert [line.text for line in added] == ["A", "C"]
     traced = {annotation.source_action for line in added for annotation in line.annotations}
     assert traced == {"replace_lines"}
     action_ids = {annotation.action for line in added for annotation in line.annotations}
-    assert len(action_ids) == 2
+    assert action_ids == {0}
 
 
 def test_merge_gap_threshold_is_six_lines():
-    def hunks(second_start: int) -> int:
+    def counts(second_start: int) -> tuple[int, int]:
         base = "\n".join(f"l{index}" for index in range(1, 22)) + "\n"
         queue = ChangeQueue()
         first = propose(queue, (1, 2), ("A",))
         second = propose(queue, (second_start, second_start + 1), ("B",))
         queue.approve([first.entry_id, second.entry_id])
         view = build_review([file_state(base)], queue, include=frozenset({"approved"}))
-        return len(view.files[0].hunks)
+        return len(view.files[0].hunks), len(queue.actions_for(PATH))
 
-    assert hunks(8) == 1  # 改动行之间 6 行未改动
-    assert hunks(9) == 2  # 7 行未改动即断开
+    assert counts(8) == (1, 1)  # 改动行之间 6 行未改动：同一 hunk，操作合并
+    assert counts(9) == (2, 2)  # 7 行未改动即断开：两个 hunk，两条 action
 
 
 def test_input_decoration_is_not_counted_as_an_extra_line():

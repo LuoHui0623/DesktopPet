@@ -1,17 +1,18 @@
 """review 视图：变更列表 + 按行连续 diff。
 
 两层结构对应编辑器的变更列表：顶层给文件与目录条目（`A`/`M`/`D` 与 `+N −M`），
-展开文件项给按行号升序的连续 diff。最小展示单元是**行**，不按 action 分组——
-一个 hunk 可以横跨多条 action，一条 action 的改动行也可能被切成两个 hunk。
+展开文件项给按行号升序的连续 diff。最小展示单元是**行**；一个 hunk 与一条
+action 对齐，action 又恰好是审批单元，因此卡片上的整段改动一次审批。
 
-分段取 git 默认规则：改动行前后各 3 行上下文，两段之间未改动行 ≤ 6 时并段。
+分段取 git 默认规则：改动行前后各 3 行上下文，两段之间未改动行 ≤ 6 时并段；
+队列的 action 合并沿用同一阈值，保证视图与审批单元一致。
 """
 
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 
-from constants.files import ACTION_CREATE_DIR
+from constants.files import ACTION_CREATE_DIR, HUNK_CONTEXT_LINES, HUNK_MERGE_GAP
 from module.files.ranges import (
     STATE_APPROVED,
     STATE_PROPOSED,
@@ -20,9 +21,6 @@ from module.files.ranges import (
     LineRange,
     apply_actions,
 )
-
-CONTEXT_LINES = 3
-MERGE_GAP = 6
 
 KIND_CONTEXT = "context"
 KIND_ADD = "add"
@@ -202,7 +200,7 @@ def _skeleton(h0: Sequence[str], final: Sequence[str]) -> list[DiffLine]:
 
 
 def _annotate(rows: Sequence[DiffLine], actions: Sequence[Action]) -> list[DiffLine]:
-    """按连续变更块定位归属 action；交互块可横跨多条 action。"""
+    """按连续变更块定位归属 action；同一块可能同时落在多条 action 上。"""
     result = list(rows)
     index = 0
     while index < len(result):
@@ -279,14 +277,16 @@ def _hunks(rows: Sequence[DiffLine]) -> list[Hunk]:
     blocks: list[tuple[int, int]] = []
     start = previous = changed[0]
     for index in changed[1:]:
-        if index - previous - 1 <= MERGE_GAP:
+        if index - previous - 1 <= HUNK_MERGE_GAP:
             previous = index
             continue
         blocks.append((start, previous))
         start = previous = index
     blocks.append((start, previous))
     return [
-        _hunk(rows[max(0, first - CONTEXT_LINES) : min(len(rows), last + CONTEXT_LINES + 1)])
+        _hunk(
+            rows[max(0, first - HUNK_CONTEXT_LINES) : min(len(rows), last + HUNK_CONTEXT_LINES + 1)]
+        )
         for first, last in blocks
     ]
 

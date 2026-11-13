@@ -105,6 +105,6 @@
 | 记忆默认落库 | 不再提供临时模式：每轮都写 `daily_log`，结构化记忆写入只受敏感信息规则约束 | [CHAT.md](CHAT.md) 的「daily_log」 |
 | 文件域寻址 | `index` 单参数两视图；四个保留字全大写书写、判别归一大小写；未注册与已注册非目录分别报错；`entries` 与 `dir_resources` 全量返回 | [FILES/ADDRESSING.md](FILES/ADDRESSING.md) 的「单一入参」至「完整性与可见性」 |
 | 文件动作集 | 按受体条目 `type` 分 `dir`/`file` 两组；`create_file`、`delete_file` 归 `dir`；不存在 `edit` 聚合入口 | [FILES/ACTIONS.md](FILES/ACTIONS.md) 的「分组判据」与「独立动作，不设聚合入口」 |
-| 写入授权 | 人工授权只在 review 一处，逐条批准、允许部分批准；并 action 默认允许不经批准；review 为变更列表 + 按行连续 diff | [FILES/QUEUE.md](FILES/QUEUE.md) 的「授权」至「review 呈现」 |
+| 写入授权 | 人工授权只在 review 一处，按 hunk（action）批准、不同 hunk 允许部分批准；并 action 默认允许不经批准；review 为变更列表 + 按行连续 diff | [FILES/QUEUE.md](FILES/QUEUE.md) 的「授权」至「review 呈现」 |
 | 版本与外部变更 | 以 `utf-8-sig` 去 BOM、`\n` 归一后的 SHA-256 为版本；`diff_lines` 相交的条目作废重提，不相交的按偏移保留原批准 | [FILES/VERSION.md](FILES/VERSION.md) 的「版本」至「外部变更的分区处置」 |
 | 文件域不变量 | 提交前文件不变、只提交 `approved`、清空不等于删除、非空目录不删等八条 | [FILES/README.md](FILES/README.md) 的「不变量」 |

@@ -82,6 +82,11 @@ DOMAINS: tuple[str, ...] = (DOMAIN_FILES, DOMAIN_SKILLS, DOMAIN_TOOLS, DOMAIN_ME
 
 WRITE_MODES = ("staged", "read_only")
 
+# review 的分段规则同时决定审批单元：改动行前后各留 3 行上下文；两段之间未改动行
+# 不超过 6 行时并为一个 hunk，同一 hunk 内的条目也并成一条 action，一次审批覆盖整段。
+HUNK_CONTEXT_LINES = 3
+HUNK_MERGE_GAP = 6
+
 DRAFT = "draft"
 STRUCTURED = "structured"
 PERMANENT = "permanent"

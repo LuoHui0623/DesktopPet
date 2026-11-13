@@ -115,6 +115,27 @@ def test_settlement_previews_net_diff_and_carries_model(tmp_path: Path):
     assert target.read_text(encoding="utf-8") == "名字：小李\n工作地点：上海\n"
 
 
+def test_entries_in_one_hunk_open_a_single_draft(tmp_path: Path):
+    gate = RecordingGate()
+    review = ReviewService()
+    review.bind(TASK, gate, model=MODEL, persona_id="芙芙", persona_version=2, source="user")
+    target = tmp_path / "笔记.md"
+    base = "".join(f"行{index}\n" for index in range(1, 9))
+    target.write_text(base, encoding="utf-8")
+    stage(review, target, text=base, content=("甲",), span=(1, 2))
+    stage(review, target, text=base, content=("丁",), span=(4, 5))
+
+    outcome = review.settle(TASK)
+
+    plan_id, drafts = gate.calls[0]
+    assert plan_id == TASK
+    # 两处改动之间只隔 2 行，属于同一 hunk：只开一张票，一次审批覆盖两条操作。
+    assert len(drafts) == 1
+    assert outcome.counts == {"committed": 1}
+    assert outcome.receipts == ("结算：笔记.md 已提交 1 条改动。",)
+    assert target.read_text(encoding="utf-8") == "甲\n行2\n行3\n丁\n行5\n行6\n行7\n行8\n"
+
+
 def test_rejected_settlement_keeps_disk_and_returns_the_reason(tmp_path: Path):
     gate = RecordingGate(approved=False)
     review, target = make_review(tmp_path, gate)
