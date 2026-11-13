@@ -83,7 +83,7 @@
 | --- | --- | --- |
 | `type` | 全部 | `"dir"` 或 `"file"`，判别依据，不靠路径尾分隔符推断 |
 | `name` | 全部 | 条目名 |
-| `path` | 全部 | 可直接回传给 `read` 与写动作；dir 带尾分隔符 |
+| `path` | 全部 | 相对 root resource 的路径，可直接回传给 `index`、`read` 与写动作；dir 带尾分隔符 |
 | `action_permissions` | 全部 | 当下可用的具体动作名，由 `type` 动作集按权限过滤得到 |
 | `editing_status` | 仅 file | 占用状态：`state`、`notice`、`editing_by` |
 

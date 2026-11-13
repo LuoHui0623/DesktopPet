@@ -249,7 +249,8 @@ def test_index_subdirectory_and_rejects_file_or_read_only_targets(stack):
     (world(stack, "子目录") / "更多.md").write_text("苹果汁", encoding="utf-8")
     payload = json.loads(stack["service"].index("子目录"))
     assert payload["resource_id"] == WORLD
-    assert [item["path"] for item in payload["entries"]] == ["更多.md"]
+    # path 相对 root resource，可原样交给 read/写动作。
+    assert [item["path"] for item in payload["entries"]] == ["子目录/更多.md"]
 
     with pytest.raises(FileError, match="不是可索引目录"):
         stack["service"].index("draft")

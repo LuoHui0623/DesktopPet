@@ -46,3 +46,6 @@ backend/openapi.json
 
 # 本地任务记录，不纳入 git 追踪
 Task*.md
+
+# 本地草稿/草图（给 AI 看的临时稿），不纳入 git 追踪
+draft.py

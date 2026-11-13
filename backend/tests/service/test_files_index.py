@@ -18,6 +18,8 @@ def prepare(env):
     (env.world / "笔记.md").write_text("a\n", encoding="utf-8")
     (env.world / "子目录").mkdir()
     (env.world / "子目录" / "内部.md").write_text("b\n", encoding="utf-8")
+    (env.world / "子目录" / "孙目录").mkdir()
+    (env.world / "子目录" / "孙目录" / "深层.md").write_text("c\n", encoding="utf-8")
 
 
 def test_domain_view_is_case_insensitive_and_has_only_new_keys(env):
@@ -61,7 +63,20 @@ def test_subdirectory_can_be_indexed_by_relative_path(env):
     prepare(env)
     view = dump(env.service.index("子目录"))
     assert view["resource_id"] == "world"
-    assert [item["name"] for item in view["entries"]] == ["内部.md"]
+    paths = {item["name"]: item["path"].replace("\\", "/") for item in view["entries"]}
+    # 条目 path 相对 root resource（world），而不是相对当前被索引的子目录。
+    assert paths == {"内部.md": "子目录/内部.md", "孙目录": "子目录/孙目录/"}
+    # 因此 path 可原样交给 read，指向的正是被索引目录里的文件。
+    assert "b" in env.service.read("world", paths["内部.md"])
+
+
+def test_nested_subdirectory_also_returns_root_relative_paths(env):
+    prepare(env)
+    view = dump(env.service.index("子目录/孙目录"))
+
+    paths = {item["name"]: item["path"].replace("\\", "/") for item in view["entries"]}
+    assert paths == {"深层.md": "子目录/孙目录/深层.md"}
+    assert "c" in env.service.read("world", paths["深层.md"])
 
 
 def test_unregistered_and_non_directory_errors_differ(env):

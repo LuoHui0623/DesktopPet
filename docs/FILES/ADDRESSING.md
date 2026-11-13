@@ -78,7 +78,8 @@ index("A\")               → 子目录条目，可继续 index
 ```
 
 - `dir_resources` 的值是 `resource_id`，可直接回传给 `index`、`read` 与各写动作的 `resource` 参数，不存在显示名与 ID 的换算。
-- 目录条目的 `path` 带尾分隔符，可原样回传给 `index`、`read` 与写动作；服务端按同一实际路径归一。
+- 条目的 `path` 一律**相对 root resource**（`world`），而不是相对当前被索引的子目录：`index("A")` 返回 `A\B.py`，不是 `B.py`。因此 `path` 可原样回传给 `index`、`read` 与写动作，不会误指根目录下的同名文件。
+- 目录条目的 `path` 带尾分隔符；服务端按同一实际路径归一。
 - `draft` 是小世界根目录下的文件，出现在 `index("world")` 的 `entries` 中，不出现在 `dir_resources` 里。
 - `SKILLS`、`TOOLS` 没有目录层级，只给清单。
 

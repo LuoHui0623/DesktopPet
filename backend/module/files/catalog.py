@@ -75,7 +75,8 @@ def dir_entries(
         if child.is_symlink() and child.is_dir():
             continue
         spec = _spec_of(child, resource)
-        relative = _relative(child, root)
+        # 条目 path 一律相对 root resource：子目录索引返回的 path 可直接交给 read/写动作。
+        relative = _relative(child, resource.root)
         if child.is_dir():
             entries.append(
                 DirEntry(
