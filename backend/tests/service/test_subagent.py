@@ -5,8 +5,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from config.settings import ModelSettingsSource
-from constants.agent import (
+from agent.constants import (
     DRAFT_INVALID_LIMIT,
     PHASE_DRAFT,
     PHASE_EXECUTE,
@@ -15,15 +14,16 @@ from constants.agent import (
     READ_ONLY_TOOLS,
     TASK_PLAN_MAX_ITEMS,
 )
+from agent.files.permissions import system_permissions
+from agent.harness.loop import INVALID_HINT, NO_DRAFT, SubAgent, parse_action
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.skills.registry import TASK_SKILL, Skill
+from agent.spec.context import TaskContext, current_task
+from agent.spec.plan import PlanStep
+from config.settings import ModelSettingsSource
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.context import TaskContext, current_task
-from module.agent.plan import PlanStep
-from module.agent.skills import TASK_SKILL, Skill
-from module.agent.subagent import INVALID_HINT, NO_DRAFT, SubAgent, parse_action
-from module.files.permissions import system_permissions
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
 
 LLM_YAML = """
 providers:

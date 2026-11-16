@@ -66,15 +66,15 @@
 
 | 层级 | 位置 | 状态 |
 | --- | --- | --- |
-| 工具层 | `backend/module/agent/tools/files.py` | 每个动作一个工具；无 `edit` 聚合入口 |
-| 常量与登记 | `backend/constants/files.py` | `RESOURCES` 登记、领域保留字与动作分组 |
-| 权限 | `backend/module/files/permissions.py` | 按任务权限快照投影动作 |
-| 服务 | `backend/module/files/service.py` | 索引、读取、检索与写动作入队；不落盘、不审批 |
-| 处理器与视图 | `backend/module/files/handlers.py`、`views.py`、`catalog.py` | 虚拟资源读取、索引序列化与条目投影 |
-| 队列与会话 | `backend/module/files/ranges.py`、`session.py` | 条目状态机、并 action、`H0` 只读副本 |
-| 守卫与版本 | `backend/module/files/guard.py` | 占用、等待取消、全文哈希与分区处置 |
-| 提交 | `backend/module/files/commit.py` | 唯一落盘入口；逐文件提交，不自动合并 |
-| 结算 | `backend/module/agent/review.py` | 复核、按 hunk 授权、逐文件回执 |
+| 工具层 | `backend/agent/tools/files.py` | 每个动作一个工具；无 `edit` 聚合入口 |
+| 常量与登记 | `agent/files/registry.py` | `RESOURCES` 登记、领域保留字与动作分组 |
+| 权限 | `backend/agent/files/permissions.py` | 按任务权限快照投影动作 |
+| 服务 | `backend/agent/files/service.py` | 索引、读取、检索与写动作入队；不落盘、不审批 |
+| 处理器与视图 | `backend/agent/files/handlers.py`、`views.py`、`catalog.py` | 虚拟资源读取、索引序列化与条目投影 |
+| 队列与会话 | `backend/agent/files/ranges.py`、`session.py` | 条目状态机、并 action、`H0` 只读副本 |
+| 守卫与版本 | `backend/agent/files/guard.py` | 占用、等待取消、全文哈希与分区处置 |
+| 提交 | `backend/agent/files/commit.py` | 唯一落盘入口；逐文件提交，不自动合并 |
+| 结算 | `backend/agent/harness/review.py` | 复核、按 hunk 授权、逐文件回执 |
 | 消费方 | `backend/tests/service/test_files_*.py`、`backend/tests/acceptance/test_files_end_to_end.py` | 契约断言与端到端不变量 |
 
 ## 阅读顺序

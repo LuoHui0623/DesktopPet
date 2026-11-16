@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from agent.memory.contracts import DailyLogRecord, DailyLogRole
+from agent.memory.repository import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.memory.contracts import DailyLogRecord, DailyLogRole
-from module.memory.repository import DbDailyLog
 
 
 @pytest.fixture

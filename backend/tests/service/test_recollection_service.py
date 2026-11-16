@@ -9,23 +9,23 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from config.persona import PersonaConfig
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import AutoApprovalGate
-from module.agent.context import SOURCE_SYSTEM_AUTO
-from module.agent.orchestrator import Checkpoint
-from module.memory.daily_log_service import DailyLogService
-from module.memory.memory_service import render_daily_turns
-from module.memory.recollection_service import (
+from agent.harness.approval import AutoApprovalGate
+from agent.harness.dispatch import Checkpoint
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.memory_service import render_daily_turns
+from agent.memory.recollection_service import (
     FAILURE_PREFIX,
     MAX_ATTEMPTS,
     NO_HISTORY_REASON,
     RecollectionService,
 )
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaSnapshot
-from module.settings.settings_service import SettingsService
+from agent.memory.repository import DbDailyLog
+from agent.persona.loader import PersonaConfig
+from agent.persona.persona_service import PersonaSnapshot
+from agent.spec.context import SOURCE_SYSTEM_AUTO
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 10, 18, 9, 30, tzinfo=TZ)
@@ -49,7 +49,7 @@ def make_env(tmp_path: Path) -> Env:
     now = [NOW]
     daily = DailyLogService(
         DbDailyLog(db_file),
-        SettingsService(db_file),
+        settings_doc(db_file),
         TZ,
         clock=lambda timezone: now[0],
     )

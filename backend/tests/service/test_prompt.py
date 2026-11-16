@@ -3,9 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from config.persona import parse_persona
-from constants.path import PROMPTS_DIR
-from module.agent.chat_system_prompt import (
+from agent.persona.loader import parse_persona
+from agent.prompts.chat_system import (
     ACTION_RULES_BODY,
     CATEGORY_BEHAVIOR,
     CATEGORY_CAPABILITY,
@@ -18,7 +17,7 @@ from module.agent.chat_system_prompt import (
     TOPIC_REGISTRY,
     Topic,
 )
-from module.agent.prompt import (
+from agent.prompts.templates import (
     NO_CAPABILITIES,
     NO_RESOURCES,
     TEMPLATE_CONTEXT,
@@ -35,6 +34,7 @@ from module.agent.prompt import (
     read_template,
     render_persona,
 )
+from constants.path import PROMPTS_DIR
 
 PERSONA = parse_persona(
     {
@@ -84,6 +84,22 @@ def test_list_themes_are_rendered_with_heading_and_sorted_bullets():
 def test_themes_are_rendered_in_fixed_order():
     text = render_persona(PERSONA)
     assert text.index("你的名字是") < text.index("性格：") < text.index("说话风格：")
+
+
+def test_appearance_and_wishes_render_after_language_style():
+    persona = parse_persona(
+        {
+            "role": {"名字": "小桌", "人设": "陪伴"},
+            "personality": ["温和"],
+            "language_style": ["口语化"],
+            "appearance": ["短头发"],
+            "wishes": ["希望知道当前时间"],
+        }
+    )
+    text = render_persona(persona)
+    assert "外观形象：\n- 短头发" in text
+    assert "心愿清单：\n- 希望知道当前时间" in text
+    assert text.index("说话风格：") < text.index("外观形象：") < text.index("心愿清单：")
 
 
 def test_missing_optional_theme_has_no_block():
@@ -273,14 +289,14 @@ def test_digest_hashes_the_composed_prompt(templates):
 def test_load_templates_rejects_registry_and_body_drift(monkeypatch):
     bodies = {**TOPIC_BODIES}
     bodies.pop(TOPIC_PERSONA.id)
-    monkeypatch.setattr("module.agent.prompt.TOPIC_BODIES", bodies)
+    monkeypatch.setattr("agent.prompts.templates.TOPIC_BODIES", bodies)
     with pytest.raises(PromptError, match="覆盖"):
         load_templates()
 
 
 def test_load_templates_rejects_placeholder_mismatch(monkeypatch):
     bodies = {**TOPIC_BODIES, TOPIC_PERSONA.id: "$persona_section $extra"}
-    monkeypatch.setattr("module.agent.prompt.TOPIC_BODIES", bodies)
+    monkeypatch.setattr("agent.prompts.templates.TOPIC_BODIES", bodies)
     with pytest.raises(PromptError, match="占位符"):
         load_templates()
 

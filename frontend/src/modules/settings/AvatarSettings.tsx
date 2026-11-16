@@ -63,14 +63,14 @@ export function AvatarSettings({
   onSaved: (view: SettingsView) => void;
 }) {
   const [selected, setSelected] = useState<string | null>(() => settings.avatar.active);
-  const { busy, error, notice, save } = useSettingsSave(onSaved);
+  const { busy, error, notice, save } = useSettingsSave(settings.version, onSaved);
   const persona = settings.avatar.persona;
 
   // 选中项初值来自后端下发的读模型；保存后 active 与选中一致，切换 tab 会重新挂载。
   const dirty = selected !== null && selected !== settings.avatar.active;
   const onSave = () => {
     if (selected === null || !dirty) return;
-    save(() => saveActiveAvatar(selected), "形象已切换，悬浮窗立即重载");
+    save((version) => saveActiveAvatar(selected, version), "形象已切换，悬浮窗立即重载");
   };
 
   return (

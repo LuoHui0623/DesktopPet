@@ -332,7 +332,79 @@ def _run(api: Api, tap: EventTap, port: int) -> None:
         "通过"
         if refused.status_code == 409 and code == "read_only" and reloaded == structured
         else "失败",
-        "结构化记忆改为条目存储，设置页编辑待接入",
+        "结构化记忆改为条目存储，整篇覆盖关闭；人工编辑走条目级接口（T-08）",
+    )
+
+    # 3b. 记忆管理：设置页条目级编辑与标签治理（T-08，纯 HTTP，不依赖模型）
+    created = api.call(
+        "POST", "/api/memories/entries", {"content": "验收合成条目", "tags": ["验收甲"]}
+    )
+    entry = created.json().get("entry", {}) if created.status_code == 200 else {}
+    entry_id = entry.get("id")
+    base_revision = entry.get("revision", 0)
+    record(
+        "对话记忆",
+        "POST /api/memories/entries",
+        "新增条目返回 entry 与 revision=1",
+        f"status={created.status_code}, id={entry_id}, revision={base_revision}",
+        "通过" if created.status_code == 200 and base_revision == 1 else "失败",
+    )
+    updated = api.call(
+        "PUT",
+        f"/api/memories/entries/{entry_id}",
+        {"content": "验收合成条目改", "tags": ["验收甲"], "expected_revision": base_revision},
+    )
+    new_revision = updated.json().get("revision") if updated.status_code == 200 else None
+    record(
+        "对话记忆",
+        "PUT /api/memories/entries/{id}",
+        "带当前 revision 修改成功并递增",
+        f"status={updated.status_code}, revision={new_revision}",
+        "通过" if updated.status_code == 200 and new_revision == base_revision + 1 else "失败",
+    )
+    stale = api.call(
+        "PUT",
+        f"/api/memories/entries/{entry_id}",
+        {"content": "过期修改", "expected_revision": base_revision},
+    )
+    stale_code = stale.json().get("error", {}).get("code")
+    record(
+        "对话记忆",
+        "PUT /api/memories/entries/{id}（过期 revision）",
+        "过期 revision 返回 409 conflict，不覆盖",
+        f"status={stale.status_code}, code={stale_code}",
+        "通过" if stale.status_code == 409 and stale_code == "conflict" else "失败",
+    )
+    preview = api.call(
+        "POST", "/api/memories/tags/merge/preview", {"source": "验收甲", "target": "验收乙"}
+    )
+    preview_body = preview.json()
+    merged = api.call("POST", "/api/memories/tags/merge", {"source": "验收甲", "target": "验收乙"})
+    merged_body = merged.json()
+    record(
+        "对话记忆",
+        "POST /api/memories/tags/merge/preview + /merge",
+        "改名预览只读、执行后影响一条",
+        f"preview={preview.status_code}/affected={preview_body.get('affected')}, "
+        f"merge={merged.status_code}/affected={merged_body.get('affected')}",
+        "通过"
+        if preview.status_code == 200
+        and preview_body.get("target_existed") is False
+        and merged.status_code == 200
+        and merged_body.get("affected") == 1
+        else "失败",
+    )
+    disabled = api.call("POST", f"/api/memories/entries/{entry_id}/disable", {"reason": "验收完成"})
+    disabled_body = disabled.json() if disabled.status_code == 200 else {}
+    record(
+        "对话记忆",
+        "POST /api/memories/entries/{id}/disable",
+        "停用生效并保留原因",
+        f"status={disabled.status_code}, state={disabled_body.get('status_state')}",
+        "通过"
+        if disabled.status_code == 200 and disabled_body.get("status_state") == "disabled"
+        else "失败",
+        "设置页条目级编辑已接入（T-08）",
     )
 
     # 4. subagent：记忆写入

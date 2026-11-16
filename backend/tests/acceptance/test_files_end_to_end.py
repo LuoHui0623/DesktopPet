@@ -27,21 +27,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from constants.files import WORLD
-from module.agent.approval import ApprovalDraft, ApprovalOutcome
-from module.agent.context import TaskContext, task_scope
-from module.agent.review import ReviewService
-from module.agent.skills import SkillRegistry
-from module.files.guard import FileBusy, content_hash
-from module.files.handlers import ModelLimit
-from module.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT
-from module.files.permissions import (
+from agent.files.guard import FileBusy, content_hash
+from agent.files.handlers import ModelLimit
+from agent.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT
+from agent.files.permissions import (
     ResourcePermission,
     TaskPermissions,
     system_permissions,
 )
-from module.files.resolver import FileDenied, FileError, ResourceResolver
-from module.files.service import FileService
+from agent.files.registry import WORLD
+from agent.files.resolver import FileDenied, FileError, ResourceResolver
+from agent.files.service import FileService
+from agent.harness.approval import ApprovalDraft, ApprovalOutcome
+from agent.harness.review import ReviewService
+from agent.skills.registry import SkillRegistry
+from agent.spec.context import TaskContext, task_scope
 
 TZ = ZoneInfo("Asia/Shanghai")
 TASK_A = "main-1"

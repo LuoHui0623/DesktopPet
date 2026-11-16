@@ -1,23 +1,35 @@
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from service.perception.events import PerceptionEventKind
-from service.perception.models import PerceptionRuntimeState
-from service.perception.parser import PerceptionEventParser
-from service.perception.scheduler import (
+from agent.capabilities.perception.events.events import PerceptionEventKind
+from agent.capabilities.perception.events.models import PerceptionRuntimeState
+from agent.capabilities.perception.events.parser import PerceptionEventParser
+from agent.capabilities.perception.gate.scheduler import (
     SchedulerLedgerService,
     SchedulerRuntime,
     SchedulerSettings,
 )
-from service.perception.settings import PerceptionConfig
+from agent.capabilities.perception.gate.settings import PerceptionConfig
 
 TZ = ZoneInfo("Asia/Shanghai")
 BASE = datetime(2026, 10, 29, 8, 0, tzinfo=TZ)
 
 
-class MemoryStore(dict[str, str]):
+class MemoryStore:
+    """台账键值 + 配置段来源；事件测试只用来关掉调度。"""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.sections: dict[str, dict[str, object]] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
     def put(self, key: str, value: str) -> None:
-        self[key] = value
+        self.values[key] = value
+
+    def section(self, name: str) -> dict[str, object]:
+        return self.sections.get(name, {})
 
 
 def config(**overrides) -> PerceptionConfig:
@@ -195,7 +207,7 @@ def test_app_in_use_needs_three_continuous_minutes_and_does_not_repeat():
 
 def test_recent_context_keeps_only_the_latest_app_in_use():
     store = MemoryStore()
-    store["scheduler.enabled"] = "false"
+    store.sections["scheduler"] = {"enabled": False}
     instance = parser(store)
     instance.observe(state(foreground="code"), BASE)
     instance.tick(after(minutes=3), config())
@@ -249,7 +261,7 @@ def test_trigger_flushes_current_events_to_the_rule_step():
 
 def test_untriggered_events_stay_current_until_context_reads_them():
     store = MemoryStore()
-    store["scheduler.enabled"] = "false"
+    store.sections["scheduler"] = {"enabled": False}
     instance = parser(store)
     instance.observe(state(foreground="code"), BASE)
 

@@ -1,7 +1,7 @@
 # 文件域版本与一致性契约
 
 > 职责：定义「什么算同一版本」「编辑期以什么为计算基底」「版本变了如何分区处置」「锁协调到什么范围」。
-> 依赖：[QUEUE.md](QUEUE.md)（条目与 range）、`backend/module/files/service.py`、`backend/module/files/token.py`。
+> 依赖：[QUEUE.md](QUEUE.md)（条目与 range）、`backend/agent/files/service.py`、`backend/agent/files/token.py`。
 > 不回答：条目的合并与 review 呈现（见 [QUEUE.md](QUEUE.md)）、动作参数（见 [ACTIONS.md](ACTIONS.md)）。
 > 状态：已实现（契约与实现一致）。
 

@@ -18,6 +18,8 @@ backend/.venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.pytest_tmp/
+.pt_*/
 .ruff_cache/
 .coverage
 htmlcov/

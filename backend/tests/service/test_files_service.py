@@ -11,34 +11,33 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from constants.agent import PERSONA_ACTIVE_KEY
-from constants.files import (
+from agent.files.permissions import ResourcePermission, TaskPermissions, system_permissions
+from agent.files.registry import (
     DRAFT,
     PERMANENT,
     STRUCTURED,
     WORLD,
 )
-from infra.llm.tokens import TokenCount, TokenCountError
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
-from module.agent.context import TaskContext, task_scope
-from module.agent.review import ReviewService
-from module.agent.skills import (
+from agent.files.resolver import FileDenied, FileError, ResourceResolver
+from agent.files.service import FileService, ModelLimit
+from agent.harness.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
+from agent.harness.review import ReviewService
+from agent.memory.contracts import DailyLogRecord, MemoryEntryCreate
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.memory_service import MemoryWriteError
+from agent.memory.repository import DbDailyLog
+from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,
     memory_retrieve_skill,
     memory_write_skill,
 )
-from module.files.permissions import ResourcePermission, TaskPermissions, system_permissions
-from module.files.resolver import FileDenied, FileError, ResourceResolver
-from module.files.service import FileService, ModelLimit
-from module.memory.contracts import DailyLogRecord, MemoryEntryCreate
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.memory_service import MemoryWriteError
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from agent.spec.context import TaskContext, task_scope
+from infra.llm.tokens import TokenCount, TokenCountError
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 TASK = TaskContext(
@@ -121,7 +120,7 @@ def stack(tmp_path: Path):
     entries = MemoryEntryService(db_file)
     for content in ("名字：小李", "工作地点：杭州"):
         entries.add(MemoryEntryCreate(content=content, tags=["主人信息"]))
-    settings = SettingsService(db_file)
+    settings = settings_doc(db_file)
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
@@ -389,7 +388,7 @@ def test_read_reports_external_change_and_invalidates_intersecting_entries(stack
 
 
 def test_read_uses_the_task_persona_not_the_active_one(stack):
-    stack["settings"].put(PERSONA_ACTIVE_KEY, "芙芙")
+    stack["settings"].replace("persona", {"active": "芙芙"})
     stack["store"].append(
         [
             record("2026-10-18T09:00:00+08:00", "master", "任务人设的话", "小桌"),
@@ -888,7 +887,7 @@ def test_settlement_keeps_the_dispatch_persona_snapshot(stack):
     service.read(WORLD, "笔记.md")
     service.append(WORLD, "二", path="笔记.md")
 
-    stack["settings"].put(PERSONA_ACTIVE_KEY, "小桌")
+    stack["settings"].replace("persona", {"active": "小桌"})
     settle(stack)
 
     assert target.read_text(encoding="utf-8") == "一\n二\n"

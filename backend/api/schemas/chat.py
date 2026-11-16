@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from module.memory.contracts import DailyLogView
+from agent.memory.contracts import DailyLogView
 
 
 class ChatRequest(BaseModel):

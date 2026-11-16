@@ -3,8 +3,8 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from module.memory.contracts import DailyLogEntry, DailyLogRole
-from module.memory.memory_service import (
+from agent.memory.contracts import DailyLogEntry, DailyLogRole
+from agent.memory.memory_service import (
     MemoryReadError,
     MemoryWriteError,
     compile_pattern,
@@ -104,7 +104,7 @@ def test_orphan_records_still_get_a_line():
 
 
 def test_events_are_rendered_as_text_and_kept_in_memory():
-    from module.memory.daily_events import encode_event
+    from agent.memory.daily_events import encode_event
 
     records = [
         record("master", "你好"),

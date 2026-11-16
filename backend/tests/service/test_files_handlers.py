@@ -6,11 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from constants.files import PERMANENT, STRUCTURED
-from infra.llm.tokens import TokenCount, TokenCountError
-from module.agent.context import TaskContext
-from module.agent.skills import SkillRegistry, draft_note_skill
-from module.files.handlers import (
+from agent.files.handlers import (
     GREP_LIMIT,
     ROUTES,
     HandlerDeps,
@@ -18,10 +14,14 @@ from module.files.handlers import (
     Query,
     ReadLimiter,
 )
-from module.files.permissions import system_permissions
-from module.files.resolver import FileError
-from module.files.text import numbered
-from module.memory.memory_service import number_lines, section
+from agent.files.permissions import system_permissions
+from agent.files.registry import PERMANENT, STRUCTURED
+from agent.files.resolver import FileError
+from agent.files.text import numbered
+from agent.memory.memory_service import number_lines, section
+from agent.skills.registry import SkillRegistry, draft_note_skill
+from agent.spec.context import TaskContext
+from infra.llm.tokens import TokenCount, TokenCountError
 
 TZ = ZoneInfo("Asia/Shanghai")
 TASK = TaskContext(

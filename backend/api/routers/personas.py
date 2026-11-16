@@ -1,9 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import Response
 
-from api.errors import error_response
-from api.schemas.personas import PersonaActivateRequest, PersonaItemOut, PersonasResponse
-from module.persona.persona_service import PersonaService, PersonaUnavailableError
+from agent.persona.persona_service import PersonaService
+from api.schemas.personas import PersonaItemOut, PersonasResponse
 
 router = APIRouter(prefix="/api", tags=["personas"])
 
@@ -15,7 +13,8 @@ def _service(request: Request) -> PersonaService:
     return service
 
 
-def _listing(service: PersonaService) -> PersonasResponse:
+def persona_view(service: PersonaService) -> PersonasResponse:
+    """人设分组的读模型：启用人设 + 卡片清单（含可用性与原因）。"""
     return PersonasResponse(
         active=service.active_id(),
         personas=[
@@ -37,19 +36,4 @@ def _listing(service: PersonaService) -> PersonasResponse:
     response_model=PersonasResponse,
 )
 def list_personas(request: Request) -> PersonasResponse:
-    return _listing(_service(request))
-
-
-@router.put(
-    "/personas/active",
-    operation_id="activate_persona",
-    response_model=PersonasResponse,
-    responses={422: {"description": "人设不存在，或解析失败不可用"}},
-)
-def activate_persona(request: Request, body: PersonaActivateRequest) -> Response | PersonasResponse:
-    service = _service(request)
-    try:
-        service.activate(body.id)
-    except PersonaUnavailableError as exc:
-        return error_response(422, PersonaUnavailableError.code, str(exc))
-    return _listing(service)
+    return persona_view(_service(request))

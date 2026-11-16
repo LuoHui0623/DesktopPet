@@ -1,8 +1,8 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from api.schemas.menu import MenuItemOut, MenuResponse
-from module.menu.contracts import MenuItem
-from module.menu.menu_service import MenuService
+from app.menu.contracts import MenuItem
+from app.menu.menu_service import MenuService
 
 router = APIRouter(prefix="/api", tags=["menu"])
 

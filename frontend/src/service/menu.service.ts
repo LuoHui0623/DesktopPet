@@ -1,9 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
-  activateAvatar,
   getMenu,
-  getSchedulerConfig,
-  updateSchedulerConfig,
+  getSettings,
+  updateSettingsAvatar,
+  updateSettingsProactive,
 } from "../api/endpoints";
 import type { MenuItem } from "../api/types";
 import { getApiClient } from "./api-client";
@@ -74,13 +74,18 @@ export async function dispatchMenuAction(item: MenuItem, deps: MenuDeps): Promis
 
 async function toggleProactiveMessages(): Promise<void> {
   const client = await getApiClient();
-  const config = await getSchedulerConfig(client);
-  await updateSchedulerConfig(client, { ...config, enabled: !config.enabled });
+  const settings = await getSettings(client);
+  await updateSettingsProactive(
+    client,
+    { ...settings.proactive, enabled: !settings.proactive.enabled },
+    settings.version,
+  );
 }
 
 async function activateAvatarPack(packId: string): Promise<void> {
   const client = await getApiClient();
-  await activateAvatar(client, packId);
+  const settings = await getSettings(client);
+  await updateSettingsAvatar(client, packId, settings.version);
 }
 
 export interface MenuController {

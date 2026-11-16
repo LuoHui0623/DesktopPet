@@ -1,7 +1,7 @@
 # 形象包与资源契约
 
 > 职责：定义形象包目录、`manifest.json` 字段、静默主形象、资源约束、目录接口与包级失败。
-> 依赖：`module/avatar/avatar_service.py`、`constants.py`、`contracts.py`、`api/routers/avatars.py`、`api/schemas/avatars.py`。
+> 依赖：`app/avatar/avatar_service.py`、`constants.py`、`contracts.py`、`api/routers/avatars.py`、`api/schemas/avatars.py`。
 > 不回答：状态选择与行为解析、GIF 逐帧解码、掩码生成、窗口命中与穿透。
 > 状态：已实现。
 
@@ -113,14 +113,14 @@ data/avatars/<persona_id>/<pack_id>/
 
 | 配置 | 默认值 | 说明 |
 |---|---|---|
-| 当前启用包 | 组内 `default`；没有时取第一个包 | `app_setting` 的 `avatar.active.<persona_id>`，按人设分别记忆 |
+| 当前启用包 | 组内 `default`；没有时取第一个包 | `data/settings.json` 的 `avatar.active.<persona_id>`，按人设分别记忆 |
 | 默认包 id | `default` | 组内优先选择的包目录名 |
 | 单帧上限 | 300KB | R-02 |
 | 整包上限 | 15MB | R-02 |
 | 帧边长 | ≤ 512 | R-02 |
 | 每状态帧数 | 1–24 | GIF 按子帧计数 |
 
-启用项由 `PUT /api/avatars/active` 写入当前人设的记忆键；目标包不属于当前人设组或不存在时返回 404，不改变当前启用项。
+启用项由 `PUT /api/settings/avatar`（带 `If-Match`）写入当前人设的记忆键；目标包不属于当前人设组或不存在时返回 404，不改变当前启用项。
 
 ## 包级失败
 

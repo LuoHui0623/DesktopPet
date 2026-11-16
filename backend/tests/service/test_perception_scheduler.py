@@ -5,14 +5,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from service.perception.constants import (
-    SCHEDULER_DND_START_KEY,
-    SCHEDULER_MAX_PER_DAY_KEY,
-    SCHEDULER_SENT_KEY,
-)
-from service.perception.models import PerceptionRuntimeState
-from service.perception.parser import PerceptionEventParser
-from service.perception.scheduler import (
+from agent.capabilities.perception.constants import SCHEDULER_SENT_KEY
+from agent.capabilities.perception.events.models import PerceptionRuntimeState
+from agent.capabilities.perception.events.parser import PerceptionEventParser
+from agent.capabilities.perception.gate.scheduler import (
     InvalidSchedulerConfig,
     SchedulerConfig,
     SchedulerLedger,
@@ -22,15 +18,27 @@ from service.perception.scheduler import (
     in_quiet_hours,
     is_deep_night,
 )
-from service.perception.settings import PerceptionConfig
+from agent.capabilities.perception.gate.settings import PerceptionConfig
 
 TZ = ZoneInfo("Asia/Shanghai")
 NOW = datetime(2026, 10, 29, 10, 0, tzinfo=TZ)
 
 
-class MemoryStore(dict[str, str]):
+class MemoryStore:
+    """同时充当台账键值存储与配置段来源，模拟 `runtime_state` + `settings.json`。"""
+
+    def __init__(self) -> None:
+        self.values: dict[str, str] = {}
+        self.sections: dict[str, dict[str, object]] = {}
+
+    def get(self, key: str) -> str | None:
+        return self.values.get(key)
+
     def put(self, key: str, value: str) -> None:
-        self[key] = value
+        self.values[key] = value
+
+    def section(self, name: str) -> dict[str, object]:
+        return self.sections.get(name, {})
 
 
 class Clock:
@@ -90,7 +98,13 @@ def test_config_round_trip_and_invalid_values_are_rejected():
     saved = runtime.write_config(config(enabled=False, min_interval_minutes=30, max_per_day=8))
 
     assert saved == SchedulerConfig(False, 30, 8, "00:00", "00:00")
-    assert SchedulerSettings(store).read() == saved
+    assert runtime.snapshot_settings() == {
+        "enabled": False,
+        "min_interval_minutes": 30,
+        "max_per_day": 8,
+        "dnd_start": "00:00",
+        "dnd_end": "00:00",
+    }
     with pytest.raises(InvalidSchedulerConfig, match="时间格式"):
         runtime.write_config(config(dnd_start="24:00"))
     with pytest.raises(InvalidSchedulerConfig, match="每日上限"):
@@ -99,8 +113,7 @@ def test_config_round_trip_and_invalid_values_are_rejected():
 
 def test_broken_stored_config_falls_back_to_defaults():
     store = MemoryStore()
-    store[SCHEDULER_MAX_PER_DAY_KEY] = "many"
-    store[SCHEDULER_DND_START_KEY] = "25:00"
+    store.sections["scheduler"] = {"max_per_day": "many", "dnd_start": "25:00"}
 
     stored = SchedulerSettings(store).read()
 
@@ -186,7 +199,7 @@ def test_stored_ledger_uses_the_agreed_shape():
     store, runtime = make()
     runtime.record_sent("greeting_return")
 
-    assert json.loads(store[SCHEDULER_SENT_KEY]) == {
+    assert json.loads(store.values[SCHEDULER_SENT_KEY]) == {
         "date": "2026-10-29",
         "topics": {"greeting_return": 1},
         "total": 1,
@@ -195,7 +208,7 @@ def test_stored_ledger_uses_the_agreed_shape():
 
 def test_corrupt_ledger_is_treated_as_empty():
     store = MemoryStore()
-    store[SCHEDULER_SENT_KEY] = "{not json"
+    store.values[SCHEDULER_SENT_KEY] = "{not json"
     _, runtime = make(store)
 
     assert runtime.ledger(NOW).total == 0
@@ -304,25 +317,25 @@ def test_deep_night_only_allows_late_night_topic():
     assert instance.denial_reason("late_night", one_am) is None
 
 
-def test_scheduler_config_reads_only_app_setting():
-    """调度配置只读 app_setting：不再有 .env 迁移路径，未写入时按常量默认。"""
+def test_scheduler_config_reads_the_section_and_freezes_domain_state():
+    """配置初值来自 `scheduler` 段；读过之后以领域状态为准，段变动不再回灌。"""
     store = MemoryStore()
+    store.sections["scheduler"] = {"dnd_start": "23:00", "max_per_day": 15}
     settings = SchedulerSettings(store)
-
-    assert settings.read() == SchedulerConfig(
-        enabled=True,
-        min_interval_minutes=60,
-        max_per_day=20,
-        dnd_start="22:30",
-        dnd_end="08:00",
-    )
-
-    store[SCHEDULER_DND_START_KEY] = "23:00"
-    store[SCHEDULER_MAX_PER_DAY_KEY] = "15"
 
     saved = settings.read()
     assert saved.dnd_start == "23:00"
     assert saved.max_per_day == 15
+
+    store.sections["scheduler"] = {"dnd_start": "01:00", "max_per_day": 3}
+    assert settings.read() == saved
+    assert settings.snapshot() == {
+        "enabled": True,
+        "min_interval_minutes": 60,
+        "max_per_day": 15,
+        "dnd_start": "23:00",
+        "dnd_end": "08:00",
+    }
 
 
 def test_parser_logs_denial_reason_once_per_change(caplog):

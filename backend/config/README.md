@@ -117,7 +117,7 @@ provider 名转为大写后作为前缀：
 
 运行时的选择优先级高于 `.env`：
 
-1. 数据库 `app_setting`（设置页切换的值）
+1. `data/settings.json` 的 `llm` 段（设置页切换的值）
 2. `.env` 中的 `DEFAULT_<能力>_MODEL`
 
 ## `llm.yaml` 解析规则
@@ -230,7 +230,7 @@ opencode:
 | `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
 
 - `ModelSettings` 中不包含密钥值，只包含密钥的环境变量名。
-- 业务层（`backend/module/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` 的「热更新」。
+- 业务层（`backend/agent/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` 的「热更新」。
 - 解析失败时抛出 `ModelSettingsError`，其 `errors` 为收集到的全部错误。
 
 ## 通用配置 PET_*
@@ -252,18 +252,18 @@ opencode:
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
 - 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。
-- 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `app_setting` 的 `scheduler.*`，由 `GET/PUT /api/scheduler/config` 或设置页的 `PUT /api/settings/proactive` 读写（同一份配置，见 `Arch.md` 的「设置页」）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随该组配置迁移废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `app_setting` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
-- 同理，感知（`perception.*`）、形象（`avatar.active`）与互动（`interaction.config`）也不读 `.env`，都由设置页与各自接口写入 `app_setting`。
+- 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `data/settings.json` 的 `scheduler` 段，由设置页的 `PUT /api/settings/proactive` 写入（`GET /api/scheduler/config` 只读，见 `Arch.md` 的「设置页」）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随该组配置迁移废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `settings.json` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
+- 同理，感知（`perception`）、调度（`scheduler`）、形象（`avatar.active`）、人设（`persona.active`）、模型（`llm.active`）与互动（`interaction`）也不读 `.env`，都由设置页按段写入 `data/settings.json`。
 
 ## 人设卡片（personas/）
 
-每张卡是 `backend/config/personas/<id>.yaml`，id 为文件名（允许文字、数字、下划线、连字符，1 到 32 个字符）。`DEFAULT_PERSONA_ID`（`constants/agent.py`）为默认启用的人设，即 `芙芙`。启用状态保存在数据库 `app_setting`（键 `persona.active`）。
+每张卡是 `backend/config/personas/<id>.yaml`，id 为文件名（允许文字、数字、下划线、连字符，1 到 32 个字符）。`DEFAULT_PERSONA_ID`（`agent/constants.py`）为默认启用的人设，即 `芙芙`。启用状态保存在 `data/settings.json` 的 `persona` 段（`persona.active`）。
 
-每次请求检查卡片的修改时间，文件变化后重新解析。解析失败的卡标为不可用，不能启用，错误原因在 `GET /api/personas` 中显示。切换人设由设置页完成，接口为 `PUT /api/personas/active`。
+每次请求检查卡片的修改时间，文件变化后重新解析。解析失败的卡标为不可用，不能启用，错误原因在 `GET /api/personas` 中显示。切换人设由设置页完成，接口为 `PUT /api/settings/persona`（带 `If-Match`）。
 
 下面描述单张卡的内容格式。
 
-`config/persona.py` 的 `load_persona(path)` 解析角色卡，返回不可变的 `PersonaConfig`。顶层键是**主题**，每个主题有固定的解析方式，主题清单与规则定义在 `THEME_SPECS`：
+`agent/persona/loader.py` 的 `load_persona(path)` 解析角色卡，返回不可变的 `PersonaConfig`。顶层键是**主题**，每个主题有固定的解析方式，主题清单与规则定义在 `THEME_SPECS`：
 
 | 主题 | 解析方式 | 规则 | 提示词中的呈现 |
 |---|---|---|---|
@@ -277,4 +277,4 @@ opencode:
 - 编码填充型主题的扩展字段按字段名排序输出。
 - 所有错误一次性报告，格式为 `persona.yaml <主题>...`。
 - `to_normalized_json()` 输出按键排序、非 ASCII 原样保留的 JSON，用于角色卡版本记录。内容变化（包括解析方式的调整）会追加一条新的 `persona_version`。
-- 提示词渲染在 `module/agent/prompt.py` 的 `render_persona()`：按主题的固定顺序生成各段，代入 `【人设】` 主题正文的 `$persona_section` 占位符，作为 system prompt 的前部分。
+- 提示词渲染在 `agent/prompts/templates.py` 的 `render_persona()`：按主题的固定顺序生成各段，代入 `【人设】` 主题正文的 `$persona_section` 占位符，作为 system prompt 的前部分。

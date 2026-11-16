@@ -1,6 +1,6 @@
 from string import Template
 
-from module.agent.chat_system_prompt import (
+from agent.prompts.chat_system import (
     ACTION_RULES_BODY,
     CAPABILITIES_BODY,
     CATEGORY_BEHAVIOR,

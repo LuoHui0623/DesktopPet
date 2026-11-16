@@ -1,5 +1,5 @@
-from module.chat.citations import fragment_key, resolve_sources, split_citations
-from module.chat.context import KIND_DAILY, KIND_STRUCTURED, MemoryFragment
+from agent.capabilities.chat.citations import resolve_sources, split_citations
+from agent.capabilities.chat.context import MemoryFragment
 
 
 def test_markers_are_removed_with_their_leading_space_and_ids_kept_in_order():
@@ -16,23 +16,14 @@ def test_malformed_markers_are_left_in_place_and_ignored():
     assert ids == []
 
 
-def test_fragment_key_is_the_date():
-    fragment = MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")
-    assert fragment_key(fragment) == "2026-10-17"
-
-
-def test_only_fragments_that_were_injected_become_sources():
+def test_recall_fragments_produce_no_user_visible_sources():
+    """第 26 条/T-03：召回片段只作提示词内行 id 锚点，不产生用户可见 sources。"""
     injected = [
-        MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶"),
-        MemoryFragment(kind=KIND_STRUCTURED, date="2026-10-18", text="喜欢美式咖啡，不加糖"),
+        MemoryFragment(id=17, role="master", text="昨天聊了茶"),
+        MemoryFragment(id=18, role="me", text="喜欢美式咖啡，不加糖"),
     ]
-    sources = resolve_sources(["2026-10-18", "2026-10-01", "2026-10-17"], injected)
-    assert [source.id for source in sources] == ["2026-10-18", "2026-10-17"]
-    assert sources[0].text == "喜欢美式咖啡，不加糖"
-    assert sources[0].kind == KIND_STRUCTURED
-    assert sources[0].date == "2026-10-18"
-    assert sources[1].kind == KIND_DAILY
+    assert resolve_sources(["18", "17", "99"], injected) == []
 
 
 def test_nothing_is_cited_without_injected_memories():
-    assert resolve_sources(["2026-10-18"], []) == []
+    assert resolve_sources(["18"], []) == []

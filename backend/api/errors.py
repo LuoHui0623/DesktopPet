@@ -3,7 +3,12 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-HTTP_ERROR_CODES = {404: "not_found", 405: "method_not_allowed"}
+HTTP_ERROR_CODES = {
+    400: "invalid_request",
+    404: "not_found",
+    405: "method_not_allowed",
+    428: "precondition_required",
+}
 
 
 def error_response(status: int, code: str, message: str) -> JSONResponse:

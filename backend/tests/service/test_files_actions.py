@@ -3,7 +3,7 @@
 import pytest
 from conftest import make_permissions, make_task
 
-from constants.files import (
+from agent.files.registry import (
     ACTION_APPEND,
     ACTION_CREATE_DIR,
     ACTION_CREATE_FILE,
@@ -18,9 +18,9 @@ from constants.files import (
     FILE_ACTIONS,
     WORLD,
 )
-from module.agent.context import task_scope
-from module.files.resolver import FileDenied, FileError
-from module.files.schemas import ACTION_DOCS
+from agent.files.resolver import FileDenied, FileError
+from agent.files.schemas import ACTION_DOCS
+from agent.spec.context import task_scope
 
 
 def test_actions_are_split_by_receptor_type():
@@ -135,7 +135,7 @@ def test_each_action_checks_its_own_permission(env):
 
 
 def test_world_supports_all_write_actions_but_draft_does_not_delete_file():
-    from constants.files import RESOURCES
+    from agent.files.registry import RESOURCES
 
     assert ACTION_APPEND in RESOURCES[WORLD].edit_supports
     assert ACTION_INSERT in RESOURCES[WORLD].edit_supports

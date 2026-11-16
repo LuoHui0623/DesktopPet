@@ -6,7 +6,8 @@
 覆盖：启动、模型列表与切换、流式对话、派发执行与合并回注、非法输出重试、
 记忆写入派发与审批、结构化记忆手动编辑、系统提示注入、记忆读取失败降级、
 正常关闭（stdin 指令）、
-设置页四组配置默认值、感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）、
+设置页配置读写（六组快照、If-Match 乐观锁、默认值）、
+感知上报 → 解析触发 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）、
 草稿本（启动生成 + 自记笔记派发后写入）。
 """
 
@@ -34,6 +35,7 @@ from fake_llm import (  # noqa: E402
     MULTI_TRIGGER,
     NOTE_ENTRY,
     NOTE_TOPIC,
+    PLAN_MARK,
     PROACTIVE_REPLY,
     PROACTIVE_TEXTS,
     RETRIEVE_TOPIC,
@@ -64,13 +66,23 @@ class Api:
     def __init__(self, port: int) -> None:
         self.base = f"http://127.0.0.1:{port}"
 
-    def call(self, method: str, path: str, body: dict | None = None, expect: int = 200):
+    def call(
+        self,
+        method: str,
+        path: str,
+        body: dict | None = None,
+        expect: int = 200,
+        version: int | None = None,
+    ):
         data = json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None
+        headers = {"X-Pet-Token": TOKEN, "Content-Type": "application/json"}
+        if version is not None:
+            headers["If-Match"] = str(version)
         request = urllib.request.Request(
             self.base + path,
             data=data,
             method=method,
-            headers={"X-Pet-Token": TOKEN, "Content-Type": "application/json"},
+            headers=headers,
         )
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
@@ -259,7 +271,7 @@ def _is_main_chat(body: dict) -> bool:
         (str(m.get("content", "")) for m in body.get("messages", []) if m.get("role") == "system"),
         "",
     )
-    return "当前能力" not in system
+    return "当前能力" not in system and PLAN_MARK not in system
 
 
 def check_models_and_switch(api: Api) -> None:
@@ -269,13 +281,21 @@ def check_models_and_switch(api: Api) -> None:
     check("api_key" not in json.dumps(providers), "模型列表不应包含密钥字段")
     step("设置页：模型列表可读，且不含密钥")
 
-    active = api.call("GET", "/api/llm/active")
+    view = api.call("GET", "/api/settings")
+    active = view["model"]["active"]
     check(active["chat"]["model"] == "deepseek-flash", f"默认对话模型异常：{active}")
     switched = api.call(
-        "PUT", "/api/llm/active", {"chat": {"provider": "deepseek", "model": "deepseek-v4-pro"}}
+        "PUT",
+        "/api/settings/model",
+        {"chat": {"provider": "deepseek", "model": "deepseek-v4-pro"}},
+        version=view["version"],
     )
-    check(switched["chat"]["model"] == "deepseek-v4-pro", f"切换失败：{switched}")
-    step("设置页：切换对话模型为 deepseek-v4-pro")
+    check(
+        switched["model"]["active"]["chat"]["model"] == "deepseek-v4-pro",
+        f"切换失败：{switched}",
+    )
+    check(switched["version"] > view["version"], f"写入后应推进设置版本：{switched['version']}")
+    step("设置页：切换对话模型为 deepseek-v4-pro，快照版本随写入推进")
 
 
 def check_streaming_chat(api: Api, tap: EventTap, llm: FakeLlm) -> None:
@@ -453,7 +473,7 @@ def check_draft_note(api: Api, tap: EventTap, data_dir: Path) -> None:
 
 
 def check_structured_readonly(api: Api) -> None:
-    """整篇覆盖写入口已关闭：设置页条目编辑接入前，只允许 memory 工具写入。"""
+    """整篇覆盖写入口已关闭（Q8）：人工编辑走条目级接口，整篇 PUT 仍返回 409 read_only。"""
     before = api.call("GET", "/api/memories")["structured"]
     refused = api.call(
         "PUT", "/api/memories/structured", {"text": before + "- 只喝热美式\n"}, expect=409
@@ -462,6 +482,79 @@ def check_structured_readonly(api: Api) -> None:
     after = api.call("GET", "/api/memories")["structured"]
     check(after == before, f"拒绝后记忆不应变化：{after!r}")
     step("结构化记忆：整篇覆盖返回 409 read_only，读写通道仍正常")
+
+
+def check_entry_editing(api: Api) -> None:
+    """设置页条目级编辑（T-08）：新增→列表→修改→过期冲突→标签改名预览与执行→停用/启用。
+
+    只用合成条目与独立标签，不触碰咖啡事实条目；预览只读、冲突不覆盖、合并递增 revision。
+    """
+    created = api.call(
+        "POST", "/api/memories/entries", {"content": "验收合成条目", "tags": ["验收甲"]}
+    )
+    entry = created["entry"]
+    entry_id = entry["id"]
+    check(created["reused"] is False, f"首次新增不应复用：{created}")
+    check(entry["revision"] == 1 and entry["tags"] == ["验收甲"], f"新增条目形态异常：{entry}")
+    listed = api.call("GET", "/api/memories/entries")["entries"]
+    check(any(item["id"] == entry_id for item in listed), f"列表应含新增条目：{listed}")
+
+    updated = api.call(
+        "PUT",
+        f"/api/memories/entries/{entry_id}",
+        {"content": "验收合成条目改", "tags": ["验收甲"], "expected_revision": 1},
+    )
+    check(updated["revision"] == 2, f"修改后 revision 应递增：{updated}")
+    check(updated["content"] == "验收合成条目改", f"修改应生效：{updated}")
+
+    conflict = api.call(
+        "PUT",
+        f"/api/memories/entries/{entry_id}",
+        {"content": "过期修改", "expected_revision": 1},
+        expect=409,
+    )
+    check(conflict["error"]["code"] == "conflict", f"过期 revision 应冲突：{conflict}")
+    mine = next(
+        item
+        for item in api.call("GET", "/api/memories/entries")["entries"]
+        if item["id"] == entry_id
+    )
+    check(mine["content"] == "验收合成条目改", f"冲突后不应覆盖原内容：{mine}")
+
+    check("验收甲" in api.call("GET", "/api/memories/tags")["tags"], "标签清单应含验收甲")
+    preview = api.call(
+        "POST", "/api/memories/tags/merge/preview", {"source": "验收甲", "target": "验收乙"}
+    )
+    check(preview["target_existed"] is False, f"目标不存在应为改名：{preview}")
+    check(preview["affected"] == 1, f"预览应只影响一条：{preview}")
+    change = preview["changes"][0]
+    check(
+        change["before"] == ["验收甲"] and change["after"] == ["验收乙"],
+        f"预览有序路径异常：{change}",
+    )
+    check("验收乙" not in api.call("GET", "/api/memories/tags")["tags"], "预览只读，不应写库")
+
+    merged = api.call("POST", "/api/memories/tags/merge", {"source": "验收甲", "target": "验收乙"})
+    check(merged["affected"] == 1 and merged["target_existed"] is False, f"改名结果异常：{merged}")
+    after_tags = api.call("GET", "/api/memories/tags")["tags"]
+    check("验收甲" not in after_tags and "验收乙" in after_tags, f"改名后标签异常：{after_tags}")
+    renamed = next(
+        item
+        for item in api.call("GET", "/api/memories/entries")["entries"]
+        if item["id"] == entry_id
+    )
+    check(
+        renamed["tags"] == ["验收乙"] and renamed["revision"] == 3,
+        f"改名应生效并递增：{renamed}",
+    )
+
+    disabled = api.call("POST", f"/api/memories/entries/{entry_id}/disable", {"reason": "验收完成"})
+    check(disabled["status_state"] == "disabled", f"停用应生效：{disabled}")
+    check(disabled["status_reason"] == "验收完成", f"停用原因应保留：{disabled}")
+    enabled = api.call("POST", f"/api/memories/entries/{entry_id}/enable")
+    check(enabled["status_state"] == "enabled", f"启用应生效：{enabled}")
+    api.call("POST", f"/api/memories/entries/{entry_id}/disable", {"reason": "验收合成条目"})
+    step("设置页条目编辑：新增/列表/修改/过期冲突/标签改名预览与执行/停用启用全链路通过")
 
 
 def check_memory_reuse(api: Api, tap: EventTap) -> None:
@@ -601,11 +694,12 @@ def check_persona_switch(api: Api, tap: EventTap, llm: FakeLlm, data_dir: Path) 
     check(listing["active"] == "芙芙", f"默认人设应为芙芙：{listing}")
     check(items["小桌"]["available"] is True, "小桌卡应可用")
     (data_dir / "personas" / "坏卡.yaml").write_text("role:\n  名字: 坏\n", encoding="utf-8")
-    broken = api.call("PUT", "/api/personas/active", {"id": "坏卡"}, expect=422)
+    version = api.call("GET", "/api/settings")["version"]
+    broken = api.call("PUT", "/api/settings/persona", {"id": "坏卡"}, expect=422, version=version)
     check(broken["error"]["code"] == "persona_unavailable", f"不可用卡应被拒绝：{broken}")
     step("人设卡片：列出多张卡，不可用卡不能启用")
 
-    api.call("PUT", "/api/personas/active", {"id": "小桌"})
+    api.call("PUT", "/api/settings/persona", {"id": "小桌"}, version=version)
     mark = len(tap.events)
     reply = api.call("POST", "/api/chat", {"text": "你好"})
     check(reply["text"] == "你好呀，今天过得怎么样？", f"切换后回复异常：{reply}")
@@ -625,6 +719,23 @@ def check_persona_switch(api: Api, tap: EventTap, llm: FakeLlm, data_dir: Path) 
 def check_settings_defaults(api: Api) -> None:
     """设置页读模型在首次启动时应完全等于后端常量，前端不携带任何默认值。"""
     view = api.call("GET", "/api/settings")
+    check(isinstance(view["version"], int) and view["version"] >= 0, f"缺少快照版本：{view}")
+    missing = api.call("PUT", "/api/settings/perception", view["perception"], expect=428)
+    check(
+        missing["error"]["code"] == "precondition_required",
+        f"缺少 If-Match 应返回 428：{missing}",
+    )
+    stale = api.call(
+        "PUT",
+        "/api/settings/perception",
+        view["perception"],
+        expect=409,
+        version=view["version"] + 1,
+    )
+    check(
+        stale["error"]["code"] == "settings_version_conflict",
+        f"版本不一致应返回 409：{stale}",
+    )
     check(
         view["perception"]
         == {
@@ -657,7 +768,7 @@ def check_settings_defaults(api: Api) -> None:
         },
         f"互动默认配置异常：{view['interaction']}",
     )
-    step("设置页：首次启动的四组配置等于后端常量（含勿扰 22:30–08:00 与最小间隔 60 分钟）")
+    step("设置页：首次启动的分组配置等于后端常量，缺 If-Match 返回 428，版本不一致返回 409")
 
 
 def report_idle(api: Api, value: int) -> None:
@@ -689,7 +800,8 @@ def leave_and_return(api: Api, away_minutes: int, return_ms: int = 0) -> None:
 
 def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None:
     """感知上报 → 解析器判定 → tick 通用 hook → 主动消息 → 气泡忽略（无反馈接口）。"""
-    api.call(
+    version = api.call("GET", "/api/settings")["version"]
+    changed = api.call(
         "PUT",
         "/api/settings/perception",
         {
@@ -698,8 +810,9 @@ def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None
             "idle_away_minutes": 1,
             "sit_minutes": 15,
         },
+        version=version,
     )
-    api.call(
+    changed = api.call(
         "PUT",
         "/api/settings/proactive",
         {
@@ -709,6 +822,7 @@ def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None
             "dnd_start": "04:00",
             "dnd_end": "04:00",
         },
+        version=changed["version"],
     )
     step("设置页：把离开阈值改成 1 分钟并关闭勿扰，无需重启后端")
 
@@ -750,6 +864,7 @@ def check_perception_to_proactive(api: Api, tap: EventTap, llm: FakeLlm) -> None
             "dnd_start": "04:00",
             "dnd_end": "04:00",
         },
+        version=changed["version"],
     )
     mark = len(tap.events)
     leave_and_return(api, AWAY_MINUTES + 1, return_ms=1)
@@ -837,6 +952,7 @@ def run() -> Path:
             check_memory_retrieve(api, tap)
             check_write_rejected(api, tap, structured)
             check_structured_readonly(api)
+            check_entry_editing(api)
             check_memory_reuse(api, tap)
             check_draft_note(api, tap, data_dir)
             check_structured_in_prompt(api, tap, llm)

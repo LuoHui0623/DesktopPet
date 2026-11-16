@@ -1,15 +1,15 @@
 # 记忆域（概念定义）
 
 > 职责：定义记忆域的边界与业务概念，指向权威文档与代码落点；概念只定义不展开。
-> 依赖：`backend/module/memory/`（`services.py` / `recollection_service.py`）、`backend/module/chat/context.py`、`data/memory/`、`daily_log` 表；讨论源见 `../../Draft.md` 的「记忆系统」。
+> 依赖：`backend/agent/memory/`（`services.py` / `recollection_service.py`）、`backend/agent/capabilities/chat/context.py`、`data/memory/`、`daily_log` 表；讨论源见 `../../Draft.md` 的「记忆系统」。
 > 不回答：产品需求与非目标（见 `../../桌面宠物PRD.md`）、跨域目录与依赖（见 `../../Arch.md`）、任务排期（见 `../../Task.md`）、对话域上下文契约（见 `../CHAT.md`）。
 > 状态：草案。下列概念多数来自 `Draft.md` 的「记忆系统」讨论中提案，**尚未实现，不构成实施依据**；已实现部分以各域文档与代码为准。11-08 十次修订：按用户「概念要给出定义、场景、意义」的要求收敛字段与元数据，`subject` / `scene` / `ctx` / `RecallResult` 包装层 / `recall_digest` 已否决或改名，本文「一次召回走一遍」增完整示例。11-08 十二次：`valid_from` / `valid_to` 否决、改复用 `status` 启用位；`PerceptionScene` 两层分组拍板；`now` / `seed` / `τ` 统一收敛为「策略函数的参数」，删除分类学表述。11-08 十三次：`status` 定为 JSON 单列（`state` + `reason`），`deleted_at` / `delete_reason` 移除，启用值改 `enabled` / `disabled`。11-09 修订：讨论源改为 `Draft.md` 重构后的主题章节，不再引用原小节号；产品口径改指 PRD 的「概念词典」「非目标」「业务主题 · 记忆」。
 
-> **实现现状【11-09】**：`module/memory/recall.py` 已有第一版召回（`RecallService.recall()`、`RecallHit`、`keywords()`）：按本轮输入的关键词在早于当天的 `master` / `me` 记录上做 `LIKE` 检索，按命中词数与时间排序，最多 6 条、每条 160 字，注入与预算仍归 `ContextBuilder`（见 [CHAT.md](../CHAT.md) 的「每轮召回」）。本文的条目表、候选池、`RecallItem` 与 `deterministic` / `decay_weighted` / `recent` 策略仍是目标态。
+> **实现现状【11-09】**：`agent/memory/recall.py` 已有第一版召回（`RecallService.recall()`、`RecallHit`、`keywords()`）：按本轮输入的关键词在早于当天的 `master` / `me` 记录上做 `LIKE` 检索，按命中词数与时间排序，最多 6 条、每条 160 字，注入与预算仍归 `ContextBuilder`（见 [CHAT.md](../CHAT.md) 的「每轮召回」）。本文的条目表、候选池、`RecallItem` 与 `deterministic` / `decay_weighted` / `recent` 策略仍是目标态。
 
 ## 1. 定位
 
-记忆域回答「记住什么、怎么取回」，不回答「什么时候回忆、注入多少」。**取回（recall）与组装（assembly）是两个正交职责**：前者在 `module/memory/`，后者在 `module/chat/context.py`。
+记忆域回答「记住什么、怎么取回」，不回答「什么时候回忆、注入多少」。**取回（recall）与组装（assembly）是两个正交职责**：前者在 `agent/memory/`，后者在 `agent/capabilities/chat/context.py`。
 
 | 做什么 | 不做什么 |
 |---|---|
@@ -28,9 +28,9 @@
 | `memory_entry` 记忆条目 | 结构化记忆的最小存储单位，字段集 `id / content / event_kind? / category_path / tags / priority / status(JSON) / source_ref / version / created_at / updated_at`；**无有效期字段，也无软删除时间 / 独立删除原因两列**（十三次随 `status` JSON 化移除）（`valid_from` / `valid_to` 已否决） | 不是 `structured.md` 的一行文本、不是 `daily_log` 的一条对话 | `Draft.md` 的「条目化入表与字段集」 |
 | `status` 启用位（**JSON 单列，十三次已确认**） | 一列 JSON 文本：`{"state": "enabled", "reason": null}` = 启用、可进召回候选；`{"state": "disabled", "reason": "事实已变化"}` = 不启用 = 软删除（数据保留、不再召回）。`reason` 只在停用时有值。**不新增布尔列，也不再单独存删除时间**（`deleted_at` / `delete_reason` 已移除）；由写路径日终整理或用户手动编辑置值，**没有自动过期** | 不是 TTL / 有效期 / 缓存过期；不是「事实为真区间」；不是「校验通过」；`unabled` 不是英语单词，停用值是 `disabled` | 11-08 十二次拍板 + 十三次改 JSON；`0006_daily_event_structure.sql` 的 `json_object()`、`daily_events.py:54-68` 是项目已有 JSON 列先例 |
 | `RecallItem` 回忆卡片 | 召回产出的**定长原子卡片**（`id / card_text ≤60 字 / cost / source_ref / priority / age_days / weight` 仅诊断），用于注入；`source_ref` 指向原文 | 不是原文全文、不是记忆条目本身 | `Draft.md` 的「召回策略」 |
-| `PerceptionScene` 感知场景（**父级，已确认**） | 感知事件的**命名空间 / 上层分组**：不同场景有不同的采集端与事件词表。当前只有 `interaction`（用户与桌宠的基本互动，涵盖现有九种事件）；后续可加 `ui`（界面感知）、`environment` 等 | 不是记忆内容归类（那是 `category_path`）、不是一次事件、不是长期记忆；**不预建空场景** | `service/perception/events.py`（现状九个 kind 平铺、无分组，属新增骨架）；11-08 十二次【已确认】 |
+| `PerceptionScene` 感知场景（**父级，已确认**） | 感知事件的**命名空间 / 上层分组**：不同场景有不同的采集端与事件词表。当前只有 `interaction`（用户与桌宠的基本互动，涵盖现有九种事件）；后续可加 `ui`（界面感知）、`environment` 等 | 不是记忆内容归类（那是 `category_path`）、不是一次事件、不是长期记忆；**不预建空场景** | `agent/capabilities/perception/events/events.py`（现状九个 kind 平铺、无分组，属新增骨架）；11-08 十二次【已确认】 |
 | `event_kind` 感知事件类型（**子级**） | 全限定形式 `<scene>.<kind>`，例 `interaction.app_in_use` / `ui.window_focus`。`kind` 是某场景内的具体类型，现有九种平铺在 `PerceptionEventKind`（`events.py:6-16`），十二次拍板全归入 `interaction`；条目表**只存一个全限定字符串**，按场景过滤用前缀，不建两列 | 不是 `PerceptionEvent` 运行时对象（内存 current 区 ≤5 条、读入即清空、不落库、重启重建，`docs/OBSERVER.md`）；不是 `category_path`；不是长期记忆 | `events.py:6-16`、`docs/OBSERVER.md`、`Draft.md` 的「注册表设计」与「输出契约」 |
-| `role` 说话人角色 | `daily_log` 已有的固定枚举 `master / me / assistant / system / event / 回忆`（`module/memory/contracts.py:9-11`）。单用户单 persona 下已足以区分「主人说的 / 桌宠说的」 | 不是记忆条目的「对象」字段，不参与召回排序 | `contracts.py:9`、PRD 概念词典 |
+| `role` 说话人角色 | `daily_log` 已有的固定枚举 `master / me / assistant / system / event / 回忆`（`agent/memory/contracts.py:9-11`）。单用户单 persona 下已足以区分「主人说的 / 桌宠说的」 | 不是记忆条目的「对象」字段，不参与召回排序 | `contracts.py:9`、PRD 概念词典 |
 | `subject` 对象 | **【已否决·概念冗余】** 原拟「条目指向的人或事，写入时归一化」。桌宠单用户、单 persona，`role` 已覆盖全部对象；需要标注「关于某事」时用 `tags` / `category_path`，不新增固定列 | 不是 `role`、不是 `event_kind`；不是桌宠的必要概念 | `Draft.md` 的「否决与修正留痕」 |
 | `valid_to` 事实失效日 | **【已否决，11-08 十二次】** 原拟「条目所陈述事实不再为真的日期」，现改为复用 `status` 启用位，不再建任何有效期字段 | **不是 TTL / 缓存过期 / 数据保留期**；参考项目 MemoryCore 的记忆条目里没有此字段（`expiresAt` 是配置缓存过期、`l0l1RetentionDays` 是 L0/L1 保留天数）；PRD 的「非目标」与「业务主题 · 记忆」均排除有效期 | 11-08 十二次拍板；`0001_init.sql` 旧 `memory` 表曾有 `valid_from` / `valid_to` + `idx_memory_valid`，`0003_agent.sql` 已 DROP |
 | `priority` 价值分 | 条目表里的静态价值等级，由**写路径**日终整理一次判定后落下、长期复用 | 不是每轮 LLM 打分、不是时间衰减分（衰减只作注入时权重，只算不写） | `Draft.md` 的「召回策略」 |
@@ -39,13 +39,13 @@
 
 > **`status` 的读写形状与代价【11-08 十三次】**：过滤写作 `WHERE json_extract(status, '$.state') = 'enabled'`（不能再直接 `WHERE status = 'enabled'`），停用写作 `json_object('state','disabled','reason','事实已变化')`。代价有三：每轮召回多一次 JSON 解析；设置页「可见可改」需解析后展示、不是纯文本一眼可读；普通索引用不上（需要时建表达式索引，单用户小库通常可省）。若不接受，退回 `status TEXT` + `reason TEXT NULL` 两列标量，同样省掉时间列。内部键叫 `state` 而不是 `status`，只为避免 `status.status`；`enabled` / `disabled` 才是正确的启用配对。另：JSON 列本身在桌宠不是新东西，`0006_daily_event_structure.sql` 已用 `json_object()` 写 `daily_log.content`，`daily_events.py:54-68` 已有 `json.dumps/loads` 与字段集合严格校验。
 
-> 字段现状【事实】：条目表、`event_kind?` / `priority` / `status` **都还不是代码事实**，属讨论中提案；`valid_from` / `valid_to` 已否决，不再列入。当前库里只有 `structured.md` 自由文本与 `daily_log`。`role` 与 `PerceptionEventKind` 是已实现的既有词表，但**场景父级分组尚未实现**（`service/perception/` 全目录检索 `scene` / `domain` / `group` 零命中）。
+> 字段现状【事实】：条目表、`event_kind?` / `priority` / `status` **都还不是代码事实**，属讨论中提案；`valid_from` / `valid_to` 已否决，不再列入。当前库里只有 `structured.md` 自由文本与 `daily_log`。`role` 与 `PerceptionEventKind` 是已实现的既有词表，但**场景父级分组尚未实现**（`agent/capabilities/perception/` 全目录检索 `scene` / `domain` / `group` 零命中）。
 
 ### 2.2 召回
 
 | 概念 | 定义 | 它不是什么 | 出处 |
 |---|---|---|---|
-| `recall` 召回 | **目标态**：`module/memory/recall.py` 的纯函数——取候选 → 调策略排序 → **直接返回完整有序列表**，不截断、不注入、不落库；当前最小实现只做关键词 `LIKE` 召回，见上方「实现现状」 | 不是上下文组装、不是检索型子代理派发、不是 `RecollectionService` 的 LLM 总结 | `Draft.md` 的「召回策略」 |
+| `recall` 召回 | **目标态**：`agent/memory/recall.py` 的纯函数——取候选 → 调策略排序 → **直接返回完整有序列表**，不截断、不注入、不落库；当前最小实现只做关键词 `LIKE` 召回，见上方「实现现状」 | 不是上下文组装、不是检索型子代理派发、不是 `RecollectionService` 的 LLM 总结 | `Draft.md` 的「召回策略」 |
 | `RecallStrategy` 采样策略 | 可插拔纯函数，契约 `order(candidates, *, now, seed, event_kind=None) -> Sequence[RecallItem]`，**只排序**；入参显式，不设 `ctx` / `RecallSpec` 值对象。代码级字典，不进 YAML / 审批链 | 不是能力 / 技能 / 工具，不是注册表实体 | 同上 |
 | `candidates` 候选集 | 本次召回的**数据**：库里 `LIMIT 100` 取出的记忆条目（含 `id / content / created_at / priority / event_kind?`），是**被排序的东西** | 不是条件、不是结果、不是注入文本 | 同上 |
 | `now` 当前时刻 | **策略函数的一个参数**，由每轮调用方传入：`now = clock(timezone)`，复用项目已有的可注入时钟 `clock: Callable[[tzinfo], datetime]`（`context.py:127,139` 默认 `datetime.now(zone)`，`daily_log_service.py:48` 的 `_system_now`）。唯一用途是算 `age_days = (now.date() - item.created_at.date()).days`（本地日历日取整，不是秒差） | 不是新概念、不是配置项、不是预算 | `context.py:139`、`daily_log_service.py:48` |
@@ -117,9 +117,9 @@
 
 | 概念 | 代码落点 | 状态 |
 |---|---|---|
-| `recall` / 策略 / `Sequence[RecallItem]` | `backend/module/memory/recall.py`（拟新增，由 `MemoryServices` 暴露方法） | 提案，未实现 |
-| `ContextBlock` / 统一账本 | `backend/module/chat/context.py` 的 `ContextBuilder.build()` | 提案，未实现 |
-| `RecollectionService` / `RECALL_HINT` | `backend/module/memory/recollection_service.py` | 已实现，口径待迁移（见 `Draft.md` 的「回忆产物与原文展示」） |
+| `recall` / 策略 / `Sequence[RecallItem]` | `backend/agent/memory/recall.py`（拟新增，由 `MemoryServices` 暴露方法） | 提案，未实现 |
+| `ContextBlock` / 统一账本 | `backend/agent/capabilities/chat/context.py` 的 `ContextBuilder.build()` | 提案，未实现 |
+| `RecollectionService` / `RECALL_HINT` | `backend/agent/memory/recollection_service.py` | 已实现，口径待迁移（见 `Draft.md` 的「回忆产物与原文展示」） |
 | 结构化记忆 / `index.json` | `data/memory/` | 已实现；条目表提案待落地 |
 
 ## 4. 关联文档

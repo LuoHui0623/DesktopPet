@@ -5,7 +5,10 @@ import { describe, expect, it } from "vitest";
 import { createApiClient, type ApiClient } from "../../src/api/client";
 import {
   clearPerceptionRecords,
+  createMemoryEntry,
   decidePerceptionProcess,
+  disableMemoryEntry,
+  enableMemoryEntry,
   getActiveLlm,
   getInteractionConfig,
   getPerceptionState,
@@ -15,14 +18,20 @@ import {
   listChatHistory,
   listLlmProviders,
   listMemories,
+  listMemoryEntries,
+  listMemoryTags,
+  mergeMemoryTags,
+  previewTagMerge,
   reloadLlmConfig,
   saveStructuredMemory,
   sendChat,
-  setActiveLlm,
   submitApproval,
+  updateMemoryEntry,
   updateSettingsAvatar,
   updateSettingsInteraction,
+  updateSettingsModel,
   updateSettingsPerception,
+  updateSettingsPersona,
   updateSettingsProactive,
 } from "../../src/api/endpoints";
 import type { InteractionConfig, PerceptionConfig, SchedulerConfig } from "../../src/api/types";
@@ -125,12 +134,6 @@ describe("endpoint functions match the API contract", () => {
       expectedPath: "/api/llm/active",
     },
     {
-      operationId: "set_active_llm",
-      run: (c) => setActiveLlm(c, { chat: { provider: "deepseek", model: "deepseek-flash" } }),
-      template: "/api/llm/active",
-      expectedPath: "/api/llm/active",
-    },
-    {
       operationId: "list_memories",
       run: (c) => listMemories(c),
       template: "/api/memories",
@@ -191,27 +194,88 @@ describe("endpoint functions match the API contract", () => {
     },
     {
       operationId: "update_settings_perception",
-      run: (c) => updateSettingsPerception(c, perceptionConfig),
+      run: (c) => updateSettingsPerception(c, perceptionConfig, 7),
       template: "/api/settings/perception",
       expectedPath: "/api/settings/perception",
     },
     {
       operationId: "update_settings_proactive",
-      run: (c) => updateSettingsProactive(c, proactiveConfig),
+      run: (c) => updateSettingsProactive(c, proactiveConfig, 7),
       template: "/api/settings/proactive",
       expectedPath: "/api/settings/proactive",
     },
     {
       operationId: "update_settings_avatar",
-      run: (c) => updateSettingsAvatar(c, "default"),
+      run: (c) => updateSettingsAvatar(c, "default", 7),
       template: "/api/settings/avatar",
       expectedPath: "/api/settings/avatar",
     },
     {
+      operationId: "update_settings_persona",
+      run: (c) => updateSettingsPersona(c, "芙芙", 7),
+      template: "/api/settings/persona",
+      expectedPath: "/api/settings/persona",
+    },
+    {
+      operationId: "update_settings_model",
+      run: (c) =>
+        updateSettingsModel(c, { chat: { provider: "deepseek", model: "deepseek-flash" } }, 7),
+      template: "/api/settings/model",
+      expectedPath: "/api/settings/model",
+    },
+    {
       operationId: "update_settings_interaction",
-      run: (c) => updateSettingsInteraction(c, interactionConfig),
+      run: (c) => updateSettingsInteraction(c, interactionConfig, 7),
       template: "/api/settings/interaction",
       expectedPath: "/api/settings/interaction",
+    },
+    {
+      operationId: "list_memory_entries",
+      run: (c) => listMemoryEntries(c),
+      template: "/api/memories/entries",
+      expectedPath: "/api/memories/entries",
+    },
+    {
+      operationId: "create_memory_entry",
+      run: (c) => createMemoryEntry(c, { content: "喜欢拿铁", tags: ["饮食"] }),
+      template: "/api/memories/entries",
+      expectedPath: "/api/memories/entries",
+    },
+    {
+      operationId: "update_memory_entry",
+      run: (c) => updateMemoryEntry(c, 1, { content: "喜欢美式", expected_revision: 2 }),
+      template: "/api/memories/entries/{entry_id}",
+      expectedPath: "/api/memories/entries/1",
+    },
+    {
+      operationId: "enable_memory_entry",
+      run: (c) => enableMemoryEntry(c, 1),
+      template: "/api/memories/entries/{entry_id}/enable",
+      expectedPath: "/api/memories/entries/1/enable",
+    },
+    {
+      operationId: "disable_memory_entry",
+      run: (c) => disableMemoryEntry(c, 1, "已迁入人设"),
+      template: "/api/memories/entries/{entry_id}/disable",
+      expectedPath: "/api/memories/entries/1/disable",
+    },
+    {
+      operationId: "list_memory_tags",
+      run: listMemoryTags,
+      template: "/api/memories/tags",
+      expectedPath: "/api/memories/tags",
+    },
+    {
+      operationId: "preview_tag_merge",
+      run: (c) => previewTagMerge(c, { source: "水果", target: "食物" }),
+      template: "/api/memories/tags/merge/preview",
+      expectedPath: "/api/memories/tags/merge/preview",
+    },
+    {
+      operationId: "merge_memory_tags",
+      run: (c) => mergeMemoryTags(c, { source: "水果", target: "食物" }),
+      template: "/api/memories/tags/merge",
+      expectedPath: "/api/memories/tags/merge",
     },
   ];
 
@@ -293,27 +357,38 @@ describe("request bodies and queries", () => {
     expect(bodyOf(calls[0]?.init)).toEqual({ exe: "code", decision: "ignore" });
   });
 
-  it("sends the model selection as the PUT body", async () => {
+  it("sends the model selection with the snapshot version", async () => {
     const { client, calls } = recordingClient();
-    await setActiveLlm(client, { consolidate: { provider: "deepseek", model: "deepseek-flash" } });
+    await updateSettingsModel(
+      client,
+      { consolidate: { provider: "deepseek", model: "deepseek-flash" } },
+      12,
+    );
+    expect(calls[0]?.url).toBe(`${BASE}/api/settings/model`);
     expect(calls[0]?.init?.method).toBe("PUT");
     expect(bodyOf(calls[0]?.init)).toEqual({
       consolidate: { provider: "deepseek", model: "deepseek-flash" },
     });
+    expect(new Headers(calls[0]?.init?.headers).get("If-Match")).toBe("12");
   });
 
   it("sends each settings group as the PUT body of the aggregate view", async () => {
     const { client, calls } = recordingClient();
-    await updateSettingsPerception(client, perceptionConfig);
-    await updateSettingsProactive(client, proactiveConfig);
-    await updateSettingsAvatar(client, "alt");
-    await updateSettingsInteraction(client, interactionConfig);
+    await updateSettingsPerception(client, perceptionConfig, 7);
+    await updateSettingsProactive(client, proactiveConfig, 7);
+    await updateSettingsAvatar(client, "alt", 7);
+    await updateSettingsPersona(client, "芙芙", 7);
+    await updateSettingsInteraction(client, interactionConfig, 7);
 
-    expect(calls.map((call) => call.init?.method)).toEqual(["PUT", "PUT", "PUT", "PUT"]);
+    expect(calls.map((call) => call.init?.method)).toEqual(["PUT", "PUT", "PUT", "PUT", "PUT"]);
     expect(bodyOf(calls[0]?.init)).toEqual(perceptionConfig);
     expect(bodyOf(calls[1]?.init)).toEqual(proactiveConfig);
     expect(bodyOf(calls[2]?.init)).toEqual({ id: "alt" });
-    expect(bodyOf(calls[3]?.init)).toEqual(interactionConfig);
+    expect(bodyOf(calls[3]?.init)).toEqual({ id: "芙芙" });
+    expect(bodyOf(calls[4]?.init)).toEqual(interactionConfig);
+    for (const call of calls) {
+      expect(new Headers(call.init?.headers).get("If-Match")).toBe("7");
+    }
   });
 
   it("does not send a body for GET requests", async () => {
@@ -323,5 +398,75 @@ describe("request bodies and queries", () => {
     expect(calls[0]?.init?.body).toBeUndefined();
     expect(calls[1]?.init?.body).toBeUndefined();
     expect(new Headers(calls[0]?.init?.headers).has("Content-Type")).toBe(false);
+  });
+});
+
+describe("memory entry and tag governance endpoints", () => {
+  it("sends the new entry content and tags as JSON", async () => {
+    const { client, calls } = recordingClient();
+    await createMemoryEntry(client, { content: "喜欢拿铁", tags: ["饮食"] });
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/entries`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual({ content: "喜欢拿铁", tags: ["饮食"] });
+  });
+
+  it("sends expected_revision with the update body", async () => {
+    const { client, calls } = recordingClient();
+    await updateMemoryEntry(client, 7, { tags: ["饮食", "咖啡"], expected_revision: 3 });
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/entries/7`);
+    expect(calls[0]?.init?.method).toBe("PUT");
+    expect(bodyOf(calls[0]?.init)).toEqual({ tags: ["饮食", "咖啡"], expected_revision: 3 });
+  });
+
+  it("sends the disable reason as JSON", async () => {
+    const { client, calls } = recordingClient();
+    await disableMemoryEntry(client, 7, "已迁入人设");
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/entries/7/disable`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual({ reason: "已迁入人设" });
+  });
+
+  it("posts enable without a body", async () => {
+    const { client, calls } = recordingClient();
+    await enableMemoryEntry(client, 7);
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/entries/7/enable`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[0]?.init?.body).toBeUndefined();
+    expect(new Headers(calls[0]?.init?.headers).has("Content-Type")).toBe(false);
+  });
+
+  it("puts the entry status filter in the query string", async () => {
+    const { client, calls } = recordingClient();
+    await listMemoryEntries(client, { status: "disabled" });
+    const url = new URL(calls[0]?.url ?? "");
+    expect(url.pathname).toBe("/api/memories/entries");
+    expect(url.searchParams.get("status")).toBe("disabled");
+  });
+
+  it("omits the status filter when listing all entries", async () => {
+    const { client, calls } = recordingClient();
+    await listMemoryEntries(client);
+    const url = new URL(calls[0]?.url ?? "");
+    expect(url.searchParams.has("status")).toBe(false);
+  });
+
+  it("sends source and target for merge preview and execute", async () => {
+    const { client, calls } = recordingClient();
+    await previewTagMerge(client, { source: "水果", target: "食物" });
+    await mergeMemoryTags(client, { source: "水果", target: "食物" });
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/tags/merge/preview`);
+    expect(calls[1]?.url).toBe(`${BASE}/api/memories/tags/merge`);
+    expect(calls[0]?.init?.method).toBe("POST");
+    expect(calls[1]?.init?.method).toBe("POST");
+    expect(bodyOf(calls[0]?.init)).toEqual({ source: "水果", target: "食物" });
+    expect(bodyOf(calls[1]?.init)).toEqual({ source: "水果", target: "食物" });
+  });
+
+  it("does not send a body when listing tags", async () => {
+    const { client, calls } = recordingClient();
+    await listMemoryTags(client);
+    expect(calls[0]?.url).toBe(`${BASE}/api/memories/tags`);
+    expect(calls[0]?.init?.method).toBe("GET");
+    expect(calls[0]?.init?.body).toBeUndefined();
   });
 });

@@ -4,17 +4,17 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.memory.daily_log_service import DailyLogService
-from module.memory.recall import (
-    RECALL_HIT_MAX_CHARS,
+from agent.memory.contracts import DailyLogRecord
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.recall import (
     RECALL_MAX_QUERIES,
     RecallService,
     keywords,
 )
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from agent.memory.repository import DbDailyLog
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 TODAY = date(2026, 11, 9)
@@ -28,7 +28,7 @@ def daily(tmp_path: Path) -> DailyLogService:
     conn.close()
     return DailyLogService(
         DbDailyLog(path),
-        SettingsService(path),
+        settings_doc(path),
         TZ,
         clock=lambda tz: datetime(2026, 11, 9, 12, 0, tzinfo=TZ),
     )
@@ -101,13 +101,37 @@ def test_recall_prefers_lines_matching_more_keywords(daily: DailyLogService):
     assert hits[0].text == "冰汽时代太难了"
 
 
-def test_recall_clips_long_lines(daily: DailyLogService):
-    chat_at(daily, "2026-11-07T20:00:00", "冰汽时代" + "字" * 300, "冰汽时代" + "字" * 300)
+def test_recall_keeps_long_lines_verbatim(daily: DailyLogService):
+    """长片段不静默截断（T-03/Q31）：原文整条保留，超窗由 T-05 整块丢弃而非裁剪。"""
+    long_text = "冰汽时代" + "字" * 300
+    chat_at(daily, "2026-11-07T20:00:00", long_text, long_text)
 
     hits = recall(daily, "冰汽时代")
 
     assert hits
-    assert all(len(hit.text) <= RECALL_HIT_MAX_CHARS for hit in hits)
+    assert any(hit.text == long_text for hit in hits)
+
+
+def test_recall_excludes_feedback_event_rows(daily: DailyLogService, tmp_path: Path):
+    """feedback（诊断 event 行）永不召回：只取 master/me（第 25 条）。"""
+    chat_at(daily, "2026-11-07T20:00:00", "冰汽时代", "冰汽时代太难了")
+    DbDailyLog(tmp_path / "pet.db").append(
+        [
+            DailyLogRecord(
+                event_time="2026-11-07T21:00:00+08:00",
+                role="event",
+                content="冰汽时代 session_boundary",
+                created_at="2026-11-07T21:00:00+08:00",
+                persona_id=daily.active_persona(),
+            )
+        ]
+    )
+
+    hits = recall(daily, "冰汽时代")
+
+    assert hits
+    assert all(hit.role in {"master", "me"} for hit in hits)
+    assert all("session_boundary" not in hit.text for hit in hits)
 
 
 def test_recall_without_keywords_does_not_touch_storage():

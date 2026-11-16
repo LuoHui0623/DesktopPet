@@ -5,28 +5,30 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.persona import parse_persona
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.chat_system_prompt import SEPARATOR_WIDTH
-from module.agent.prompt import ResourceItem, SystemPrompt, load_templates
-from module.chat import context as context_module
-from module.chat.context import (
+from agent.capabilities.chat.context import (
     CURRENT_SEPARATOR,
-    KIND_DAILY,
     PROACTIVE_TRIGGER,
+    WARNING_EVENTS_DROPPED,
     WARNING_FRAGMENTS_DROPPED,
+    WARNING_HISTORY_DROPPED,
     WARNING_MEMORY_UNLOADED,
+    WARNING_RECOLLECTION_DROPPED,
     ContextBuilder,
+    Degradation,
     MemoryFragment,
     day_marker,
     visible_notices,
 )
-from module.chat.transcript import ChatLine
-from module.memory.contracts import DailyLogEntry, MemoryEntryCreate
-from module.memory.entry_service import MemoryEntryService
-from module.memory.memory_service import MemoryReadError
-from service.perception.events import PerceptionEvent, PerceptionEventKind
+from agent.capabilities.chat.transcript import ChatLine
+from agent.capabilities.perception.events.events import PerceptionEvent, PerceptionEventKind
+from agent.memory.contracts import DailyLogEntry, MemoryEntryCreate
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.memory_service import MemoryReadError
+from agent.persona.loader import parse_persona
+from agent.prompts.chat_system import SEPARATOR_WIDTH
+from agent.prompts.templates import ResourceItem, SystemPrompt, load_templates
+from infra.store.db import connect
+from infra.store.migrate import migrate
 
 TZ = ZoneInfo("Asia/Shanghai")
 PERSONA = parse_persona({"role": {"名字": "小桌", "人设": "陪伴"}, "personality": ["温和"]})
@@ -232,7 +234,8 @@ def test_unreadable_structured_memory_is_skipped_with_warning(parts, monkeypatch
 def test_structured_memory_is_injected_in_full_without_truncation(parts):
     """≥101 条启用条目全量注入：去掉旧 POOL_LIMIT=100 上限，不得静默截断（Q23）。"""
     for index in range(120):
-        parts["add"](f"第{index}条：" + "字" * 40)
+        # 正文受 R12 ≤30 字约束，填充控制在限长内；每条 marker 唯一，互不复用。
+        parts["add"](f"第{index}条：" + "字" * 20)
     result = parts["builder"]().build("你好")
     text = result.messages[0].content
     assert all(f"第{index}条：" in text for index in range(120))
@@ -242,11 +245,11 @@ def test_structured_memory_is_injected_in_full_without_truncation(parts):
 
 def test_retrieved_fragments_are_labelled(parts):
     fragments = [
-        MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="早安\n你好"),
+        MemoryFragment(id=123, role="master", text="早安\n你好"),
     ]
     text = parts["builder"]().build("你好", fragments).messages[0].content
     assert "【检索到的记忆】" in text
-    assert "[每日对话 · 2026-10-18] 早安 你好" in text
+    assert "[#123][master] 早安 你好" in text
 
 
 def test_transcript_lines_follow_construction_order(parts):
@@ -310,7 +313,7 @@ def test_several_utterances_are_restored_as_separate_history_lines(parts):
 def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
     """段落顺序：基础系统提示词 → 日期分隔符 → 结构化记忆 → 检索片段。"""
     parts["add"]("喜欢美式咖啡")
-    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
+    fragments = [MemoryFragment(id=1, role="master", text="昨天聊了茶")]
     text = parts["builder"]().build("你好", fragments).messages[0].content
     order = [
         "【人设】",
@@ -325,7 +328,7 @@ def test_day_marker_follows_the_base_prompt_and_precedes_injected_blocks(parts):
 
 def test_day_marker_appears_exactly_once(parts):
     parts["add"]("喜欢美式咖啡")
-    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶")]
+    fragments = [MemoryFragment(id=1, role="master", text="昨天聊了茶")]
     result = parts["builder"]().build("你好", fragments)
     assert result.messages[0].content.count("2026/10/18") == 1
     carriers = [
@@ -406,12 +409,13 @@ def test_full_transcript_is_kept_without_trimming(parts):
     assert result.warnings == ()
 
 
-def test_fragments_over_budget_are_dropped_and_counted(parts, monkeypatch):
-    monkeypatch.setattr(context_module, "FRAGMENT_TOKEN_BUDGET", 40)
-    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
+def test_fragments_have_no_independent_char_quota(parts):
+    """T-03/Q6：召回片段不设独立字符预算，全量注入；超窗只由模型窗口检查与 T-05 降级兜底。"""
+    fragments = [MemoryFragment(id=index, role="master", text="字" * 2000) for index in range(4)]
     result = parts["builder"]().build("你好", fragments)
-    assert result.dropped_fragments > 0
-    assert [warning.code for warning in result.warnings] == [WARNING_FRAGMENTS_DROPPED]
+    assert result.dropped_fragments == 0
+    assert len(result.injected) == 4
+    assert WARNING_FRAGMENTS_DROPPED not in [warning.code for warning in result.warnings]
 
 
 def test_only_memory_unload_is_mapped_to_a_user_notice(parts, monkeypatch):
@@ -423,28 +427,21 @@ def test_only_memory_unload_is_mapped_to_a_user_notice(parts, monkeypatch):
     assert visible_notices(result.warnings) == (WARNING_MEMORY_UNLOADED,)
 
 
-def test_dropped_fragments_stay_warnings_without_user_notices(parts, monkeypatch):
-    monkeypatch.setattr(context_module, "FRAGMENT_TOKEN_BUDGET", 40)
-    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
-    result = parts["builder"]().build("你好", fragments)
-    assert [warning.code for warning in result.warnings] == [WARNING_FRAGMENTS_DROPPED]
-    assert visible_notices(result.warnings) == ()
-
-
 def test_result_reports_template_digest_and_size(parts):
     result = parts["builder"]().build("你好")
     assert len(result.template_digest) == 64
     assert result.chars == sum(len(message.content) for message in result.messages)
 
 
-def test_injected_lists_kept_fragments_only(parts):
+def test_injected_lists_all_fragments(parts):
+    """无独立字符配额：注入列表保留全部召回片段（含长片段），不静默截断或丢弃。"""
     fragments = [
-        MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20),
-        MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="字" * 2000),
+        MemoryFragment(id=18, role="master", text="字" * 20),
+        MemoryFragment(id=17, role="me", text="字" * 2000),
     ]
     result = parts["builder"]().build("你好", fragments)
-    assert [fragment.date for fragment in result.injected] == ["2026-10-18"]
-    assert result.dropped_fragments == 1
+    assert [fragment.id for fragment in result.injected] == [18, 17]
+    assert result.dropped_fragments == 0
 
 
 def test_structured_memory_is_not_citable(parts):
@@ -492,6 +489,147 @@ def test_perception_events_precede_the_input_even_when_they_happen_later(parts):
     messages = parts["builder"](perception=perception).build("你好").messages
     assert messages[-2].content == "[event][21:40:00]使用 code 已 5 分钟"
     assert messages[-1].content == "[master][21:30:00]你好"
+
+
+# ---------- T-05：超窗逐块降级的装配规格 ----------
+
+
+def _deg_builder(parts, *, transcript_=None, perception=None, recollection=None) -> ContextBuilder:
+    return ContextBuilder(
+        PERSONA,
+        load_templates(),
+        TZ,
+        memory=parts["entries"],
+        clock=parts["clock"],
+        perception=perception,
+        transcript=transcript_,
+        recollection=recollection,
+    )
+
+
+def test_degradation_default_keeps_every_block(parts):
+    """默认 Degradation() 与不传等价：全量装配，不丢任何块（向后兼容）。"""
+    parts["add"]("喜欢美式")
+    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 21, 20, exe="code", minutes=3)])
+    transcript = parts["transcript"](
+        master(at(20), "早", identity=1), me(at(20, 1), "早安", identity=2)
+    )
+    builder = _deg_builder(
+        parts, transcript_=transcript, perception=perception, recollection="昨天聊了茶"
+    )
+    fragments = [MemoryFragment(id=1, role="master", text="往日")]
+    full = builder.build("你好", fragments)
+    same = builder.build("你好", fragments, degradation=Degradation())
+    assert [m.content for m in same.messages] == [m.content for m in full.messages]
+    assert same.dropped_fragments == 0
+    assert same.injected == full.injected
+
+
+def test_degradation_drops_events_but_keeps_input_and_structured(parts):
+    parts["add"]("喜欢美式")
+    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 21, 20, exe="code", minutes=3)])
+    builder = _deg_builder(parts, perception=perception)
+    full = builder.build("你好")
+    assert full.event_count == 1
+    assert any("[event]" in m.content for m in full.messages)
+    degraded = builder.build("你好", degradation=Degradation(drop_events=True))
+    assert all("[event]" not in m.content for m in degraded.messages)
+    assert "喜欢美式" in degraded.messages[0].content
+    assert degraded.messages[-1] == HumanMessage(content="[master][21:30:00]你好")
+
+
+def test_degradation_drops_recollection_but_keeps_structured(parts):
+    parts["add"]("喜欢美式")
+    builder = _deg_builder(parts, recollection="昨天聊了茶")
+    full = builder.build("你好")
+    assert full.has_recollection is True
+    assert "【昨天的回忆】" in full.messages[0].content
+    degraded = builder.build("你好", degradation=Degradation(drop_recollection=True))
+    assert "【昨天的回忆】" not in degraded.messages[0].content
+    assert "【结构化记忆】" in degraded.messages[0].content
+    assert "喜欢美式" in degraded.messages[0].content
+
+
+def test_degradation_keeps_most_relevant_fragments_and_drops_tail(parts):
+    """片段按相关度高→低排列，降级保留前 N 条、从尾部丢低相关（Q31/T-05）。"""
+    fragments = [MemoryFragment(id=index, role="master", text=f"片段{index}") for index in range(4)]
+    builder = _deg_builder(parts)
+    full = builder.build("你好", fragments)
+    assert full.fragment_count == 4
+    assert [f.id for f in full.injected] == [0, 1, 2, 3]
+    degraded = builder.build("你好", fragments, degradation=Degradation(keep_fragments=2))
+    assert [f.id for f in degraded.injected] == [0, 1]
+    assert degraded.dropped_fragments == 2
+    text = degraded.messages[0].content
+    assert "[#0]" in text and "[#1]" in text
+    assert "[#2]" not in text and "[#3]" not in text
+
+
+def test_degradation_drops_oldest_history_turns_first(parts):
+    transcript = parts["transcript"](
+        master(at(20), "第一句", identity=1),
+        me(at(20, 1), "回复一", identity=2),
+        master(at(20, 2), "第二句", identity=3),
+        me(at(20, 3), "回复二", identity=4),
+        master(at(20, 4), "第三句", identity=5),
+        me(at(20, 5), "回复三", identity=6),
+    )
+    builder = _deg_builder(parts, transcript_=transcript)
+    full = builder.build("你好")
+    assert full.history_turns == 3
+    degraded = builder.build("你好", degradation=Degradation(keep_history_turns=1))
+    contents = [m.content for m in degraded.messages]
+    assert not any("第一句" in c for c in contents)
+    assert not any("第二句" in c for c in contents)
+    assert any("第三句" in c for c in contents)
+    assert any("回复三" in c for c in contents)
+    assert degraded.messages[-1] == HumanMessage(content="[master][21:30:00]你好")
+
+
+def test_degradation_can_drop_all_history(parts):
+    transcript = parts["transcript"](
+        master(at(20), "旧话", identity=1), me(at(20, 1), "旧复", identity=2)
+    )
+    builder = _deg_builder(parts, transcript_=transcript)
+    degraded = builder.build("你好", degradation=Degradation(keep_history_turns=0))
+    assert all("旧话" not in m.content and "旧复" not in m.content for m in degraded.messages)
+    assert degraded.messages[-1] == HumanMessage(content="[master][21:30:00]你好")
+
+
+def test_assembled_reports_full_droppable_counts(parts):
+    """全量计数不随降级量变化，供降级循环按绝对口径逐步丢块。"""
+    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 21, 20, exe="code", minutes=3)])
+    transcript = parts["transcript"](master(at(20), "早", identity=1))
+    builder = _deg_builder(
+        parts, transcript_=transcript, perception=perception, recollection="回忆"
+    )
+    fragments = [MemoryFragment(id=9, role="master", text="往")]
+    result = builder.build(
+        "你好",
+        fragments,
+        degradation=Degradation(
+            drop_events=True, drop_recollection=True, keep_fragments=0, keep_history_turns=0
+        ),
+    )
+    assert result.event_count == 1
+    assert result.has_recollection is True
+    assert result.fragment_count == 1
+    assert result.history_turns == 1
+    assert result.injected == ()
+    assert result.dropped_fragments == 1
+
+
+def test_degradation_warnings_are_not_user_notices(parts):
+    """降级告警进既有告警通道但不打扰用户：只有 memory_unloaded 映射为用户可见提示。"""
+    perception = FakePerception([pe(PerceptionEventKind.APP_IN_USE, 21, 20, exe="code", minutes=3)])
+    builder = _deg_builder(parts, perception=perception, recollection="回忆")
+    result = builder.build(
+        "你好", degradation=Degradation(drop_events=True, drop_recollection=True)
+    )
+    assert visible_notices(result.warnings) == ()
+    assert WARNING_EVENTS_DROPPED != WARNING_MEMORY_UNLOADED
+    assert WARNING_RECOLLECTION_DROPPED != WARNING_MEMORY_UNLOADED
+    assert WARNING_HISTORY_DROPPED != WARNING_MEMORY_UNLOADED
 
 
 def test_perception_injection_is_capped_at_five(parts):

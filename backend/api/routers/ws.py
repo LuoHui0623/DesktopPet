@@ -3,10 +3,10 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket
 
+from agent.harness.approval import ApprovalTicket
 from api.auth import WS_SUBPROTOCOL
 from api.event_publisher import BusEventPublisher, approval_event
 from infra.events.bus import EventBus, Subscription
-from module.agent.approval import ApprovalTicket
 
 router = APIRouter(tags=["ws"])
 

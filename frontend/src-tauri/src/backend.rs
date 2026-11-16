@@ -76,7 +76,7 @@ pub fn launch(spec: &LaunchSpec, timeout: Duration) -> Result<Launched, String> 
 
     let mut child = command
         .spawn()
-        .map_err(|error| format!("无法启动后端：{error}"))?;
+        .map_err(|error| format!("无法启动后端 {}：{error}", spec.command.display()))?;
     let (Some(stdin), Some(stdout), Some(stderr)) =
         (child.stdin.take(), child.stdout.take(), child.stderr.take())
     else {
@@ -129,6 +129,11 @@ pub fn launch(spec: &LaunchSpec, timeout: Duration) -> Result<Launched, String> 
                 .lock()
                 .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
                 .unwrap_or_default();
+            let tail = if tail.trim().is_empty() {
+                "（后端没有任何输出）".to_string()
+            } else {
+                tail
+            };
             Err(format!(
                 "后端在启动前退出（{}）\n{tail}",
                 describe_status(status)
@@ -285,6 +290,22 @@ mod tests {
         assert_eq!(parse_port_line("PET_PORT=70000"), None);
         assert_eq!(parse_port_line("hello PET_PORT=1"), None);
         assert_eq!(parse_port_line("PET_PORT=abc"), None);
+    }
+
+    /// 启动失败必须报出被启动的可执行文件：终端里只剩 `exit code: 1` 时，
+    /// 是否 venv 缺失、是否 PET_PYTHON 指错，全靠这条信息分辨。
+    #[test]
+    fn spawn_failure_names_the_command_that_cannot_run() {
+        let spec = LaunchSpec {
+            command: PathBuf::from("no-such-python-for-pet-shell"),
+            args: Vec::new(),
+            cwd: std::env::temp_dir(),
+            env: Vec::new(),
+        };
+        let Err(error) = launch(&spec, Duration::from_millis(200)) else {
+            panic!("可执行文件不存在时应返回错误");
+        };
+        assert!(error.contains("no-such-python-for-pet-shell"), "{error}");
     }
 
     #[test]

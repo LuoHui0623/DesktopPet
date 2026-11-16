@@ -9,6 +9,7 @@ import {
   loadSettings,
   notifyPetSettingsChanged,
   saveActiveAvatar,
+  saveActivePersona,
   saveInteractionConfig,
   savePerceptionConfig,
   saveProactiveConfig,
@@ -23,6 +24,7 @@ vi.mock("@tauri-apps/api/event", () => ({ emitTo, listen }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 const view: SettingsView = {
+  version: 7,
   perception: {
     enabled: true,
     foreground_enabled: true,
@@ -37,6 +39,11 @@ const view: SettingsView = {
     dnd_end: "08:00",
   },
   avatar: { persona: "芙芙", active: "default", preset_states: [], packs: [] },
+  persona: { active: "芙芙", personas: [] },
+  model: {
+    providers: { version: "1", providers: [], defaults: {}, warnings: [], last_reload_errors: [] },
+    active: { chat: null, consolidate: null },
+  },
   interaction: {
     report_enabled_kinds: ["click"],
     hover_dwell_ms: 300,
@@ -49,6 +56,7 @@ interface Call {
   url: string;
   method: string;
   body: unknown;
+  version: string | null;
 }
 
 const calls: Call[] = [];
@@ -72,6 +80,7 @@ beforeEach(() => {
         url: String(input),
         method: init?.method ?? "GET",
         body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+        version: new Headers(init?.headers).get("If-Match"),
       });
       if (String(input).endsWith("/api/scheduler/ledger")) {
         return jsonResponse({ date: "2026-10-29", topics: {}, total: 0 });
@@ -89,12 +98,13 @@ afterEach(() => {
 });
 
 describe("settings read model", () => {
-  it("reads the four groups from one aggregate endpoint", async () => {
+  it("reads the six groups from one aggregate endpoint", async () => {
     expect(await loadSettings()).toEqual(view);
     expect(calls[0]).toEqual({
       url: "http://127.0.0.1:8765/api/settings",
       method: "GET",
       body: undefined,
+      version: null,
     });
   });
 
@@ -112,36 +122,46 @@ describe("saving notifies the pet window", () => {
     {
       domain: "perception",
       save: () =>
-        savePerceptionConfig({
-          enabled: false,
-          foreground_enabled: true,
-          idle_away_minutes: 20,
-          sit_minutes: 45,
-        }),
+        savePerceptionConfig(
+          {
+            enabled: false,
+            foreground_enabled: true,
+            idle_away_minutes: 20,
+            sit_minutes: 45,
+          },
+          7,
+        ),
       path: "/api/settings/perception",
     },
     {
       domain: "proactive",
       save: () =>
-        saveProactiveConfig({
-          enabled: false,
-          min_interval_minutes: 90,
-          max_per_day: 8,
-          dnd_start: "23:00",
-          dnd_end: "07:30",
-        }),
+        saveProactiveConfig(
+          {
+            enabled: false,
+            min_interval_minutes: 90,
+            max_per_day: 8,
+            dnd_start: "23:00",
+            dnd_end: "07:30",
+          },
+          7,
+        ),
       path: "/api/settings/proactive",
     },
-    { domain: "avatar", save: () => saveActiveAvatar("alt"), path: "/api/settings/avatar" },
+    { domain: "avatar", save: () => saveActiveAvatar("alt", 7), path: "/api/settings/avatar" },
+    { domain: "persona", save: () => saveActivePersona("芙芙", 7), path: "/api/settings/persona" },
     {
       domain: "interaction",
       save: () =>
-        saveInteractionConfig({
-          report_enabled_kinds: ["click", "drag"],
-          hover_dwell_ms: 500,
-          report_interval_ms: 2000,
-          reaction_ms: 400,
-        }),
+        saveInteractionConfig(
+          {
+            report_enabled_kinds: ["click", "drag"],
+            hover_dwell_ms: 500,
+            report_interval_ms: 2000,
+            reaction_ms: 400,
+          },
+          7,
+        ),
       path: "/api/settings/interaction",
     },
   ];
@@ -153,6 +173,7 @@ describe("saving notifies the pet window", () => {
       const request = calls.find((call) => call.url.endsWith(testCase.path));
       expect(request?.method).toBe("PUT");
       expect(request?.body).toBeDefined();
+      expect(request?.version).toBe("7");
       expect(emitTo).toHaveBeenCalledWith(PET_WINDOW_LABEL, SETTINGS_CHANGED_EVENT, {
         domain: testCase.domain,
       });
@@ -169,7 +190,7 @@ describe("saving notifies the pet window", () => {
     emitTo.mockRejectedValue(new Error("not running inside Tauri"));
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
 
-    expect(await saveActiveAvatar("default")).toEqual(view);
+    expect(await saveActiveAvatar("default", 7)).toEqual(view);
     expect(errorSpy).toHaveBeenCalled();
   });
 

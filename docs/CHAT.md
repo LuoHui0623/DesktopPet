@@ -1,7 +1,7 @@
 # 对话域设计：单入口与上下文
 
 > 职责：定义 ChatService 的唯一入口、请求/回复契约、上下文组装、生成校验与落账。
-> 依赖：`module/llm`（模型）、`module/memory`（daily_log / 结构化记忆）、`module/persona`、`module/agent`（派发分支）、观测域解析器（current 事件）。
+> 依赖：`agent/llm`（模型）、`agent/memory`（daily_log / 结构化记忆）、`agent/persona`、`agent`（派发分支）、观测域解析器（current 事件）。
 > 不回答：模型配置与热更（见 [LLM.md](LLM.md)）、感知采集与阈值（见 [OBSERVER.md](OBSERVER.md)）、主动判定与管线（见 [PROACTIVE.md](PROACTIVE.md)）、气泡与前端渲染。
 > 状态：已实现。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，当天对话每次组装时从 `daily_log` 读取。已覆盖多条连续发言与显示宽度句长、秒级时间戳、跨重启恢复、上下文窗口检查、子代理正文回灌、主动轮只读派发、主题注册表与范畴分组编排、「昨天的回忆」注入、current 消息装配、记录身份去重、topic/task 派发、合并回注与 notices 降级。11-09 起，被动轮按本轮输入自动召回早于当天的历史对话并注入检索片段（只读、失败静默）。
 
@@ -48,24 +48,24 @@ proactive ─┴─► chat ─► llm
 
 | 组件 | 落点 | 说明 |
 |---|---|---|
-| 唯一入口、生成、落账 | `module/chat/chat_service.py` | `chat(ChatRequest)` |
-| 上下文组装 | `module/chat/context.py` | 系统提示词、日期分隔线、回忆、记忆、历史、current 事件、本次输入 |
-| 提示词主题与顺序 | `module/agent/chat_system_prompt.py` | `Topic` 注册表与正文常量；`render` 只返回正文，不拼装、不读文件 |
-| 提示词拼装 | `module/agent/prompt.py` | `compose_chat_prompt(context, topics)`、范畴分组与占位符填充 |
-| 昨日回忆 | `module/memory/recollection_service.py` | 判定回忆哪一天、只读派发、去重与失败落库 |
-| 每轮召回 | `module/memory/recall.py` | 关键词提取与只读检索；不注入、不落库 |
-| 当日快照 | `module/chat/transcript.py` | 每次按天/人设从 `daily_log` 读取，不落库、不存内存快照 |
-| 引用解析 | `module/chat/citations.py` | 去标记、过滤来源 |
-| 对话活跃计数 | `module/chat/activity.py` | 供解析器判断“对话进行中” |
-| 派发 | `module/agent/` | orchestrator / approval / subagent / prompt |
-| 模型 | `module/llm/` | 只取 client，不做模型选择 |
-| 记录 | `module/memory/` | daily_log、结构化记忆、event 编码 |
+| 唯一入口、生成、落账 | `agent/capabilities/chat/chat_service.py` | `chat(ChatRequest)` |
+| 上下文组装 | `agent/capabilities/chat/context.py` | 系统提示词、日期分隔线、回忆、记忆、历史、current 事件、本次输入 |
+| 提示词主题与顺序 | `agent/prompts/chat_system.py` | `Topic` 注册表与正文常量；`render` 只返回正文，不拼装、不读文件 |
+| 提示词拼装 | `agent/prompts/templates.py` | `compose_chat_prompt(context, topics)`、范畴分组与占位符填充 |
+| 昨日回忆 | `agent/memory/recollection_service.py` | 判定回忆哪一天、只读派发、去重与失败落库 |
+| 每轮召回 | `agent/memory/recall.py` | 关键词提取与只读检索；不注入、不落库 |
+| 当日快照 | `agent/capabilities/chat/transcript.py` | 每次按天/人设从 `daily_log` 读取，不落库、不存内存快照 |
+| 引用解析 | `agent/capabilities/chat/citations.py` | 去标记、过滤来源 |
+| 对话活跃计数 | `agent/capabilities/chat/activity.py` | 供解析器判断“对话进行中” |
+| 派发 | `agent/` | orchestrator / approval / subagent / prompt |
+| 模型 | `agent/llm/` | 只取 client，不做模型选择 |
+| 记录 | `agent/memory/` | daily_log、结构化记忆、event 编码 |
 | 感知 current | 观测域解析器 | 只通过 `take_context_events()` 读 |
 
 约束：
 
 - chat 不 import proactive，也不 import observer；只依赖解析器的读接口与事件类型。
-- chat 不 import provider SDK；模型 client 一律由 `module/llm` 提供。
+- chat 不 import provider SDK；模型 client 一律由 `agent/llm` 提供。
 - 派发是 chat 的分支，不是独立入口；派发之后只允许再生成一次 chat 回复。
 
 ## 对外契约
@@ -129,7 +129,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ### 输入顺序
 
-1. **系统提示词**：由 [chat_system_prompt.py](../backend/module/agent/chat_system_prompt.py) 的 `TOPIC_REGISTRY` 提供主题，`Topic(id, category, render(ctx))` 只返回正文；[prompt.py](../backend/module/agent/prompt.py) 的 `compose_chat_prompt` 负责包装 `【主题】\n正文` 与范畴分隔线。输出时范畴固定为 身份 → 能力 → 行为，范畴内按注册顺序；映射为人设 / 可用能力、可用资源 / 行动规则、发言规则、约束，段间以空行分隔。`$persona_section`、能力名与资源 ID 清单一类占位符由各主题的 `render` 填充。**不存在** `prompts/chat.md`、`prompts/persona.md` 这类文件模板，chat 提示词只有 `chat_system_prompt.py` 这一个来源。
+1. **系统提示词**：由 [chat_system_prompt.py](../backend/agent/prompts/chat_system.py) 的 `TOPIC_REGISTRY` 提供主题，`Topic(id, category, render(ctx))` 只返回正文；[prompt.py](../backend/agent/prompts/templates.py) 的 `compose_chat_prompt` 负责包装 `【主题】\n正文` 与范畴分隔线。输出时范畴固定为 身份 → 能力 → 行为，范畴内按注册顺序；映射为人设 / 可用能力、可用资源 / 行动规则、发言规则、约束，段间以空行分隔。`$persona_section`、能力名与资源 ID 清单一类占位符由各主题的 `render` 填充。**不存在** `prompts/chat.md`、`prompts/persona.md` 这类文件模板，chat 提示词只有 `chat_system_prompt.py` 这一个来源。
 2. **日期分隔线**：紧接系统提示词之后，全局只出现这一次（见「日期标记」）；其后才是各类注入段落。
 3. **昨天的回忆**：有可用回忆时注入（见「昨天的回忆」）；失败或无历史时不占位。
 4. **结构化记忆全文**：全文注入，不设预算、不截断（它是大纲，截断会丢语义）。
@@ -175,7 +175,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 - 主动轮没有用户输入前缀，因此触发块自带 `【当前时间】`，保证主动开口时也知道现在几点。
 - 触发块只存在于本次请求的上下文中，不写入 transcript / daily_log。
-- 措辞固定在 `module/chat/context.py` 的 `PROACTIVE_TRIGGER`；解析器只给事实 `reason`，不给话术。
+- 措辞固定在 `agent/capabilities/chat/context.py` 的 `PROACTIVE_TRIGGER`；解析器只给事实 `reason`，不给话术。
 
 ### 引用
 
@@ -248,7 +248,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 #### DSML 兼容
 
-模型偶尔把工具调用标记输出为正文。主代理和子代理在普通 JSON / 文本解析之前，先由 `module/agent/dsml.py` 识别 DSML；helper 只解析，不直接执行动作：
+模型偶尔把工具调用标记输出为正文。主代理和子代理在普通 JSON / 文本解析之前，先由 `agent/prompts/dsml.py` 识别 DSML；helper 只解析，不直接执行动作：
 
 - **支持边界**：仅接受单个完整的 `calls` 包住一个 `invoke`，各标签的 DSML 标记必须一致；参数名不得重复。`parameter` 的 `string="true"` 保留原始字符串，`string="false"` 按 JSON 解析，拒绝重复对象字段和非法常量。参数内容中出现 DSML 标签会产生歧义，按无效输出处理。
 - **主代理**：只接受名为 `dispatch` 且仅有 `plan` 参数的调用，转换为现有派发协议后继续校验计划与派发条件。
@@ -308,13 +308,13 @@ chat 输出 dispatch（plan 项为 topic/task）
 
 - 技能名只用于内部路由与审计（`agent_run.skill` 存推断出的技能名或 `natural`），不是模型派发协议的一部分；模型只给 `topic` 与 `task`，审批卡片展示 `topic` / `task` / 工具 / 草案内容，并标注起草子任务、人设版本与模型；读取卡另展示动作、资源/路径与参数摘要；文件结算卡另展示后端生成的净 diff（新建、删除、改动数与逐 hunk）。
 - 「任务」规划能力的说明书正文直接嵌入规划提示词，不作为可选技能暴露给执行子代理；它产出的 `topic` / `task` 才进入后续路由与审批。
-- 工具清单在 `module/agent/skills.py` 登记；草案阶段只给 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的交集，执行阶段才放开写工具。
+- 工具清单在 `agent/skills/registry.py` 登记；草案阶段只给 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的交集，执行阶段才放开写工具。
 - 每个技能声明的工具都必须在 `SubAgent` 构造时注册过，否则草案阶段直接返回 `tool_missing`。
 - 草稿本是**短期便签**，不是长期记忆：跨天依然成立的偏好与约定走「记忆写入」，临时计划与待办走「自记笔记」。
-- 全部动作共用 `constants/files.py` 的资源注册表：`draft`、`structured`、`permanent`、`world` 各有允许的动作；草稿本与结构化记忆可以按行删除内容，但不能删除文件本体；只有 `world` 能新建或删除文件。
-- 资源按 ID 解析到运行时数据目录；也可传已注册路径，但必须落在白名单内。`..` 穿越、符号链接或目录联接外跳由 `module/files/resolver.py` 拒绝；指向草稿本的路径会归到 `draft`，不能借 `world` 绕过权限。
+- 全部动作共用 `agent/files/registry.py` 的资源注册表：`draft`、`structured`、`permanent`、`world` 各有允许的动作；草稿本与结构化记忆可以按行删除内容，但不能删除文件本体；只有 `world` 能新建或删除文件。
+- 资源按 ID 解析到运行时数据目录；也可传已注册路径，但必须落在白名单内。`..` 穿越、符号链接或目录联接外跳由 `agent/files/resolver.py` 拒绝；指向草稿本的路径会归到 `draft`，不能借 `world` 绕过权限。
 - 永久记忆（`permanent`）是只读虚拟资源，用 `date` 或 `from`/`to` 读取当前人设的记录；结果按子代理模型的 `max_tokens` 限制单次读取，超限时明确失败。
-- 资源库根目录取 `settings.data_dir / "resources"`，随 `PET_DATA_DIR` 变化；后端启动时由 `module/agent/workspace.prepare_workspace()` 建目录与 `草稿本.md`，已有内容不覆盖。
+- 资源库根目录取 `settings.data_dir / "resources"`，随 `PET_DATA_DIR` 变化；后端启动时由 `agent/files/workspace.prepare_workspace()` 建目录与 `草稿本.md`，已有内容不覆盖。
 
 #### 子代理的输出契约
 
@@ -323,7 +323,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 项 | 规则 |
 |---|---|
 | 单对象约束 | 提示词要求每次只输出一个 JSON 对象；代码对非 DSML 的多对象回复仍只消费第一个合法动作，对完整单调用 DSML 按「DSML 兼容」转换 |
-| 约束位置 | 提示词侧在 `module/agent/prompts/subagent_draft.md` 与 `subagent.md` 的「输出格式」章节；代码侧由 `INVALID_HINT` 与阶段提示追加纠正 |
+| 约束位置 | 提示词侧在 `agent/prompts/subagent/subagent_draft.md` 与 `subagent.md` 的「输出格式」章节；代码侧由 `INVALID_HINT` 与阶段提示追加纠正 |
 | 清洗 | 对非 DSML 回复去掉零宽字符、控制字符与其他私有标记（`<｜…｜>` 包裹的整段）；DSML 先识别，不能清除标记后回退扫描 |
 | 解析 | 非 DSML 文本从左到右在每个 `{` 位置尝试 `json.JSONDecoder.raw_decode`，取第一个带合法 `action` 的 dict；DSML 按「DSML 兼容」先完整解析 |
 | 解析失败 | 记一条无效动作，向模型返回纠正观测并继续；无效次数或步数耗尽后报错 |
@@ -336,7 +336,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 ### 降级提示（notices）
 
 - 结构化记忆读取失败时本轮继续生成，`ChatReply.notices` 返回 `["memory_unloaded"]`；被动 `chat.done` 与主动 `proactive.message` 透传同一字段，不占 `text`、不伪装成对话。
-- 上下文告警用稳定 code（`module/chat/context.py` 的 `WARNING_MEMORY_UNLOADED`、`WARNING_FRAGMENTS_DROPPED`）；只有 `memory_unloaded` 映射为 notices，检索片段超预算只记 warning，不打扰用户（D-30）。
+- 上下文告警用稳定 code（`agent/capabilities/chat/context.py` 的 `WARNING_MEMORY_UNLOADED`、`WARNING_FRAGMENTS_DROPPED`）；只有 `memory_unloaded` 映射为 notices，检索片段超预算只记 warning，不打扰用户（D-30）。
 - 诊断信息不含记忆正文；前端按 code 映射展示文案，未知 code 忽略。
 
 ## 落账与快照
@@ -426,10 +426,10 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 项 | 现状 |
 |---|---|
 | 入口 | `chat(ChatRequest)` 单入口；HTTP 路由构造 `ChatRequest(user_text=...)` |
-| 主动轮 | 同一入口，`user_text=None` + `trigger_reason`；由 `module/proactive/pipeline.py` 调用 |
+| 主动轮 | 同一入口，`user_text=None` + `trigger_reason`；由 `agent/capabilities/proactive/pipeline.py` 调用 |
 | 主入口写入 | 被动先 `record_user`（`master` 1 条），回复通过后再 `record_reply`（`me` 1–4 条）；主动只写 `record_reply`；子代理回灌用 `record_assistant`，本轮合并 1 条 |
-| 提示词来源 | `module/agent/chat_system_prompt.py` 放 `Topic` 注册表与正文常量；拼装由 `module/agent/prompt.py` 的 `compose_chat_prompt` 完成，不再有 `prompts/chat.md`、`prompts/persona.md` |
-| 昨日回忆 | `module/memory/recollection_service.py`：每轮先判定、再只读派发；`回忆` 行落被回忆的那一天，同人设同日幂等 |
+| 提示词来源 | `agent/prompts/chat_system.py` 放 `Topic` 注册表与正文常量；拼装由 `agent/prompts/templates.py` 的 `compose_chat_prompt` 完成，不再有 `prompts/chat.md`、`prompts/persona.md` |
+| 昨日回忆 | `agent/memory/recollection_service.py`：每轮先判定、再只读派发；`回忆` 行落被回忆的那一天，同人设同日幂等 |
 | 快照写入 | 不保存进程内快照；每天每次组装从 `daily_log` 读取，事件与感知都不进 transcript |
 | 上下文预算 | 调用前用 `TrackedChatModel.count_tokens` 检查 `输入 + max_tokens <= context_window`；本地估算时错误信息标注「估算」 |
 | 感知注入 | 注入 `PerceptionReader`（`PerceptionService` 实现），被动轮调用 `recent_context_events`；当天、最多 5 条，读入即清空 |
@@ -437,7 +437,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 回注 | 本轮所有子代理结果合并为一条 assistant 消息，二次生成与落库同源；不带 `plan_id` / 检查点包装 |
 | 记忆降级 | 结构化记忆读取失败经 `notices`（`memory_unloaded`）提示；文档不含记忆正文 |
 | 被动串行 | session 级占位，第二个被动请求 `session_busy`；主动轮不占位 |
-| 触发块措辞 | `module/chat/context.py` 的 `PROACTIVE_TRIGGER` |
+| 触发块措辞 | `agent/capabilities/chat/context.py` 的 `PROACTIVE_TRIGGER` |
 | 事件 sink | 构造期默认 sink，可按 `ChatRequest.events` 覆盖 |
 | 主动轮派发 | `allow_dispatch=True` + `read_only_dispatch=True`：按草案声明的工具逐项判定，只读放行、含写入拒绝，已实现 |
 

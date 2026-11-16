@@ -4,17 +4,17 @@ import threading
 import time
 from pathlib import Path
 
-from constants.files import LINES_REPLACE
-from module.agent.approval import (
+from agent.capabilities.chat.chat_service import EventApprovalGate, NoChatEvents
+from agent.files.permissions import system_permissions
+from agent.files.registry import LINES_REPLACE
+from agent.harness.approval import (
     ApprovalDraft,
     ApprovalOutcome,
     ApprovalRegistry,
     ReadApprovalRequest,
 )
-from module.agent.context import TaskContext
-from module.agent.review import ReviewService
-from module.chat.chat_service import EventApprovalGate, NoChatEvents
-from module.files.permissions import system_permissions
+from agent.harness.review import ReviewService
+from agent.spec.context import TaskContext
 
 TASK = "main-1"
 SUB = "sub-1"

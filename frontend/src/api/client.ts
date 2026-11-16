@@ -28,6 +28,7 @@ export type QueryValue = string | number | boolean | null | undefined;
 export interface RequestOptions {
   body?: unknown;
   query?: Record<string, QueryValue>;
+  headers?: Record<string, string>;
 }
 
 export function createApiClient(info: BackendInfo, fetchImpl: typeof fetch = fetch): ApiClient {
@@ -70,7 +71,10 @@ export async function request<T>(
   path: string,
   options: RequestOptions = {},
 ): Promise<T> {
-  const headers: Record<string, string> = { [TOKEN_HEADER]: client.token };
+  const headers: Record<string, string> = {
+    [TOKEN_HEADER]: client.token,
+    ...options.headers,
+  };
   let body: string | undefined;
   if (options.body !== undefined) {
     headers["Content-Type"] = "application/json";

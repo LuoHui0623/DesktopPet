@@ -16,7 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from module.memory.contracts import MemoryEntryCreate
+from agent.memory.contracts import MemoryEntryCreate
 
 SOURCE_NAME = "structured.md"
 PROMPT_VERSION = "structured-rewrite-v1"
@@ -44,10 +44,6 @@ class SourceItem:
     @property
     def source_sha256(self) -> str:
         return sha256_text(self.text)
-
-    @property
-    def priority(self) -> int:
-        return 1 if self.date else 2
 
     @property
     def created_at(self) -> str:
@@ -129,7 +125,6 @@ def normalize_entry(item: SourceItem, content: str, tags: list[str]) -> dict[str
         entry = MemoryEntryCreate(
             content=content,
             tags=with_section_tags(item, tags),
-            priority=item.priority,
             source_ref=item.source_ref,
         )
     except ValidationError as exc:
@@ -142,7 +137,6 @@ def normalize_entry(item: SourceItem, content: str, tags: list[str]) -> dict[str
         "source_sha256": item.source_sha256,
         "content": entry.content,
         "tags": entry.tags,
-        "priority": entry.priority,
         "created_at": item.created_at,
     }
 
@@ -239,8 +233,6 @@ def validate_candidate(
         if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
             raise CandidateError(f"{item.source_ref} 的 tags 必须是字符串数组")
         normalized = normalize_entry(item, content, tags)
-        if raw.get("priority") != normalized["priority"]:
-            raise CandidateError(f"{item.source_ref} 的 priority 应由分区决定")
         if raw.get("created_at") != normalized["created_at"]:
             raise CandidateError(f"{item.source_ref} 的 created_at 应由分区决定")
         entries.append(normalized)
@@ -322,20 +314,19 @@ def render_report(
         [
             "## 候选条目",
             "",
-            "| 源行 | 分区 | 原文 | content | tags | priority | created_at |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
+            "| 源行 | 分区 | 原文 | content | tags | created_at |",
+            "| --- | --- | --- | --- | --- | --- |",
         ]
     )
     for entry in entries:
         item = doc.by_line(entry["source_line"])
         lines.append(
-            "| {line} | {section} | {text} | {content} | {tags} | {priority} | {created} |".format(
+            "| {line} | {section} | {text} | {content} | {tags} | {created} |".format(
                 line=entry["source_line"],
                 section=_cell(item.section),
                 text=_cell(item.text),
                 content=_cell(entry["content"]),
                 tags=_cell(" / ".join(entry["tags"])),
-                priority=entry["priority"],
                 created=entry["created_at"],
             )
         )

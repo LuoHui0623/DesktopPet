@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from config.persona import FieldsTheme, ListTheme, PersonaError, load_persona, parse_persona
+from agent.persona.loader import FieldsTheme, ListTheme, PersonaError, load_persona, parse_persona
 
 PERSONA = """
 role:
@@ -34,6 +34,13 @@ def test_personality_and_language_style_are_list_themes(tmp_path: Path):
     persona = load_persona(write_persona(tmp_path, PERSONA))
     assert persona.themes["personality"] == ListTheme(items=("好奇", "温和"))
     assert persona.themes["language_style"] == ListTheme(items=("口语化", "少用套话"))
+
+
+def test_appearance_and_wishes_are_list_themes(tmp_path: Path):
+    text = PERSONA + "appearance:\n  - 短头发\n  - 眼睛圆圆\nwishes:\n  - 希望知道当前时间\n"
+    persona = load_persona(write_persona(tmp_path, text))
+    assert persona.themes["appearance"] == ListTheme(items=("眼睛圆圆", "短头发"))
+    assert persona.themes["wishes"] == ListTheme(items=("希望知道当前时间",))
 
 
 def test_role_must_have_name_and_persona(tmp_path: Path):
@@ -75,7 +82,7 @@ def test_unknown_theme_is_rejected_with_allowed_list(tmp_path: Path):
         load_persona(write_persona(tmp_path, PERSONA + "mood:\n  - 开心\n"))
     message = str(exc.value)
     assert "mood" in message
-    assert "role、personality、language_style" in message
+    assert "role、personality、language_style、appearance、wishes" in message
 
 
 def test_role_is_required(tmp_path: Path):

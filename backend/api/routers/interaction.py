@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request
 
+from agent.capabilities.perception.interaction.interaction_service import InteractionService
 from api.routers.settings import interaction_view
 from api.schemas.interaction import InteractionRequest, InteractionResponse
 from api.schemas.settings import InteractionConfigView
-from module.interaction.interaction_service import InteractionService
 
 router = APIRouter(prefix="/api/interaction", tags=["interaction"])
 

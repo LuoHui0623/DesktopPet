@@ -2,9 +2,9 @@
 
 from pathlib import Path
 
-from constants.files import LINES_DELETE, LINES_REPLACE
-from module.files.commit import commit_file
-from module.files.session import TaskSession
+from agent.files.commit import commit_file
+from agent.files.registry import LINES_DELETE, LINES_REPLACE
+from agent.files.session import TaskSession
 
 
 def stage(

@@ -3,12 +3,14 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage
 
+from agent.llm.active import LlmActiveSettings
+from agent.llm.llm_service import ActiveModel, LlmService, LlmUnavailableError, ModelSelectionError
+from app.settings.coordinator import SettingsCoordinator
 from config.settings import DefaultModel, ModelSettingsSource
 from infra.llm.usage import usage_scope
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.llm import ActiveModel, LlmService, LlmUnavailableError, ModelSelectionError
-from module.settings.settings_service import SettingsService
+from tests.support import reload_document, settings_doc
 
 MULTI_ENV = """
 LLM_PROVIDERS=deepseek,opencode
@@ -207,7 +209,7 @@ def test_client_for_records_usage_through_sink(config_dir: Path):
 
 
 def make_multi_service(
-    config_dir: Path, active_store=None, builder: FakeBuilder | None = None
+    config_dir: Path, active: LlmActiveSettings | None = None, builder: FakeBuilder | None = None
 ) -> tuple[LlmService, FakeBuilder]:
     (config_dir / ".env").write_text(MULTI_ENV, encoding="utf-8")
     (config_dir / "llm.yaml").write_text(MULTI_LLM_YAML, encoding="utf-8")
@@ -217,7 +219,7 @@ def make_multi_service(
         ModelSettingsSource(config_dir, environ=env),
         builder=builder,
         environ=env,
-        active_store=active_store,
+        active=active,
     )
     service.start()
     return service, builder
@@ -237,17 +239,23 @@ def test_switched_model_is_used_by_next_call(config_dir: Path):
     )
 
 
-def test_database_selection_persists_and_overrides_env(config_dir: Path, tmp_path: Path):
+def test_document_selection_persists_and_overrides_env(config_dir: Path, tmp_path: Path):
     db_file = tmp_path / "pet.db"
     conn = connect(db_file)
     migrate(conn)
     conn.close()
 
-    service, _ = make_multi_service(config_dir, active_store=SettingsService(db_file))
+    document = settings_doc(db_file)
+    service, _ = make_multi_service(config_dir, active=LlmActiveSettings(document))
     assert service.active_model("chat").source == "env"
     service.set_active_models({"chat": DefaultModel(provider="opencode", model="gpt-5.6-luna")})
+    SettingsCoordinator(document, {"llm": service.snapshot_settings}).save(
+        "llm", version=document.version
+    )
 
-    restarted, _ = make_multi_service(config_dir, active_store=SettingsService(db_file))
+    restarted, _ = make_multi_service(
+        config_dir, active=LlmActiveSettings(reload_document(db_file))
+    )
     assert restarted.active_model("chat") == ActiveModel(
         "chat", "opencode", "gpt-5.6-luna", "database"
     )

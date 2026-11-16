@@ -1,6 +1,6 @@
+from agent.harness.approval import ApprovalDraft, ApprovalTicket
+from agent.harness.preview import FilePreview, PreviewHunk
 from api.event_publisher import BusEventPublisher
-from module.agent.approval import ApprovalDraft, ApprovalTicket
-from module.agent.preview import FilePreview, PreviewHunk
 
 
 class CollectingBus:

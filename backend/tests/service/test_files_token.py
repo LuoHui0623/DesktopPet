@@ -5,26 +5,26 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from constants.files import DRAFT, WORLD
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import AutoApprovalGate
-from module.agent.context import TaskContext, task_scope
-from module.agent.review import ReviewService
-from module.agent.skills import (
+from agent.files import token as snapshot_token
+from agent.files.permissions import system_permissions
+from agent.files.registry import DRAFT, WORLD
+from agent.files.resolver import FileError, ResourceResolver
+from agent.files.service import FileService, ModelLimit
+from agent.harness.approval import AutoApprovalGate
+from agent.harness.review import ReviewService
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.repository import DbDailyLog
+from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,
     memory_retrieve_skill,
     memory_write_skill,
 )
-from module.files import token as snapshot_token
-from module.files.permissions import system_permissions
-from module.files.resolver import FileError, ResourceResolver
-from module.files.service import FileService, ModelLimit
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from agent.spec.context import TaskContext, task_scope
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 NOTE = "笔记.md"
@@ -70,7 +70,7 @@ def stack(tmp_path: Path):
     service = FileService(
         ResourceResolver(data),
         MemoryEntryService(db_file),
-        DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ),
+        DailyLogService(DbDailyLog(db_file), settings_doc(db_file), TZ),
         skills,
         sessions=review.sessions,
         guard=review.guard,

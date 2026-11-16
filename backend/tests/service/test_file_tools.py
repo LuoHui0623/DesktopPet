@@ -7,33 +7,33 @@ from zoneinfo import ZoneInfo
 import pytest
 from pydantic import ValidationError
 
-from constants.files import (
+from agent.files.permissions import system_permissions
+from agent.files.registry import (
     ACTION_REPLACE_LINES,
     PERMANENT,
     STRUCTURED,
     WORLD,
 )
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import AutoApprovalGate
-from module.agent.context import TaskContext, task_scope
-from module.agent.review import ReviewService
-from module.agent.skills import (
+from agent.files.resolver import ResourceResolver
+from agent.files.schemas import ACTION_DOCS
+from agent.files.service import FileService, ModelLimit
+from agent.harness.approval import AutoApprovalGate
+from agent.harness.review import ReviewService
+from agent.memory.contracts import DailyLogRecord, MemoryEntryCreate
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.repository import DbDailyLog
+from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,
     memory_retrieve_skill,
     memory_write_skill,
 )
-from module.agent.tools.files import ORDER, make_file_tools
-from module.files.permissions import system_permissions
-from module.files.resolver import ResourceResolver
-from module.files.schemas import ACTION_DOCS
-from module.files.service import FileService, ModelLimit
-from module.memory.contracts import DailyLogRecord, MemoryEntryCreate
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from agent.spec.context import TaskContext, task_scope
+from agent.tools.files import ORDER, make_file_tools
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 TASK = TaskContext(
@@ -64,7 +64,7 @@ def tools(tmp_path: Path):
     (data / "resources" / "草稿本.md").write_text("# 草稿本\n", encoding="utf-8")
     entries = MemoryEntryService(db_file)
     entries.add(MemoryEntryCreate(content="名字：小李", tags=["主人信息"]))
-    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), settings_doc(db_file), TZ)
     store = DbDailyLog(db_file)
     skills = SkillRegistry()
     skills.register(memory_write_skill())

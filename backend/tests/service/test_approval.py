@@ -1,7 +1,7 @@
 import threading
 import time
 
-from module.agent.approval import (
+from agent.harness.approval import (
     CANCEL_REASON,
     PROCESS_EXIT_REASON,
     REJECT_REASON,

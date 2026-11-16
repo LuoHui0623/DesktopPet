@@ -1,7 +1,7 @@
 # 文件域寻址契约
 
 > 职责：定义 `index` 的单一入参如何被解析成两种视图、解析失败如何报错、资源名注册受什么约束。
-> 依赖：`backend/constants/files.py`（`RESOURCES` 登记处）、`backend/module/agent/tools/files.py`（`IndexArgs`）、`backend/module/files/service.py`（`index`）。
+> 依赖：`agent/files/registry.py`（`RESOURCES` 登记处）、`backend/agent/tools/files.py`（`IndexArgs`）、`backend/agent/files/service.py`（`index`）。
 > 不回答：两种视图的字段与类型分层（见 [VIEW.md](VIEW.md)）、动作清单（见 [ACTIONS.md](ACTIONS.md)）。
 > 状态：已实现（契约与实现一致）。
 

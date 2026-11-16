@@ -1,7 +1,7 @@
 # 形象域
 
 > 职责：定义形象域的边界、概念与阅读路径，汇总形象包、状态、动画资源与悬浮窗交互的权威入口。
-> 依赖：`module/avatar`、`api/routers/avatars`、前端 `service/avatar.service.ts` 与 `modules/pet/`；状态事件来自聊天与连接层。
+> 依赖：`app/avatar`、`api/routers/avatars`、前端 `service/avatar.service.ts` 与 `modules/pet/`；状态事件来自聊天与连接层。
 > 不回答：聊天何时产生状态事件、设置页表单布局、原生菜单与跨平台穿透。
 > 状态：已实现（形象组与人设挂载、形象包、状态、动画资源、悬浮窗命中与穿透）。
 
@@ -64,14 +64,14 @@
                       └─► 状态层（state → AnimationResource）
                             └─► 播放 / 命中与穿透判定
 
-module/avatar ─► GET /api/avatars {persona, active, preset_states, packs} ─► service/avatar.service.ts
+app/avatar ─► GET /api/avatars {persona, active, preset_states, packs} ─► service/avatar.service.ts
 ```
 
 | 组件 | 落点 | 说明 |
 |---|---|---|
-| 形象组、包扫描、manifest 校验、当前启用项 | `module/avatar/avatar_service.py` | 按当前人设扫描组内包，校验 manifest、GIF 元数据、静态主形象与帧尺寸，维护按人设记忆的启用项 |
-| 状态注册表、GIF 与尺寸常量 | `module/avatar/constants.py` | 六态注册表，可登记新状态；`avatar.active.<persona_id>` 记忆键 |
-| 域内契约对象 | `module/avatar/contracts.py` | 目录携带 `persona`、可空 `active`、`preset_states` 与包 `static` |
+| 形象组、包扫描、manifest 校验、当前启用项 | `app/avatar/avatar_service.py` | 按当前人设扫描组内包，校验 manifest、GIF 元数据、静态主形象与帧尺寸，维护按人设记忆的启用项 |
+| 状态注册表、GIF 与尺寸常量 | `app/avatar/constants.py` | 六态注册表，可登记新状态；`avatar.active.<persona_id>` 记忆键 |
+| 域内契约对象 | `app/avatar/contracts.py` | 目录携带 `persona`、可空 `active`、`preset_states` 与包 `static` |
 | 目录与资源接口 | `api/routers/avatars.py`、`api/schemas/avatars.py` | 下发目录；按 `<persona_id>/<pack_id>/<path>` 提供带令牌的资源响应 |
 | 资源下载与释放 | `frontend/src/service/avatar.service.ts` | 目录读取、带令牌下载、加载期解码与释放 |
 | 动画解析、状态层、行为解析器 | `frontend/src/modules/pet/animation-resource.ts`、`avatar-state.ts`、`avatar-decode.ts` | 纯数据与适配器，不与 React 组件耦合 |

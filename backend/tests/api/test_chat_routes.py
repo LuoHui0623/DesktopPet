@@ -7,24 +7,25 @@ import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
+from agent.capabilities.chat.chat_service import ChatService
+from agent.llm.active import LlmActiveSettings
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.memory.contracts import DailyLogRecord, DailyLogRole
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.memory_service import MemoryReadError
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
 from config.settings import ModelSettingsSource
 from infra.events.bus import EventBus
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.prompt import load_templates
-from module.chat.chat_service import ChatService
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.memory.contracts import DailyLogRecord, DailyLogRole
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.memory_service import MemoryReadError
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -62,7 +63,7 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, settings_doc(db_file), DbPersonaVersions(db_file))
 
 
 LONG = "很" * 41 + "。"
@@ -102,13 +103,13 @@ def make_client(tmp_path: Path, outcomes: list, keys: dict | None = None, memory
         builder=lambda spec: fake,
         environ=environ,
         usage_sink=db_usage_sink(db_file),
-        active_store=SettingsService(db_file),
+        active=LlmActiveSettings(settings_doc(db_file)),
     )
     llm.start()
     bus = EventBus()
     chat = ChatService(
         llm,
-        DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ),
+        DailyLogService(DbDailyLog(db_file), settings_doc(db_file), TZ),
         persona_service(tmp_path, db_file),
         load_templates(),
         db_usage_sink(db_file),

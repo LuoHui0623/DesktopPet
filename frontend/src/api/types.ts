@@ -249,6 +249,83 @@ export interface StructuredMemoryUpdate {
   text: string;
 }
 
+export type MemoryEntryState = "enabled" | "disabled";
+
+/** 条目读回视图：携带 revision 作乐观锁；不含已弃用的 source_ref。 */
+export interface MemoryEntryView {
+  id: number;
+  content: string;
+  tags: string[];
+  status_state: MemoryEntryState;
+  status_reason: string | null;
+  revision: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EntryListResponse {
+  entries: MemoryEntryView[];
+}
+
+/** 新增条目沿用 AI 写入同一契约（Q8）；人工编辑不写 source_ref。 */
+export interface MemoryEntryCreate {
+  content: string;
+  tags: string[];
+}
+
+export interface EntryAddResult {
+  entry: MemoryEntryView;
+  reused: boolean;
+  new_tags: string[];
+}
+
+/** 人工修改请求：content/tags 至少改一项，必带预期 revision（Q27 乐观冲突检测）。 */
+export interface EntryUpdateRequest {
+  content?: string;
+  tags?: string[];
+  expected_revision: number;
+}
+
+export interface EntryDisableRequest {
+  reason: string;
+}
+
+export interface TagListResponse {
+  tags: string[];
+}
+
+export interface TagMergeRequest {
+  source: string;
+  target: string;
+}
+
+/** 单条条目合并/改名前后的有序路径（Q27/第 29 条预览）。 */
+export interface TagPathChange {
+  entry_id: number;
+  content: string;
+  before: string[];
+  after: string[];
+}
+
+export interface TagMergePreview {
+  source: string;
+  target: string;
+  target_existed: boolean;
+  affected: number;
+  changes: TagPathChange[];
+}
+
+export interface TagMergeResult {
+  source: string;
+  target: string;
+  affected: number;
+  target_existed: boolean;
+}
+
+export type MemoryEntriesQuery = {
+  status?: MemoryEntryState;
+};
+
 export interface PersonaItem {
   id: string;
   name: string | null;
@@ -370,9 +447,19 @@ export interface SchedulerLedger {
   total: number;
 }
 
+/** 模型分组：provider 清单与当前生效模型，统一由设置快照下发。 */
+export interface ModelSettingsView {
+  providers: LlmProvidersResponse;
+  active: ActiveLlmResponse;
+}
+
 export interface SettingsView {
+  /** 快照版本，写回配置时作为 `If-Match` 回传（Q7 乐观锁）。 */
+  version: number;
   perception: PerceptionConfig;
   proactive: SchedulerConfig;
   avatar: AvatarsResponse;
+  persona: PersonasResponse;
+  model: ModelSettingsView;
   interaction: InteractionConfig;
 }

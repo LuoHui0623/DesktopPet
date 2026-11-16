@@ -3,7 +3,7 @@
 > 职责：定义观测器看什么、产出什么，解析器如何把观测变成“可进对话的 current”与“可触发管线的 Trigger”。
 > 依赖：观测域内的常量与配置；解析器通过注入端口读 `chat_active` 与发送台账。不依赖 chat / llm / proactive 的实现。
 > 不回答：Win32 采集细节（见 [PERCEPTION.md](PERCEPTION.md) 的「采集方式」）、话术内容（见 `docs/CHAT.md` / `docs/PROACTIVE.md`）、模型选择（见 `docs/LLM.md`）。
-> 状态：已实现。契约已落地；观测器、解析器、调度仍集中在 `service/perception/`，包拆分未定。
+> 状态：已实现。契约已落地；观测器、解析器、调度仍集中在 `agent/capabilities/perception/`，包拆分未定。
 
 ## 定位
 
@@ -59,11 +59,11 @@ chat → llm
 
 | 组件 | 目标落点 | 现状 |
 |---|---|---|
-| 观测器 | `module/perception/observer.py`（或保留 `service/perception/service.py`） | `service/perception/service.py` |
-| 解析器 | `module/perception/parser.py` | `service/perception/parser.py`，内含主题映射与闸门 |
-| 闸门配置 / 台账 | 解析器读配置与台账；管线写台账 | `service/perception/scheduler.py`，职责待拆 |
-| 运行时 | 观测域单一时钟：`observer.tick → parser.consume → on_trigger` | `service/perception/runtime.py` |
-| 管线 | `module/proactive/pipeline.py` | 已实现，由运行时投入工作线程执行 |
+| 观测器 | `agent/capabilities/perception/collector/service.py`（或保留 `agent/capabilities/perception/collector/service.py`） | `agent/capabilities/perception/collector/service.py` |
+| 解析器 | `agent/capabilities/perception/events/parser.py` | `agent/capabilities/perception/events/parser.py`，内含主题映射与闸门 |
+| 闸门配置 / 台账 | 解析器读配置与台账；管线写台账 | `agent/capabilities/perception/gate/scheduler.py`，职责待拆 |
+| 运行时 | 观测域单一时钟：`observer.tick → parser.consume → on_trigger` | `service/tick.py` |
+| 管线 | `agent/capabilities/proactive/pipeline.py` | 已实现，由运行时投入工作线程执行 |
 
 包迁移未定；本文只约定“谁依赖谁”，不把包名写死。
 
@@ -234,7 +234,7 @@ parser 产出 Trigger
 | 对话进行中 | 不开口（注入 `chat_active` 端口） | 否 |
 | 深夜 23:00–05:00 | 只允许 `late_night` | 否 |
 
-台账：`app_setting` 的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线在发送成功后写；跨日归零。
+台账：数据库 `runtime_state` 表的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线在发送成功后写；跨日归零。
 
 已知限制：最小间隔依赖进程内 `last_sent_at`，重启后从空开始；台账只保当日计数，不保上次发送时刻。
 
@@ -278,7 +278,7 @@ parser 产出 Trigger
 
 | 项 | 现状 | 目标 |
 |---|---|---|
-| 包名 | `service/perception` | 是否迁 `module/perception` 未定 |
+| 包名 | `agent/capabilities/perception` | 是否迁 `agent/capabilities/perception` 未定 |
 | 解析器职责 | 同时做事件、主题、闸门 | 保留“解析器集中判定”，但从观测器类中拆出 |
 | 调度 | 配置 + 台账 + 闸门同包 | 闸门归解析器；台账写归管线 |
 | `PerceptionEvent.topic` | 事件自带 topic | 移除；topic 归解析器 |

@@ -33,7 +33,7 @@ export function InteractionSettings({
   onSaved: (view: SettingsView) => void;
 }) {
   const [draft, setDraft] = useState(() => toDraft(settings.interaction));
-  const { busy, error, notice, save } = useSettingsSave(onSaved);
+  const { busy, error, notice, save } = useSettingsSave(settings.version, onSaved);
 
   // 草稿初值来自后端下发的读模型；保存后返回的读模型与草稿一致，切换 tab 会重新挂载。
   const dwell = parseNumberField(
@@ -56,13 +56,16 @@ export function InteractionSettings({
   const onSave = () => {
     if (invalid) return;
     save(
-      () =>
-        saveInteractionConfig({
-          report_enabled_kinds: INTERACTION_KINDS.filter((kind) => draft.enabled[kind]),
-          hover_dwell_ms: dwell.value,
-          report_interval_ms: interval.value,
-          reaction_ms: reaction.value,
-        }),
+      (version) =>
+        saveInteractionConfig(
+          {
+            report_enabled_kinds: INTERACTION_KINDS.filter((kind) => draft.enabled[kind]),
+            hover_dwell_ms: dwell.value,
+            report_interval_ms: interval.value,
+            reaction_ms: reaction.value,
+          },
+          version,
+        ),
       "互动设置已保存，立即生效",
     );
   };

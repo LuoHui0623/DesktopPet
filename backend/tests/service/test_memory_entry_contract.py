@@ -1,32 +1,67 @@
 import pytest
 from pydantic import ValidationError
 
-from module.memory.contracts import TAG_MAX_CHARS, MemoryEntryCreate, MemoryEntryUpdate
+from agent.memory.contracts import TAG_MAX_CHARS, MemoryEntryCreate, MemoryEntryUpdate
 
 
-def test_accepts_valid_entry_and_defaults_priority():
+def test_accepts_valid_entry():
     entry = MemoryEntryCreate(content=" 脆柿子 ", tags=["喜欢", "水果"])
     assert entry.content == "脆柿子"
     assert entry.tags == ["喜欢", "水果"]
-    assert entry.priority == 2
     assert entry.source_ref is None
 
 
-@pytest.mark.parametrize("priority", [1, 2, 3])
-def test_accepts_priority_range(priority: int):
-    assert MemoryEntryCreate(content="值", tags=["分区"], priority=priority).priority == priority
-
-
-@pytest.mark.parametrize("priority", [0, 4])
-def test_rejects_priority_out_of_range(priority: int):
-    with pytest.raises(ValidationError):
-        MemoryEntryCreate(content="值", tags=["分区"], priority=priority)
+def test_create_and_update_contracts_have_no_priority_field():
+    """Q26/T-11：priority 已退役，写入与人工修改契约都不再接受该字段。"""
+    assert "priority" not in MemoryEntryCreate.model_fields
+    assert "priority" not in MemoryEntryUpdate.model_fields
 
 
 @pytest.mark.parametrize("content", ["", "   "])
 def test_rejects_empty_content(content: str):
     with pytest.raises(ValidationError, match="条目内容不能为空"):
         MemoryEntryCreate(content=content, tags=["分区"])
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "喜欢美式\n备注",
+        "喜欢美式\r备注",
+        "喜欢美式\t备注",
+        "脆柿子、葡萄",
+        "# 标题",
+        "- 列表",
+        "/路径",
+        "> 引用",
+        "*强调",
+        "一" * 31,
+    ],
+)
+def test_create_rejects_content_violating_r12(content: str):
+    """R12：单行、≤30 字、禁换行/制表/顿号、禁行首 Markdown 结构字符；失败拒绝整条。"""
+    with pytest.raises(ValidationError):
+        MemoryEntryCreate(content=content, tags=["分区"])
+
+
+def test_create_accepts_exactly_thirty_characters():
+    content = "一" * 30
+    assert MemoryEntryCreate(content=content, tags=["分区"]).content == content
+
+
+def test_create_keeps_valid_content_verbatim():
+    """合法正文原样保留：内部空格与全角逗号不转义、不截断（顿号才禁）。"""
+    content = "不喜欢 太甜的甜点，除非是生日"
+    assert MemoryEntryCreate(content=content, tags=["分区"]).content == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    ["喜欢美式\n备注", "脆柿子、葡萄", "# 标题", "一" * 31],
+)
+def test_update_rejects_content_violating_r12(content: str):
+    with pytest.raises(ValidationError):
+        MemoryEntryUpdate(content=content)
 
 
 @pytest.mark.parametrize("tags", [[], [""], ["   "]])
@@ -83,8 +118,6 @@ def test_update_validates_and_dedupes_tags():
         MemoryEntryUpdate(tags=["喜、欢"])
 
 
-def test_update_rejects_blank_content_and_out_of_range_priority():
+def test_update_rejects_blank_content():
     with pytest.raises(ValidationError, match="条目内容不能为空"):
         MemoryEntryUpdate(content="  ")
-    with pytest.raises(ValidationError):
-        MemoryEntryUpdate(priority=4)

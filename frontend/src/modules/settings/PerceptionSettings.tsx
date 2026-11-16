@@ -42,7 +42,7 @@ export function PerceptionSettings({
   const [draft, setDraft] = useState(() => toDraft(settings.perception));
   const [clearNotice, setClearNotice] = useState<string | null>(null);
   const [clearError, setClearError] = useState<string | null>(null);
-  const { busy, error, notice, save } = useSettingsSave(onSaved);
+  const { busy, error, notice, save } = useSettingsSave(settings.version, onSaved);
 
   // 草稿初值来自后端下发的读模型；保存后返回的读模型与草稿一致，切换 tab 会重新挂载。
   const away = parseNumberField(
@@ -56,13 +56,16 @@ export function PerceptionSettings({
   const onSave = () => {
     if (invalid) return;
     save(
-      () =>
-        savePerceptionConfig({
-          enabled: draft.enabled,
-          foreground_enabled: draft.foregroundEnabled,
-          idle_away_minutes: away.value,
-          sit_minutes: sit.value,
-        }),
+      (version) =>
+        savePerceptionConfig(
+          {
+            enabled: draft.enabled,
+            foreground_enabled: draft.foregroundEnabled,
+            idle_away_minutes: away.value,
+            sit_minutes: sit.value,
+          },
+          version,
+        ),
       "感知设置已保存，立即生效",
     );
   };

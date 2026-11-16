@@ -1,67 +1,28 @@
-import { useCallback, useEffect, useState } from "react";
-import type { PersonaItem, PersonasResponse } from "../../api/types";
-import { describeRequestError } from "../../service/api-client";
-import { loadPersonas, switchPersona } from "../../service/persona.service";
+import type { PersonaItem, SettingsView } from "../../api/types";
+import { saveActivePersona } from "../../service/settings.service";
 import { canActivate, personaStatusText } from "./persona-view";
+import { useSettingsSave } from "./use-settings-save";
 
 const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
 const headingStyle = { fontSize: 15, margin: 0 } as const;
 const buttonStyle = { padding: "2px 10px", fontSize: 12 } as const;
 
-export function PersonaSettings({ onChanged }: { onChanged?: () => void }) {
-  const [data, setData] = useState<PersonasResponse | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const refresh = useCallback(
-    () =>
-      loadPersonas().then(
-        (next) => {
-          setData(next);
-          setLoadError(null);
-        },
-        (error: unknown) => {
-          setLoadError(describeRequestError(error));
-        },
-      ),
-    [],
-  );
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+export function PersonaSettings({
+  settings,
+  onSaved,
+}: {
+  settings: SettingsView;
+  onSaved: (view: SettingsView) => void;
+}) {
+  const { busy, error, notice, save } = useSettingsSave(settings.version, onSaved);
+  const data = settings.persona;
 
   const activate = (persona: PersonaItem) => {
-    setBusy(true);
-    setNotice(null);
-    setActionError(null);
-    switchPersona(persona.id)
-      .then(
-        (next) => {
-          setData(next);
-          setNotice(
-            `已启用“${persona.name ?? persona.id}”。下一次对话起使用新人设，开始新会话，近期对话保留`,
-          );
-          onChanged?.();
-        },
-        (error: unknown) => {
-          setActionError(describeRequestError(error));
-        },
-      )
-      .finally(() => setBusy(false));
-  };
-
-  if (data === null) {
-    return loadError ? (
-      <p role="alert" style={{ color: "#991b1b" }}>
-        {loadError}
-      </p>
-    ) : (
-      <p style={{ color: "#777" }}>加载中…</p>
+    save(
+      (version) => saveActivePersona(persona.id, version),
+      `已启用“${persona.name ?? persona.id}”。下一次对话起使用新人设，开始新会话，近期对话保留`,
     );
-  }
+  };
 
   return (
     <div>
@@ -114,17 +75,12 @@ export function PersonaSettings({ onChanged }: { onChanged?: () => void }) {
             </li>
           ))}
         </ul>
-        {actionError && (
+        {error && (
           <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
-            {actionError}
+            {error}
           </p>
         )}
         {notice && <p style={{ color: "#166534", fontSize: 13, margin: 0 }}>{notice}</p>}
-        {loadError && (
-          <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
-            {loadError}
-          </p>
-        )}
       </section>
     </div>
   );

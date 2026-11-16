@@ -5,11 +5,11 @@ from urllib.parse import quote
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.constants import DEFAULT_PERSONA_ID
 from api.app import create_app
-from constants.agent import DEFAULT_PERSONA_ID
+from app.avatar.avatar_service import AvatarService
+from app.avatar.constants import PRESET_STATES, StateRegistry
 from constants.path import AVATAR_SOURCE_DIR
-from module.avatar.avatar_service import AvatarService
-from module.avatar.constants import PRESET_STATES, StateRegistry
 
 TOKEN = "avatar-token"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -19,14 +19,13 @@ ASSET_BASE = f"/api/avatars/{PERSONA_SEGMENT}/default"
 
 
 class FakeSettings:
+    """形象域只读 `avatar` 段；写入由设置协调器负责，路由测试不落盘。"""
+
     def __init__(self) -> None:
-        self.values: dict[str, str] = {}
+        self.values: dict[str, dict[str, str]] = {}
 
-    def get(self, key: str) -> str | None:
-        return self.values.get(key)
-
-    def put(self, key: str, value: str) -> None:
-        self.values[key] = value
+    def section(self, name: str) -> dict[str, str]:
+        return self.values.get(name, {})
 
 
 def make_service(directory: Path, registry: StateRegistry | None = None) -> AvatarService:
@@ -85,30 +84,6 @@ def test_lists_default_pack_as_active(avatars_dir: Path):
         "frames": [f"idle_{index}.png" for index in range(8)],
         "frame_ms": 160,
     }
-
-
-def test_activates_a_known_pack(avatars_dir: Path):
-    response = make_client(avatars_dir).put(
-        "/api/avatars/active", headers=AUTH, json={"id": "default"}
-    )
-
-    assert response.status_code == 200
-    assert response.json()["active"] == "default"
-
-
-def test_activate_rejects_an_unknown_pack(avatars_dir: Path):
-    response = make_client(avatars_dir).put(
-        "/api/avatars/active", headers=AUTH, json={"id": "missing"}
-    )
-
-    assert response.status_code == 404
-    assert response.json()["error"]["code"] == "avatar_not_found"
-
-
-def test_activate_requires_token(avatars_dir: Path):
-    response = make_client(avatars_dir).put("/api/avatars/active", json={"id": "default"})
-
-    assert response.status_code == 401
 
 
 def test_serves_pack_frames_with_token(avatars_dir: Path):

@@ -19,13 +19,14 @@ from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agent.llm.active import LlmActiveSettings
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from app.settings.document import SettingsDocument
 from config.settings import DefaultModel, ModelSettingsError, ModelSettingsSource
 from constants.path import DATA_DIR
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.settings.settings_service import SettingsService
 from scripts.structured_candidates import (
     PROMPT_VERSION,
     CandidateError,
@@ -50,7 +51,7 @@ SYSTEM_PROMPT = """你是桌面宠物的记忆整理助手。把结构化记忆 
 2. 只有源行用「、」或「；」并列多个独立事实时才拆成多条；不要按「，」或「。」拆句。没有并列就只输出一条。
 3. tags 必须原样包含源行所属分区名，再给 1–2 个类别 tag；每个 tag 2–10 字，只能含中文、英文、数字，不含标点、空格或分隔符。
 4. 只能使用源行已有的事实与词，不得补充、推断或改写事实含义。
-5. 日期分区由程序自动加「临时」tag，并决定 created_at/priority；你不要输出「临时」，也不要输出日期 tag。
+5. 日期分区由程序自动加「临时」tag，并决定 created_at；你不要输出「临时」，也不要输出日期 tag。
 6. 每条源行至少输出一条候选。只输出 JSON，不要解释、不要代码块：
 {"entries":[{"source_ref":"structured.md:2","content":"...","tags":["分区","类别"]}]}"""
 
@@ -150,10 +151,13 @@ def generate(
     finally:
         conn.close()
 
+    document = SettingsDocument(data_dir / "settings.json")
+    document.load()
+
     llm = LlmService(
         ModelSettingsSource(),
         usage_sink=db_usage_sink(db_file),
-        active_store=SettingsService(db_file),
+        active=LlmActiveSettings(document),
     )
     try:
         llm.start()

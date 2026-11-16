@@ -1,8 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.harness.approval import ApprovalDraft, ApprovalRegistry
 from api.app import create_app
-from module.agent.approval import ApprovalDraft, ApprovalRegistry
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}

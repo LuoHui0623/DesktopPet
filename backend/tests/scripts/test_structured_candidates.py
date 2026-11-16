@@ -51,8 +51,6 @@ def test_parse_source_collects_items_sections_and_dates():
     assert [item.line for item in doc.items] == [2, 3, 5]
     assert [item.section for item in doc.items] == ["稳定", "稳定", "今天的点滴"]
     assert doc.items[2].date == "2026-11-01"
-    assert doc.items[2].priority == 1
-    assert doc.items[0].priority == 2
     assert doc.items[0].created_at == "2026-11-01T00:00:00+08:00"
     assert doc.items[2].created_at == "2026-11-01T00:00:00+08:00"
     assert doc.earliest_date == "2026-11-01"
@@ -74,8 +72,7 @@ def test_build_candidate_adds_section_and_temporary_tags():
     assert entries[0]["tags"] == ["稳定", "水果"]
     assert entries[-1]["tags"] == ["今天的点滴", "临时"]
     assert all("2026-11-01" not in tags for entry in entries for tags in entry["tags"])
-    assert entries[-1]["priority"] == 1
-    assert entries[0]["priority"] == 2
+    assert all("priority" not in entry for entry in entries)
     validate_candidate(payload, doc)
 
 

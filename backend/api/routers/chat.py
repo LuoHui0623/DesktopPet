@@ -1,11 +1,11 @@
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
 
+from agent.capabilities.chat.chat_service import ChatError, ChatService
+from agent.capabilities.chat.chat_service import ChatRequest as ServiceChatRequest
 from api.errors import error_response
 from api.event_publisher import reply_message_out, source_out
 from api.schemas.chat import ChatHistoryResponse, ChatReplyResponse, ChatRequest
-from module.chat.chat_service import ChatError, ChatService
-from module.chat.chat_service import ChatRequest as ServiceChatRequest
 
 router = APIRouter(prefix="/api", tags=["chat"])
 

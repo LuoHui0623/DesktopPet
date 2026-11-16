@@ -1,7 +1,7 @@
 import asyncio
 
-from service.perception.events import Trigger
-from service.perception.runtime import PerceptionRuntime
+from agent.capabilities.perception.events.events import Trigger
+from service.tick import PerceptionRuntime
 
 
 class FakeService:

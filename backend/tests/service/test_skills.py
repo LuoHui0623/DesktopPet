@@ -1,8 +1,8 @@
 import pytest
 
-from constants.agent import READ_ONLY_TOOLS
-from module.agent.orchestrator import read_only_tools
-from module.agent.skills import (
+from agent.constants import READ_ONLY_TOOLS
+from agent.harness.dispatch import read_only_tools
+from agent.skills.registry import (
     DRAFT_NOTE_SKILL,
     DRAFT_NOTE_TOOLS,
     MEMORY_RETRIEVE_SKILL,

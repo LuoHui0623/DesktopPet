@@ -3,13 +3,13 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
-from service.perception.constants import (
+from agent.capabilities.perception.constants import (
     MAX_AWAY_MINUTES,
     MAX_SIT_MINUTES,
     MIN_AWAY_MINUTES,
     MIN_SIT_MINUTES,
 )
-from service.perception.settings import PerceptionConfig
+from agent.capabilities.perception.gate.settings import PerceptionConfig
 
 PerceptionKind = Literal[
     "idle",

@@ -1,7 +1,7 @@
 # 形象组与人设挂载
 
 > 职责：定义形象组、人设 id 的归属方式、组内包的启用规则、目录与接口变化。
-> 依赖：`PersonaService` 的当前人设、`module/avatar` 的包扫描与启用项、前端 `avatar.service.ts` 与设置页。
+> 依赖：`PersonaService` 的当前人设、`app/avatar` 的包扫描与启用项、前端 `avatar.service.ts` 与设置页。
 > 不回答：人设内容与切换语义、状态注册、动画解码、窗口命中与穿透。
 > 状态：已实现。
 
@@ -106,7 +106,7 @@ GET /api/avatars/<persona_id>/<pack_id>/<path>
 
 ### 启用接口
 
-`PUT /api/avatars/active` 与 `PUT /api/settings/avatar` 的请求体仍是包 id：
+`PUT /api/settings/avatar` 的请求体仍是包 id（带 `If-Match`）：
 
 ```json
 { "id": "default" }

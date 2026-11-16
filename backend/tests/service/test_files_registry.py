@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from constants.files import (
+from agent.files.registry import (
     ACTION_APPEND,
     ACTION_READ,
     DRAFT,

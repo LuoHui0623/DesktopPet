@@ -1,11 +1,11 @@
 from fastapi.testclient import TestClient
 
+from agent.llm.contracts import UsageRecord
+from agent.llm.usage_service import TurnUsage
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
 from infra.events.bus import EventBus
 from infra.llm.usage import CallStart, UsageSample
-from module.llm.contracts import UsageRecord
-from module.llm.usage_service import TurnUsage
 
 TOKEN = "panel-token"
 AUTH = {"X-Pet-Token": TOKEN}

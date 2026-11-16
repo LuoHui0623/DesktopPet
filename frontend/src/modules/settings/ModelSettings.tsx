@@ -1,12 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import type { ActiveModelInfo, ProviderInfo } from "../../api/types";
+import { useState } from "react";
+import type { ActiveModelInfo, ProviderInfo, SettingsView } from "../../api/types";
 import { describeRequestError } from "../../service/api-client";
 import {
-  loadModelSettings,
   reloadModelConfig,
   switchActiveModel,
   type ModelCapability,
-  type ModelSettingsSnapshot,
 } from "../../service/model.service";
 import {
   CAPABILITY_LABELS,
@@ -15,6 +13,7 @@ import {
   selectedValue,
   type ModelOption,
 } from "./model-options";
+import { useSettingsSave } from "./use-settings-save";
 
 const CAPABILITIES: ModelCapability[] = ["chat", "consolidate"];
 const SOURCE_LABELS: Record<ActiveModelInfo["source"], string> = {
@@ -26,84 +25,48 @@ const sectionStyle = { display: "grid", gap: 8, marginBottom: 20 } as const;
 const headingStyle = { fontSize: 15, margin: 0 } as const;
 const buttonStyle = { padding: "4px 12px" } as const;
 
-export function ModelSettings() {
-  const [snapshot, setSnapshot] = useState<ModelSettingsSnapshot | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  const refresh = useCallback(
-    () =>
-      loadModelSettings().then(
-        (next) => {
-          setSnapshot(next);
-          setLoadError(null);
-        },
-        (error: unknown) => {
-          setLoadError(describeRequestError(error));
-        },
-      ),
-    [],
-  );
-
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
+export function ModelSettings({
+  settings,
+  onSaved,
+  onReloaded,
+}: {
+  settings: SettingsView;
+  onSaved: (view: SettingsView) => void;
+  onReloaded: () => void;
+}) {
+  const { busy, error: actionError, notice, save } = useSettingsSave(settings.version, onSaved);
+  const [reloadError, setReloadError] = useState<string | null>(null);
+  const [reloadNotice, setReloadNotice] = useState<string | null>(null);
+  const [reloading, setReloading] = useState(false);
 
   const onSwitch = (capability: ModelCapability, option: ModelOption) => {
-    setBusy(true);
-    setNotice(null);
-    setActionError(null);
-    switchActiveModel(capability, { provider: option.provider, model: option.model })
-      .then(
-        () => {
-          setNotice(`${CAPABILITY_LABELS[capability]}已切换为 ${option.label}，下一次对话生效`);
-        },
-        (error: unknown) => {
-          setActionError(describeRequestError(error));
-        },
-      )
-      .finally(() => {
-        setBusy(false);
-        void refresh();
-      });
+    setReloadNotice(null);
+    setReloadError(null);
+    save(
+      (version) =>
+        switchActiveModel(capability, { provider: option.provider, model: option.model }, version),
+      `${CAPABILITY_LABELS[capability]}已切换为 ${option.label}，下一次对话生效`,
+    );
   };
 
   const onReload = () => {
-    setBusy(true);
-    setNotice(null);
-    setActionError(null);
+    setReloading(true);
+    setReloadNotice(null);
+    setReloadError(null);
     reloadModelConfig()
       .then(
         (result) => {
-          setNotice(`配置已重载，版本 ${result.version}`);
+          setReloadNotice(`配置已重载，版本 ${result.version}`);
+          onReloaded();
         },
         (error: unknown) => {
-          setActionError(`${describeRequestError(error)}（仍使用旧配置）`);
+          setReloadError(`${describeRequestError(error)}（仍使用旧配置）`);
         },
       )
-      .finally(() => {
-        setBusy(false);
-        void refresh();
-      });
+      .finally(() => setReloading(false));
   };
 
-  if (snapshot === null) {
-    return (
-      <section>
-        {loadError ? (
-          <p role="alert" style={{ color: "#991b1b" }}>
-            {loadError}
-          </p>
-        ) : (
-          <p style={{ color: "#777" }}>加载中…</p>
-        )}
-      </section>
-    );
-  }
-
-  const { providers, active } = snapshot;
+  const { providers, active } = settings.model;
   const { warnings, last_reload_errors: reloadErrors } = providers;
 
   return (
@@ -177,7 +140,7 @@ export function ModelSettings() {
       <section style={sectionStyle}>
         <h2 style={headingStyle}>配置重载</h2>
         <div>
-          <button type="button" onClick={onReload} disabled={busy} style={buttonStyle}>
+          <button type="button" onClick={onReload} disabled={reloading} style={buttonStyle}>
             重新加载配置
           </button>
         </div>
@@ -191,16 +154,19 @@ export function ModelSettings() {
             </ul>
           </div>
         )}
+        {reloadError && (
+          <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
+            {reloadError}
+          </p>
+        )}
         {actionError && (
           <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
             {actionError}
           </p>
         )}
         {notice && <p style={{ color: "#166534", fontSize: 13, margin: 0 }}>{notice}</p>}
-        {loadError && (
-          <p role="alert" style={{ color: "#991b1b", fontSize: 13, margin: 0 }}>
-            {loadError}
-          </p>
+        {reloadNotice && (
+          <p style={{ color: "#166534", fontSize: 13, margin: 0 }}>{reloadNotice}</p>
         )}
       </section>
     </div>

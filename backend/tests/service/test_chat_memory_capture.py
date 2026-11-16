@@ -5,29 +5,29 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage
 
+from agent.capabilities.chat.chat_service import ChatRequest, ChatService
+from agent.files.resolver import ResourceResolver
+from agent.files.service import FileService, ModelLimit
+from agent.harness.approval import ApprovalRegistry
+from agent.harness.dispatch import Orchestrator
+from agent.harness.loop import SubAgent
+from agent.harness.repository import DbAgentRuns
+from agent.harness.review import ReviewService
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
+from agent.skills.registry import SkillRegistry, memory_write_skill
+from agent.tools.files import make_file_tools
+from agent.tools.memory import make_memory_tools
 from config.settings import ModelSettingsSource
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.approval import ApprovalRegistry
-from module.agent.orchestrator import Orchestrator
-from module.agent.prompt import load_templates
-from module.agent.repository import DbAgentRuns
-from module.agent.review import ReviewService
-from module.agent.skills import SkillRegistry, memory_write_skill
-from module.agent.subagent import SubAgent
-from module.agent.tools.files import make_file_tools
-from module.agent.tools.memory import make_memory_tools
-from module.chat.chat_service import ChatRequest, ChatService
-from module.files.resolver import ResourceResolver
-from module.files.service import FileService, ModelLimit
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 CARD_TEXT = "role:\n  名字: 小桌\n  人设: 陪伴\npersonality:\n  - 温和\n"
@@ -41,7 +41,7 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, settings_doc(db_file), DbPersonaVersions(db_file))
 
 
 LLM_YAML = """
@@ -170,7 +170,7 @@ def build_chat(tmp_path: Path, outcomes: list[str], events: RecordingEvents):
         usage_sink=db_usage_sink(db_file),
     )
     llm.start()
-    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ)
+    daily = DailyLogService(DbDailyLog(db_file), settings_doc(db_file), TZ)
     entries = MemoryEntryService(db_file)
     skills = SkillRegistry()
     skills.register(memory_write_skill())
@@ -289,7 +289,6 @@ def test_legacy_temporary_setting_does_not_block_the_dispatched_write(tmp_path: 
         ],
         events,
     )
-    SettingsService(env["db_file"]).put("memory.temporary_mode", "true")
     result = ask(env["chat"], text)
     assert result.text == "记好啦。"
     assert result.recorded is True

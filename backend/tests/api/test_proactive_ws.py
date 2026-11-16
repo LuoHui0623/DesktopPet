@@ -6,29 +6,31 @@ from zoneinfo import ZoneInfo
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
+from agent.capabilities.chat.chat_service import ChatService
+from agent.capabilities.perception.constants import SCHEDULER_SENT_KEY
+from agent.capabilities.perception.events.events import Trigger
+from agent.capabilities.perception.gate.scheduler import (
+    SchedulerLedgerService,
+    SchedulerRuntime,
+    SchedulerSettings,
+)
+from agent.capabilities.proactive.pipeline import ProactivePipeline
+from agent.llm.active import LlmActiveSettings
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
 from config.settings import ModelSettingsSource
 from infra.events.bus import EventBus
 from infra.store.db import connect
+from infra.store.kv import RuntimeStateStore
 from infra.store.migrate import migrate
-from module.agent.prompt import load_templates
-from module.chat.chat_service import ChatService
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.memory.daily_log_service import DailyLogService
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.proactive import ProactivePipeline
-from module.settings.settings_service import SettingsService
-from service.perception.constants import SCHEDULER_SENT_KEY
-from service.perception.events import Trigger
-from service.perception.scheduler import (
-    SchedulerLedgerService,
-    SchedulerRuntime,
-    SchedulerSettings,
-)
+from tests.support import settings_doc
 
 TOKEN = "test-token-value"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -73,7 +75,7 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, settings_doc(db_file), DbPersonaVersions(db_file))
 
 
 def make_env(tmp_path: Path, outcomes: list[str]):
@@ -90,10 +92,10 @@ def make_env(tmp_path: Path, outcomes: list[str]):
         builder=lambda spec: fake,
         environ=environ,
         usage_sink=db_usage_sink(db_file),
-        active_store=SettingsService(db_file),
+        active=LlmActiveSettings(settings_doc(db_file)),
     )
     llm.start()
-    settings = SettingsService(db_file)
+    settings = settings_doc(db_file)
     bus = EventBus()
     publisher = BusEventPublisher(bus)
     chat = ChatService(
@@ -106,7 +108,7 @@ def make_env(tmp_path: Path, outcomes: list[str]):
     )
     scheduler = SchedulerRuntime(
         SchedulerSettings(settings),
-        SchedulerLedgerService(settings, TZ),
+        SchedulerLedgerService(RuntimeStateStore(db_file), TZ),
         timezone=TZ,
         clock=lambda zone: AT,
     )
@@ -156,7 +158,7 @@ def test_proactive_trigger_publishes_message_and_logs_a_plain_reply(tmp_path: Pa
     assert "source" not in columns
     assert [tuple(row) for row in rows] == [("me", "起来动动吧。")]
 
-    ledger = json.loads(SettingsService(db_file).get(SCHEDULER_SENT_KEY) or "{}")
+    ledger = json.loads(RuntimeStateStore(db_file).get(SCHEDULER_SENT_KEY) or "{}")
     assert ledger["total"] == 1
     assert ledger["topics"] == {"app_in_use.code": 1}
 

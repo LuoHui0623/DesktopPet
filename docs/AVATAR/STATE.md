@@ -1,7 +1,7 @@
 # 状态层与行为解析
 
 > 职责：定义状态注册表、行为解析器、状态表、缺失状态的回退链与状态扩展方式。
-> 依赖：`module/avatar/constants.py`、前端 `avatar-state.ts`、`service/avatar.service.ts`；行为事件来自聊天与连接层。
+> 依赖：`app/avatar/constants.py`、前端 `avatar-state.ts`、`service/avatar.service.ts`；行为事件来自聊天与连接层。
 > 不回答：事件产生时机、动画解码与播放、掩码与窗口穿透。
 > 状态：已实现。
 
@@ -21,7 +21,7 @@
 
 ## 状态词表与注册表
 
-- 后端 `module/avatar/constants.py` 的 `StateRegistry` 是状态词表的唯一来源。
+- 后端 `app/avatar/constants.py` 的 `StateRegistry` 是状态词表的唯一来源。
 - 内置状态按固定顺序初始化：
 
 ```text

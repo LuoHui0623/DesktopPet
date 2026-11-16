@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from module.agent.workspace import DRAFT_TEMPLATE, prepare_workspace
+from agent.files.workspace import DRAFT_TEMPLATE, prepare_workspace
 
 
 def test_prepare_workspace_creates_dirs_and_draft(tmp_path: Path):

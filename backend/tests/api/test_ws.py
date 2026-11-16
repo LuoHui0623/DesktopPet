@@ -4,13 +4,13 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from agent.harness.approval import ApprovalDraft, ApprovalRegistry
+from agent.llm.usage_service import TurnUsage
 from api.app import create_app
 from api.event_publisher import BusEventPublisher
 from api.schemas.events import ChatChunkEvent, ChatDoneEvent, StatusEvent
 from infra.events.bus import EventBus
 from infra.llm.usage import CallStart, UsageSample
-from module.agent.approval import ApprovalDraft, ApprovalRegistry
-from module.llm.usage_service import TurnUsage
 
 START = "2026-11-01T10:00:00.000+08:00"
 END = "2026-11-01T10:00:01.200+08:00"

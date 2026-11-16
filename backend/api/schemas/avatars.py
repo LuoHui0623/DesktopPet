@@ -1,6 +1,6 @@
 from pydantic import BaseModel, ConfigDict
 
-from module.avatar.contracts import AvatarCatalog
+from app.avatar.contracts import AvatarCatalog
 
 
 class ActivateAvatarIn(BaseModel):

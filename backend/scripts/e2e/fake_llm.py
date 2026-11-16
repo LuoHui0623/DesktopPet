@@ -1,6 +1,7 @@
 """本地假模型服务：提供 OpenAI 兼容的 chat/completions 接口，供端到端验证使用。
 
 回复规则固定：
+- 任务规划者（用户派发的固定第一交接人）把主代理给出的主题与任务原样整理成任务清单。
 - 子代理起草“记住主人的喜好”主题时，直接提交一份声明 memory 工具的草案。
 - 子代理执行“记住主人的喜好”主题时，先 index（target 为 MEMORY）看领域清单，再 read
   资源 structured，然后用 memory(add) 写入；收到观察后直接结束，观察里带失败原因时就把原因
@@ -43,6 +44,8 @@ NOTE_FINISH = "记到草稿本了：周五问主人要不要续费"
 
 
 CHAT_RULES = "【行动规则】"
+PLAN_MARK = "任务规划者"
+PLAN_BLOCK = re.compile(r"【([^】]+)】\n([^\n]+)")
 DISPATCH_TRIGGER = "派发测试"
 UNKNOWN_TOPIC = "天气查询"
 RETRIEVE_TRIGGER = "检索测试"
@@ -210,12 +213,25 @@ def _note_step(body: dict) -> str:
     return json.dumps({"action": "finish", "output": NOTE_FINISH}, ensure_ascii=False)
 
 
+def _plan_reply(request: str) -> str:
+    """任务规划者：把主代理给出的主题与任务原样整理成任务清单。"""
+    tasks = [
+        {"topic": topic.strip(), "task": task.strip()}
+        for topic, task in PLAN_BLOCK.findall(request)
+    ]
+    if not tasks:
+        tasks = [{"topic": "未知任务", "task": _plain(request)}]
+    return json.dumps({"action": "plan", "tasks": tasks}, ensure_ascii=False)
+
+
 def _reply_text(body: dict) -> str:
     messages = body.get("messages", [])
     system = next((str(m.get("content", "")) for m in messages if m.get("role") == "system"), "")
     last_user = next(
         (str(m.get("content", "")) for m in reversed(messages) if m.get("role") == "user"), ""
     )
+    if PLAN_MARK in system:
+        return _plan_reply(last_user)
     if DRAFT_MARK in system:
         if f"【{NOTE_TOPIC}】" in system:
             tools, content = NOTE_DRAFT_TOOLS, NOTE_DRAFT

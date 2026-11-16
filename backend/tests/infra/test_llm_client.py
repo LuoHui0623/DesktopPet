@@ -154,7 +154,7 @@ def test_usage_observer_reaches_already_built_clients(config_dir: Path):
     assert client._observer is observer
 
 
-def test_reload_result_is_the_one_the_facade_exposes():
-    from module.llm import ReloadResult as FacadeReloadResult
+def test_reload_result_is_the_one_the_service_reexports():
+    from agent.llm.llm_service import ReloadResult as ServiceReloadResult
 
-    assert FacadeReloadResult is ReloadResult
+    assert ServiceReloadResult is ReloadResult

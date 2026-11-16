@@ -1,4 +1,4 @@
-from module.memory.index import daily_memory_index
+from agent.memory.index import daily_memory_index
 
 
 def test_daily_memory_is_grouped_by_month_with_sorted_unique_dates():

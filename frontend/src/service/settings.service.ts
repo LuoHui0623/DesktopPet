@@ -6,6 +6,7 @@ import {
   updateSettingsAvatar,
   updateSettingsInteraction,
   updateSettingsPerception,
+  updateSettingsPersona,
   updateSettingsProactive,
 } from "../api/endpoints";
 import type {
@@ -55,36 +56,55 @@ export function loadSchedulerLedger(): Promise<SchedulerLedger> {
   return getApiClient().then(getSchedulerLedger);
 }
 
-export function savePerceptionConfig(config: PerceptionConfig): Promise<SettingsView> {
+export function savePerceptionConfig(
+  config: PerceptionConfig,
+  version: number,
+): Promise<SettingsView> {
   return getApiClient()
-    .then((client) => updateSettingsPerception(client, config))
+    .then((client) => updateSettingsPerception(client, config, version))
     .then(async (view) => {
       await notifyPetSettingsChanged("perception");
       return view;
     });
 }
 
-export function saveProactiveConfig(config: SchedulerConfig): Promise<SettingsView> {
+export function saveProactiveConfig(
+  config: SchedulerConfig,
+  version: number,
+): Promise<SettingsView> {
   return getApiClient()
-    .then((client) => updateSettingsProactive(client, config))
+    .then((client) => updateSettingsProactive(client, config, version))
     .then(async (view) => {
       await notifyPetSettingsChanged("proactive");
       return view;
     });
 }
 
-export function saveActiveAvatar(id: string): Promise<SettingsView> {
+export function saveActiveAvatar(id: string, version: number): Promise<SettingsView> {
   return getApiClient()
-    .then((client) => updateSettingsAvatar(client, id))
+    .then((client) => updateSettingsAvatar(client, id, version))
     .then(async (view) => {
       await notifyPetSettingsChanged("avatar");
       return view;
     });
 }
 
-export function saveInteractionConfig(config: InteractionConfig): Promise<SettingsView> {
+export function saveActivePersona(id: string, version: number): Promise<SettingsView> {
   return getApiClient()
-    .then((client) => updateSettingsInteraction(client, config))
+    .then((client) => updateSettingsPersona(client, id, version))
+    .then(async (view) => {
+      // 人设决定形象组：切换成功后让悬浮窗重新拉取目录并重载形象。
+      await notifyPetSettingsChanged("persona");
+      return view;
+    });
+}
+
+export function saveInteractionConfig(
+  config: InteractionConfig,
+  version: number,
+): Promise<SettingsView> {
+  return getApiClient()
+    .then((client) => updateSettingsInteraction(client, config, version))
     .then(async (view) => {
       await notifyPetSettingsChanged("interaction");
       return view;

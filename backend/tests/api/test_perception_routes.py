@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -6,12 +5,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.capabilities.perception.collector.service import PerceptionService
 from api.app import create_app
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.settings.settings_service import SettingsService
-from service.perception import PerceptionService
-from service.perception.constants import PROCESS_WHITELIST_KEY
+from tests.support import settings_doc, write_section
 
 TOKEN = "perception-token"
 AUTH = {"X-Pet-Token": TOKEN}
@@ -28,7 +26,7 @@ def db_file(tmp_path: Path) -> Path:
 
 
 def make_client(db_file: Path) -> TestClient:
-    service = PerceptionService(SettingsService(db_file))
+    service = PerceptionService(settings_doc(db_file))
     return TestClient(create_app(TOKEN, perception_service=service))
 
 
@@ -76,7 +74,6 @@ def test_foreground_requires_whitelist_and_candidate_decision_persists(db_file: 
     ).json()
     assert state["whitelist"] == ["code"]
     assert state["candidates"] == []
-    assert json.loads(SettingsService(db_file).get(PROCESS_WHITELIST_KEY) or "[]") == ["code"]
 
     assert (
         post(client, "foreground", "code", at="2026-10-29T10:00:10+00:00").json()["accepted"]
@@ -102,7 +99,7 @@ def test_unknown_kind_and_bad_value_return_422(db_file: Path):
 
 
 def test_disabled_perception_reports_drop_reason(db_file: Path):
-    SettingsService(db_file).put("perception.enabled", "false")
+    write_section(db_file, "perception", {"enabled": False})
     client = make_client(db_file)
 
     body = post(client, "idle", 10_000).json()

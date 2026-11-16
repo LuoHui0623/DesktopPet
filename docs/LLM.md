@@ -1,9 +1,9 @@
 # 模型域设计
 
 > 职责：定义 provider/model 清单、能力映射、快照与热更、客户端装配与缓存、调用记录、不可用语义。
-> 依赖：`infra/llm/configuration.py`（配置解析与快照）、`infra/llm/client.py`（装配、缓存与热更）、`config/dotenv.py`（`.env` 读取）、`infra/llm/`（范式、token 计数与用量）、`config/settings.py`（进程级配置与兼容重导出）、`app_setting`（当前模型）。
+> 依赖：`infra/llm/configuration.py`（配置解析与快照）、`infra/llm/client.py`（装配、缓存与热更）、`config/dotenv.py`（`.env` 读取）、`infra/llm/`（范式、token 计数与用量）、`config/settings.py`（进程级配置与兼容重导出）、`data/settings.json`（当前模型）。
 > 不回答：提示词、上下文、业务重试、句长校验（见 [CHAT.md](CHAT.md)）、主动判定（见 [OBSERVER.md](OBSERVER.md) / [PROACTIVE.md](PROACTIVE.md)）。
-> 状态：已实现。配置解析、客户端装配与热更按「依赖与落点」落在 `infra/llm`，`module/llm/llm_service.py` 只保留能力选择。
+> 状态：已实现。配置解析、客户端装配与热更按「依赖与落点」落在 `infra/llm`，`agent/llm/llm_service.py` 只保留能力选择。
 
 ## 定位
 
@@ -38,16 +38,16 @@
 | 装配、缓存、热更 | `infra/llm/client.py` | `ModelClientManager`：按 `(provider, model, version)` 缓存、文件戳变化自动重载、`ReloadResult` |
 | 调用记录 | `infra/llm/usage.py` | `TrackedChatModel`、`usage_scope`、`UsageSink`、`UsageObserver` |
 | token 计数 | `infra/llm/tokens.py` | tiktoken 编码与本地估算 |
-| 轮次聚合与事件 | `module/llm/usage_service.py` | `UsageService`、`DbUsageReader`、`aggregate_turn` |
-| 能力选择与对外门面 | `module/llm/llm_service.py` | `LlmService`：能力 → 模型 → client；装配与缓存委托 `ModelClientManager` |
+| 轮次聚合与事件 | `agent/llm/usage_service.py` | `UsageService`、`DbUsageReader`、`aggregate_turn` |
+| 能力选择与对外门面 | `agent/llm/llm_service.py` | `LlmService`：能力 → 模型 → client；装配与缓存委托 `ModelClientManager` |
 | 进程级配置 | `config/settings.py` | `ServiceSettings`；对 `infra.llm.configuration` 的兼容重导出与薄包装（保留旧导入路径） |
-| 当前模型持久化 | `app_setting` | `llm.active.<capability>` |
+| 当前模型持久化 | `data/settings.json` 的 `llm` 段 | `llm.active.<capability>` |
 | 调用落库 | `infra/store` | `llm_call` 表 |
 
 依赖方向：
 
 ```
-chat / pipeline ─► module/llm/llm_service ─┬─► infra/llm/client ─► infra/llm/paradigms ─► provider SDK
+chat / pipeline ─► agent/llm/llm_service ─┬─► infra/llm/client ─► infra/llm/paradigms ─► provider SDK
                                            │        └─► infra/llm/usage / tokens
                                            └─► infra/llm/configuration ─► config/dotenv
 
@@ -71,7 +71,7 @@ config/settings（进程级配置）──兼容重导出──► infra/llm/con
 | `reload()` | `ReloadResult` | 手动重载；失败保留旧快照并返回错误列表 |
 | `providers()` | `list[ProviderStatus]` | provider 列表、可用状态、不可用原因 |
 | `active_model(capability)` | `ActiveModel \| None` | 当前模型；数据库优先，其次 `.env` 默认 |
-| `set_active_models(selections)` | — | 校验并写入 `app_setting` |
+| `set_active_models(selections)` | — | 校验并经设置协调器写入 `data/settings.json` 的 `llm` 段 |
 | `client_for(capability, override=None)` | `TrackedChatModel` | 取/装配 client；不可用抛 `LlmUnavailableError` |
 | `set_usage_observer(observer)` | — | 注入调用观察者（实时事件）；对已缓存 client 同步生效 |
 | `last_errors` | `list[str]` | 最近一次重载失败的错误 |
@@ -91,12 +91,12 @@ config/settings（进程级配置）──兼容重导出──► infra/llm/con
 ### 当前模型优先级
 
 ```text
-app_setting 的 llm.active.<capability>
+data/settings.json 的 llm.active.<capability>
   > .env 的 DEFAULT_<CAPABILITY>_MODEL
   > 不可用
 ```
 
-- 设置页切换写入 `app_setting`，立即生效。
+- 设置页切换写入 `data/settings.json` 的 `llm` 段，立即生效。
 - 两者都未设置时，该能力不可用；启动仍成功，调用时返回明确错误。
 - 是否提供“恢复默认”入口待定。
 
@@ -114,7 +114,7 @@ app_setting 的 llm.active.<capability>
 |---|---|
 | 文件变化 | 每次 `client_for` / `current` 前比对 `.env` 与 `llm.yaml` 的修改时间与大小 |
 | 手动重载 | `POST /api/llm/reload` |
-| 切换模型 | 写 `app_setting`，下一次取 client 生效 |
+| 切换模型 | 写 `data/settings.json` 的 `llm` 段，下一次取 client 生效 |
 
 ### 缓存与进行中请求
 
@@ -160,7 +160,7 @@ app_setting 的 llm.active.<capability>
 
 ### 轮次聚合
 
-`module/llm/usage_service.py` 的 `UsageService.start_turn(at)` / `finish_turn(turn_id)` 负责轮次生命周期，`DbUsageReader.calls(turn_id)` 按 `started_at, id` 读取明细，`aggregate_turn` 产出 `TurnUsage`：
+`agent/llm/usage_service.py` 的 `UsageService.start_turn(at)` / `finish_turn(turn_id)` 负责轮次生命周期，`DbUsageReader.calls(turn_id)` 按 `started_at, id` 读取明细，`aggregate_turn` 产出 `TurnUsage`：
 
 | 字段 | 口径 |
 |---|---|
@@ -181,7 +181,7 @@ app_setting 的 llm.active.<capability>
   - `usage.turn.started` / `usage.turn.finished`：轮次标识、token 总量与完整性、模型耗时、起止时间；`finished` 另带该轮权威调用列表 `calls`，供前端整体校正。
   - `usage.panel.snapshot`：WS 握手后紧跟 `status` 下发，含展示模式与当前轮次（没有进行中的轮次时为 `null`）。
 - 展示边界在服务端：`PET_DEV_MODE` 为真时下发完整正文与调用方信息；否则 `provider`、`model`、`run_id`、`prompt_hash`、`prompt_text`、`reply_text`、`reply_raw`、`usage_raw` 一律置空，只保留 token、耗时与成功状态。`llm_call` 中的完整正文仍在库内，状态窗口不提供历史回看。
-- 当前轮次由 `module/llm/usage_panel.py` 的内存面板维护：`start_turn` 换轮即替换，已结束轮次拒绝迟到事件，`finish_turn` 用落库记录重建明细；应用关闭后面板消失，不落库。
+- 当前轮次由 `agent/llm/usage_panel.py` 的内存面板维护：`start_turn` 换轮即替换，已结束轮次拒绝迟到事件，`finish_turn` 用落库记录重建明细；应用关闭后面板消失，不落库。
 
 ## 配置
 
@@ -192,7 +192,7 @@ app_setting 的 llm.active.<capability>
 | `.env` | 启用哪些 provider、每个 provider 的 `base_url`、每个 provider 的密钥环境变量名、每个能力的默认模型 |
 | `llm.yaml` | 每个 provider 的模型预设：标签、上游 id、范式、角色、温度、最大 token、上下文窗口、计数方式、固定请求头 |
 | 系统环境变量 | 每个 provider 的实际密钥，变量名由 `.env` 解析得到，缺省 `<PROVIDER>_API_KEY` |
-| `app_setting` | 设置页切换后的当前模型，优先级最高 |
+| `data/settings.json` 的 `llm` 段 | 设置页切换后的当前模型，优先级最高 |
 
 ### 校验规则
 

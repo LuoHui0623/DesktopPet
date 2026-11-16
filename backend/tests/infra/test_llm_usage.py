@@ -6,10 +6,10 @@ from pathlib import Path
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from agent.llm.repository import db_usage_sink
 from infra.llm.usage import CallStart, TrackedChatModel, UsageSample, usage_scope
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.llm.repository import db_usage_sink
 
 
 class FakeModel:

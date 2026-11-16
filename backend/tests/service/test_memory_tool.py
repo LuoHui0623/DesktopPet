@@ -4,10 +4,10 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from agent.memory.entry_service import MemoryEntryService
+from agent.tools.memory import MEMORY_ACTIONS, make_memory_tools
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.tools.memory import MEMORY_ACTIONS, make_memory_tools
-from module.memory.entry_service import MemoryEntryService
 
 
 @pytest.fixture
@@ -41,7 +41,6 @@ def test_add_writes_an_entry_and_reports_new_tags(memory, service, caplog):
             "action": "add",
             "content": "喜欢美式",
             "tags": ["饮品", "咖啡"],
-            "priority": 3,
         }
     )
 
@@ -53,7 +52,6 @@ def test_add_writes_an_entry_and_reports_new_tags(memory, service, caplog):
         "id": result["entry"]["id"],
         "content": "喜欢美式",
         "tags": ["饮品", "咖啡"],
-        "priority": 3,
         "status": "enabled",
     }
     assert [entry.content for entry in service.all()] == ["喜欢美式"]
@@ -62,12 +60,22 @@ def test_add_writes_an_entry_and_reports_new_tags(memory, service, caplog):
 
 def test_add_reports_reuse_without_growing_the_pool(memory, service):
     first = memory.invoke({"action": "add", "content": "喜欢美式", "tags": ["饮品", "咖啡"]})
-    second = memory.invoke({"action": "add", "content": "喜欢美式", "tags": ["咖啡"]})
+    second = memory.invoke({"action": "add", "content": "喜欢美式", "tags": ["饮品", "咖啡"]})
 
     assert second["ok"] is True
     assert second["reused"] is True
     assert second["entry"]["id"] == first["entry"]["id"]
     assert len(service.all()) == 1
+
+
+def test_add_keeps_same_content_on_different_paths_apart(memory, service):
+    """工具与 service 共用有序路径判据：部分相交不再误并。"""
+    memory.invoke({"action": "add", "content": "喜欢美式", "tags": ["饮品", "咖啡"]})
+    second = memory.invoke({"action": "add", "content": "喜欢美式", "tags": ["咖啡"]})
+
+    assert second["ok"] is True
+    assert second["reused"] is False
+    assert len(service.all()) == 2
 
 
 def test_enable_and_disable_round_trip(memory, service):

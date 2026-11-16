@@ -20,8 +20,10 @@ const TABS: ReadonlyArray<{ key: Tab; label: string }> = [
   { key: "interaction", label: "互动" },
 ];
 
-// 本期新增的四组配置统一走 GET/PUT /api/settings/*，真源是 app_settings。
-const MANAGED_TABS: ReadonlySet<Tab> = new Set<Tab>([
+// 六组配置统一走 GET/PUT /api/settings/*，写入以快照 version 作 If-Match。
+const CONFIG_TABS: ReadonlySet<Tab> = new Set<Tab>([
+  "models",
+  "personas",
   "perception",
   "proactive",
   "avatar",
@@ -31,6 +33,31 @@ const MANAGED_TABS: ReadonlySet<Tab> = new Set<Tab>([
 export function SettingsWindow() {
   const [tab, setTab] = useState<Tab>("models");
   const bundle = useSettingsBundle();
+
+  const renderConfig = (view: NonNullable<typeof bundle.view>) => {
+    if (tab === "models") {
+      return <ModelSettings settings={view} onSaved={bundle.apply} onReloaded={bundle.reload} />;
+    }
+    if (tab === "personas") {
+      return <PersonaSettings settings={view} onSaved={bundle.apply} />;
+    }
+    if (tab === "perception") {
+      return (
+        <PerceptionSettings
+          settings={view}
+          perceptionState={bundle.perceptionState}
+          onSaved={bundle.apply}
+        />
+      );
+    }
+    if (tab === "proactive") {
+      return <ProactiveSettings settings={view} onSaved={bundle.apply} />;
+    }
+    if (tab === "avatar") {
+      return <AvatarSettings settings={view} onSaved={bundle.apply} />;
+    }
+    return <InteractionSettings settings={view} onSaved={bundle.apply} />;
+  };
 
   const renderManaged = () => {
     if (bundle.view === null) {
@@ -48,22 +75,7 @@ export function SettingsWindow() {
         </div>
       );
     }
-    if (tab === "perception") {
-      return (
-        <PerceptionSettings
-          settings={bundle.view}
-          perceptionState={bundle.perceptionState}
-          onSaved={bundle.apply}
-        />
-      );
-    }
-    if (tab === "proactive") {
-      return <ProactiveSettings settings={bundle.view} onSaved={bundle.apply} />;
-    }
-    if (tab === "avatar") {
-      return <AvatarSettings settings={bundle.view} onSaved={bundle.apply} />;
-    }
-    return <InteractionSettings settings={bundle.view} onSaved={bundle.apply} />;
+    return renderConfig(bundle.view);
   };
 
   return (
@@ -107,10 +119,8 @@ export function SettingsWindow() {
         ))}
       </nav>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 16 }}>
-        {tab === "models" && <ModelSettings />}
-        {tab === "personas" && <PersonaSettings onChanged={bundle.reload} />}
         {tab === "memory" && <MemorySettings />}
-        {MANAGED_TABS.has(tab) && renderManaged()}
+        {CONFIG_TABS.has(tab) && renderManaged()}
       </div>
     </div>
   );

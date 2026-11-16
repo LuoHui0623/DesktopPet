@@ -48,7 +48,7 @@ describe("settings pages read their defaults from the backend", () => {
     }
   });
 
-  it("serves the four groups through the aggregate endpoint", () => {
+  it("serves the six groups through the aggregate endpoint", () => {
     const contracts = JSON.parse(read(path.join("src", "api", "api-contracts.json"))) as {
       operations: { operationId: string; method: string; path: string }[];
     };
@@ -59,6 +59,8 @@ describe("settings pages read their defaults from the backend", () => {
       "update_settings_perception",
       "update_settings_proactive",
       "update_settings_avatar",
+      "update_settings_persona",
+      "update_settings_model",
       "update_settings_interaction",
       "get_interaction_config",
     ]) {

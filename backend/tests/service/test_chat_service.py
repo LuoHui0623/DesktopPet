@@ -7,47 +7,54 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from config.settings import ModelSettingsSource
-from constants.speech import SENTENCE_MAX_WIDTH
-from infra.llm.tokens import TokenCount, TokenCountError
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import ApprovalDraft
-from module.agent.context import SOURCE_USER
-from module.agent.orchestrator import Checkpoint
-from module.agent.plan import PlanStep
-from module.agent.prompt import load_templates
-from module.chat.chat_service import (
+from agent.capabilities.chat.chat_service import (
     ChatError,
     ChatRequest,
     ChatService,
     DispatchRejectedError,
     ModelOutputError,
     ReplyMessage,
+    _next_degradation,
     overlong_sentences,
     parse_chat_output,
     split_sentences,
     visible_width,
 )
-from module.chat.context import (
+from agent.capabilities.chat.context import (
     CURRENT_SEPARATOR,
-    KIND_DAILY,
-    KIND_STRUCTURED,
+    WARNING_EVENTS_DROPPED,
+    WARNING_FRAGMENTS_DROPPED,
+    WARNING_HISTORY_DROPPED,
+    WARNING_RECOLLECTION_DROPPED,
+    AssembledContext,
+    Degradation,
     MemoryFragment,
     day_marker,
 )
-from module.interaction.interaction_service import InteractionService
-from module.llm import DbUsageReader, LlmService, UsageService
-from module.llm.repository import db_usage_sink
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.memory_service import MemoryReadError
-from module.memory.recall import RecallService
-from module.memory.recollection_service import FAILURE_PREFIX, Recollection
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from agent.capabilities.perception.interaction.interaction_service import InteractionService
+from agent.harness.approval import ApprovalDraft
+from agent.harness.dispatch import Checkpoint
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.llm.usage_service import DbUsageReader, UsageService
+from agent.memory.contracts import MemoryEntryCreate
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.memory_service import MemoryReadError
+from agent.memory.recall import RecallService
+from agent.memory.recollection_service import FAILURE_PREFIX, Recollection
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
+from agent.spec.context import SOURCE_USER
+from agent.spec.plan import PlanStep
+from config.settings import ModelSettingsSource
+from constants.speech import SENTENCE_MAX_WIDTH
+from infra.llm.tokens import TokenCount, TokenCountError
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 LLM_YAML = """
 providers:
@@ -76,7 +83,7 @@ def persona_service(tmp_path: Path, db_file: Path) -> PersonaService:
     directory = tmp_path / "personas"
     directory.mkdir(exist_ok=True)
     (directory / "芙芙.yaml").write_text(CARD_TEXT, encoding="utf-8")
-    return PersonaService(directory, SettingsService(db_file), DbPersonaVersions(db_file))
+    return PersonaService(directory, settings_doc(db_file), DbPersonaVersions(db_file))
 
 
 SHORT = "你好呀，今天过得怎么样？"
@@ -157,7 +164,7 @@ class Harness:
         self.llm.start()
         self.daily = DailyLogService(
             DbDailyLog(self.db_file),
-            SettingsService(self.db_file),
+            settings_doc(self.db_file),
             ZoneInfo("Asia/Shanghai"),
             **({"clock": clock} if clock is not None else {}),
         )
@@ -251,10 +258,9 @@ def test_structured_memory_failure_keeps_the_reply_and_reports_a_notice(tmp_path
     assert done[3] == ("memory_unloaded",)
 
 
-def test_dropped_fragments_do_not_become_user_notices(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr("module.chat.context.FRAGMENT_TOKEN_BUDGET", 40)
+def test_recall_fragments_do_not_become_user_notices(tmp_path: Path):
     harness = Harness(tmp_path, [SHORT])
-    fragments = [MemoryFragment(kind=KIND_DAILY, date="2026-10-18", text="字" * 20)] * 4
+    fragments = [MemoryFragment(id=index, role="master", text="字" * 20) for index in range(4)]
     result = ask(harness.chat, "你好", fragments)
 
     assert result.notices == ()
@@ -281,8 +287,9 @@ def test_multiple_utterances_are_returned_and_logged_in_order(tmp_path: Path):
     ]
 
 
-def test_each_utterance_keeps_its_own_sources(tmp_path: Path):
-    reply = ["你上次说过喜欢美式 [引用 2026-10-18]。", "另外昨天聊过茶 [引用 2026-10-17]。"]
+def test_each_utterance_strips_its_own_citations_without_sources(tmp_path: Path):
+    """第 26 条/T-03：每条发言独立剥离引用标记，召回片段不产生用户可见 sources。"""
+    reply = ["你上次说过喜欢美式 [引用 18]。", "另外昨天聊过茶 [引用 17]。"]
     harness = Harness(tmp_path, [reply])
     result = ask(harness.chat, "你好", CITED_FRAGMENTS)
 
@@ -290,11 +297,8 @@ def test_each_utterance_keeps_its_own_sources(tmp_path: Path):
         "你上次说过喜欢美式。",
         "另外昨天聊过茶。",
     ]
-    assert [[source.id for source in message.sources] for message in result.messages] == [
-        ["2026-10-18"],
-        ["2026-10-17"],
-    ]
-    assert [source.id for source in result.sources] == ["2026-10-18", "2026-10-17"]
+    assert [message.sources for message in result.messages] == [(), ()]
+    assert result.sources == ()
 
 
 def test_reply_messages_share_one_generation_time(tmp_path: Path):
@@ -592,9 +596,8 @@ def test_one_overlong_item_in_the_array_is_enough_to_fail(tmp_path: Path):
     assert harness.query("SELECT COUNT(*) FROM daily_log WHERE role = 'me'")[0][0] == 1
 
 
-def test_legacy_temporary_setting_no_longer_blocks_the_log(tmp_path: Path):
+def test_turn_is_logged_without_any_temporary_switch(tmp_path: Path):
     harness = Harness(tmp_path, [SHORT])
-    SettingsService(harness.db_file).put("memory.temporary_mode", "true")
     result = ask(harness.chat, "你好")
     assert result.text == SHORT
     assert result.recorded is True
@@ -836,10 +839,9 @@ def test_day_change_starts_a_new_snapshot(tmp_path: Path):
     assert contents == ["[master][08:00:00]第二句"]
 
 
-def test_legacy_temporary_setting_keeps_earlier_turns_in_the_snapshot(tmp_path: Path):
+def test_earlier_turns_stay_in_the_snapshot(tmp_path: Path):
     clock = MutableClock(datetime(2026, 10, 29, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
     harness = Harness(tmp_path, [SHORT, SHORT], clock=clock)
-    SettingsService(harness.db_file).put("memory.temporary_mode", "true")
     ask(harness.chat, "第一句")
     ask(harness.chat, "第二句")
 
@@ -853,34 +855,31 @@ def test_legacy_temporary_setting_keeps_earlier_turns_in_the_snapshot(tmp_path: 
 
 
 CITED_FRAGMENTS = [
-    MemoryFragment(kind=KIND_STRUCTURED, date="2026-10-18", text="喜欢美式咖啡，不加糖"),
-    MemoryFragment(kind=KIND_DAILY, date="2026-10-17", text="昨天聊了茶"),
+    MemoryFragment(id=18, role="master", text="喜欢美式咖啡，不加糖"),
+    MemoryFragment(id=17, role="me", text="昨天聊了茶"),
 ]
 
 
-def test_citations_are_stripped_and_only_injected_memories_become_sources(tmp_path: Path):
+def test_citations_are_stripped_and_recall_fragments_produce_no_sources(tmp_path: Path):
+    """第 26 条/T-03：引用标记仍被剥离，但召回片段不产生用户可见 sources。"""
     events = RecordingEvents()
-    reply = (
-        "你上次说过喜欢美式 [引用 2026-10-18]。"
-        "另外昨天聊过茶 [引用 2026-10-17]，还有编造的 [引用 2026-10-01]。"
-    )
+    reply = "你上次说过喜欢美式 [引用 18]。另外昨天聊过茶 [引用 17]，还有编造的 [引用 99]。"
     harness = Harness(tmp_path, [reply], events=events)
     result = ask(harness.chat, "你好", CITED_FRAGMENTS)
     assert result.text == "你上次说过喜欢美式。另外昨天聊过茶，还有编造的。"
-    assert [source.id for source in result.sources] == ["2026-10-18", "2026-10-17"]
-    assert result.sources[0].text == "喜欢美式咖啡，不加糖"
+    assert result.sources == ()
     done = next(entry for entry in events.log if entry[0] == "done")
-    assert [source.id for source in done[2][0].sources] == ["2026-10-18", "2026-10-17"]
+    assert done[2][0].sources == ()
     assert harness.query("SELECT content FROM daily_log WHERE role = 'me'") == [(result.text,)]
 
 
-def test_injected_fragments_carry_their_dates_without_a_citation_rule(tmp_path: Path):
-    """第 26 条：拒绝 `[引用 日期]` 引用格式，片段只带来源标签、不再附引用规则。"""
+def test_injected_fragments_carry_row_id_and_role_without_a_citation_rule(tmp_path: Path):
+    """第 26 条/T-03：片段带真实行 id 锚点与角色，拒绝 `[引用 日期]` 引用格式。"""
     harness = Harness(tmp_path, [SHORT])
     ask(harness.chat, "你好", CITED_FRAGMENTS)
     system = harness.fake.calls[0][0].content
-    assert "[结构化记忆 · 2026-10-18] 喜欢美式咖啡，不加糖" in system
-    assert "[每日对话 · 2026-10-17] 昨天聊了茶" in system
+    assert "[#18][master] 喜欢美式咖啡，不加糖" in system
+    assert "[#17][me] 昨天聊了茶" in system
     assert "[引用 日期]" not in system
 
 
@@ -892,9 +891,9 @@ class BrokenRecall:
         raise RuntimeError("召回坏了")
 
 
-def test_memory_recall_is_disabled_pending_design(tmp_path: Path):
-    # 记忆召回（RecallService 关键词检索）尚未设计，先禁用（T-03 重议后恢复）：
-    # 即使接上 RecallService 且有可召回历史，也不注入【检索到的记忆】。
+def test_memory_recall_is_restored_for_user_input(tmp_path: Path):
+    # T-03/Q29–Q31：本轮有用户输入时恢复关键词召回，注入【检索到的记忆】，
+    # 片段带真实 daily_log 行 id 锚点与角色（不产生用户可见 sources）。
     harness = Harness(
         tmp_path,
         [SHORT],
@@ -912,8 +911,54 @@ def test_memory_recall_is_disabled_pending_design(tmp_path: Path):
     ask(harness.chat, "还记得冰汽时代吗")
 
     system = harness.fake.calls[0][0].content
+    assert "【检索到的记忆】" in system
+    assert "冰汽时代太难了" in system
+    row = harness.query("SELECT id FROM daily_log WHERE content = '冰汽时代太难了'")
+    assert f"[#{row[0][0]}][me] 冰汽时代太难了" in system
+
+
+def test_memory_recall_skips_proactive_turn_without_user_input(tmp_path: Path):
+    """T-03/Q29：只在本轮有用户输入时召回；主动触发（无用户输入）不检索历史。"""
+    harness = Harness(
+        tmp_path,
+        [SHORT],
+        clock=lambda tz: datetime(2026, 11, 9, 12, 0, tzinfo=tz),
+        recall=RecallService,
+    )
+    zone = ZoneInfo("Asia/Shanghai")
+    harness.daily.record_turn(
+        "今天玩了冰汽时代",
+        "冰汽时代太难了",
+        received_at=datetime(2026, 11, 7, 20, 0, tzinfo=zone),
+        replied_at=datetime(2026, 11, 7, 20, 0, 5, tzinfo=zone),
+    )
+
+    harness.chat.chat(ChatRequest(trigger_reason="冰汽时代到点了", allow_dispatch=False))
+
+    system = harness.fake.calls[0][0].content
     assert "【检索到的记忆】" not in system
     assert "冰汽时代太难了" not in system
+
+
+def test_memory_recall_without_keywords_injects_nothing(tmp_path: Path):
+    """T-03：空关键词（寒暄虚词）跳过检索，不注入【检索到的记忆】。"""
+    harness = Harness(
+        tmp_path,
+        [SHORT],
+        clock=lambda tz: datetime(2026, 11, 9, 12, 0, tzinfo=tz),
+        recall=RecallService,
+    )
+    zone = ZoneInfo("Asia/Shanghai")
+    harness.daily.record_turn(
+        "今天玩了冰汽时代",
+        "冰汽时代太难了",
+        received_at=datetime(2026, 11, 7, 20, 0, tzinfo=zone),
+        replied_at=datetime(2026, 11, 7, 20, 0, 5, tzinfo=zone),
+    )
+
+    ask(harness.chat, "你好呀")
+
+    assert "【检索到的记忆】" not in harness.fake.calls[0][0].content
 
 
 def test_chat_survives_recall_failure(tmp_path: Path):
@@ -1513,6 +1558,161 @@ def test_upstream_context_overflow_is_mapped_to_a_clear_error(tmp_path: Path):
     assert exc.value.code == "context_overflow"
     assert "maximum context length" in str(exc.value)
     assert harness.query("SELECT role, content FROM daily_log") == [("master", "你好")]
+
+
+# ---------- T-05：超窗逐块降级替代直接报错 ----------
+
+DEGRADE_YAML = LLM_YAML.replace(
+    "max_tokens: 1024",
+    "max_tokens: 64\n        context_window: 1200",
+)
+
+
+class SizeCounter:
+    """按上下文总字符数计 token（1 字符≈1 token），让丢块真实降低计数。"""
+
+    def count(self, messages) -> TokenCount:
+        return TokenCount(sum(len(message.content) for message in messages))
+
+
+def degrade_harness(tmp_path: Path, outcomes: list | None = None, **kwargs) -> Harness:
+    return Harness(
+        tmp_path,
+        outcomes or [SHORT],
+        llm_yaml=DEGRADE_YAML,
+        counter_factory=lambda encoding: SizeCounter(),
+        **kwargs,
+    )
+
+
+def _snapshot(**counts) -> AssembledContext:
+    return AssembledContext(
+        messages=[], template_digest="x", chars=0, dropped_fragments=0, warnings=(), **counts
+    )
+
+
+def test_next_degradation_follows_the_block_priority():
+    """降级序：主题感知事件 → 每日回忆 → 低相关召回片段 → 最旧历史轮，每步只丢一块。"""
+    snap = _snapshot(event_count=2, has_recollection=True, fragment_count=3, history_turns=2)
+    deg = Degradation()
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.drop_events is True and warning.code == WARNING_EVENTS_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.drop_recollection is True and warning.code == WARNING_RECOLLECTION_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.keep_fragments == 2 and warning.code == WARNING_FRAGMENTS_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.keep_fragments == 1 and warning.code == WARNING_FRAGMENTS_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.keep_fragments == 0 and warning.code == WARNING_FRAGMENTS_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.keep_history_turns == 1 and warning.code == WARNING_HISTORY_DROPPED
+    deg, warning = _next_degradation(deg, snap)
+    assert deg.keep_history_turns == 0 and warning.code == WARNING_HISTORY_DROPPED
+    assert _next_degradation(deg, snap) is None
+
+
+def test_next_degradation_returns_none_when_only_must_keep_remains():
+    """无可降级块（必保块自身超窗）时返回 None，交由调用方抛 context_overflow。"""
+    assert _next_degradation(Degradation(), _snapshot()) is None
+
+
+def test_over_window_drops_recall_fragment_and_still_replies(tmp_path: Path):
+    harness = degrade_harness(tmp_path)
+    fragments = [MemoryFragment(id=1, role="master", text="字" * 400)]
+    result = ask(harness.chat, "你好", fragments)
+    assert result.text == SHORT
+    final = harness.fake.calls[-1]
+    system = final[0].content
+    assert "【检索到的记忆】" not in system
+    assert "你的名字是小桌" in system
+    assert final[-1].content.endswith("你好")
+    assert result.notices == ()
+
+
+def test_structured_memory_survives_degradation(tmp_path: Path):
+    harness = degrade_harness(tmp_path)
+    harness.memory.add(MemoryEntryCreate(content="喜欢美式", tags=["喜好"]))
+    fragments = [MemoryFragment(id=1, role="master", text="字" * 400)]
+    result = ask(harness.chat, "你好", fragments)
+    assert result.text == SHORT
+    system = harness.fake.calls[-1][0].content
+    assert "【结构化记忆】" in system and "喜欢美式" in system
+    assert "【检索到的记忆】" not in system
+
+
+def test_must_keep_overflow_without_droppable_blocks_raises(tmp_path: Path):
+    harness = degrade_harness(tmp_path)
+    for index in range(30):
+        harness.memory.add(MemoryEntryCreate(content=f"第{index}条事实", tags=["喜好"]))
+    with pytest.raises(ChatError) as exc:
+        ask(harness.chat, "你好")
+    assert exc.value.code == "context_overflow"
+    assert harness.fake.calls == []
+
+
+def test_over_window_drops_recollection_then_fragments(tmp_path: Path):
+    clock = MutableClock(datetime(2026, 10, 18, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    harness = degrade_harness(
+        tmp_path,
+        clock=clock,
+        recollection=lambda daily, trace: FakeRecollection(daily, trace, content="回" * 300),
+    )
+    fragments = [MemoryFragment(id=1, role="master", text="字" * 300)]
+    result = ask(harness.chat, "你好", fragments)
+    assert result.text == SHORT
+    system = harness.fake.calls[-1][0].content
+    assert "【昨天的回忆】" not in system
+    assert "【检索到的记忆】" not in system
+    assert "你的名字是小桌" in system
+
+
+def test_over_window_drops_oldest_history_turns_first(tmp_path: Path):
+    zone = ZoneInfo("Asia/Shanghai")
+    clock = MutableClock(datetime(2026, 10, 18, 10, 0, tzinfo=zone))
+    harness = degrade_harness(tmp_path, clock=clock)
+    early = datetime(2026, 10, 18, 8, 0, tzinfo=zone)
+    later = datetime(2026, 10, 18, 9, 0, tzinfo=zone)
+    harness.daily.record_user("旧" * 500, at=early, persona_id="芙芙")
+    harness.daily.record_user("新" * 30, at=later, persona_id="芙芙")
+    result = ask(harness.chat, "你好")
+    assert result.text == SHORT
+    contents = [message.content for message in harness.fake.calls[-1]]
+    assert not any("旧" * 500 in content for content in contents)
+    assert any("新" * 30 in content for content in contents)
+    assert contents[-1].endswith("你好")
+
+
+def test_degradation_retry_cap_raises_overflow(tmp_path: Path, monkeypatch):
+    import agent.capabilities.chat.chat_service as chat_module
+
+    monkeypatch.setattr(chat_module, "MAX_DEGRADE_STEPS", 1)
+    clock = MutableClock(datetime(2026, 10, 18, 10, 0, tzinfo=ZoneInfo("Asia/Shanghai")))
+    harness = degrade_harness(
+        tmp_path,
+        clock=clock,
+        recollection=lambda daily, trace: FakeRecollection(daily, trace, content="回" * 300),
+    )
+    fragments = [MemoryFragment(id=1, role="master", text="字" * 300)]
+    with pytest.raises(ChatError) as exc:
+        ask(harness.chat, "你好", fragments)
+    assert exc.value.code == "context_overflow"
+    assert "上限" in str(exc.value)
+
+
+def test_model_reported_overflow_triggers_degradation(tmp_path: Path):
+    """预检通过但模型报告超限（invoke 兜底）：同样降级重试，而非整轮失败。"""
+    harness = Harness(
+        tmp_path,
+        [RuntimeError("maximum context length exceeded"), SHORT],
+        llm_yaml=DEGRADE_YAML,
+        counter_factory=lambda encoding: FixedCounter(10),
+    )
+    fragments = [MemoryFragment(id=1, role="master", text="字" * 400)]
+    result = ask(harness.chat, "你好", fragments)
+    assert result.text == SHORT
+    assert len(harness.fake.calls) == 2
+    assert "【检索到的记忆】" not in harness.fake.calls[-1][0].content
 
 
 # ---------- T-10：一轮对话的时序与跨零点 ----------

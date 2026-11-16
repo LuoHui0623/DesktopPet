@@ -1,10 +1,10 @@
 from fastapi.testclient import TestClient
 
+from agent.capabilities.perception.gate.scheduler import SchedulerConfig
+from agent.constants import DEFAULT_PERSONA_ID
 from api.app import create_app
-from constants.agent import DEFAULT_PERSONA_ID
-from module.avatar.contracts import AvatarCatalog, AvatarPack
-from module.menu.menu_service import MenuService
-from service.perception.scheduler import SchedulerConfig
+from app.avatar.contracts import AvatarCatalog, AvatarPack
+from app.menu.menu_service import MenuService
 
 TOKEN = "menu-token"
 AUTH = {"X-Pet-Token": TOKEN}

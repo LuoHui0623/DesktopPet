@@ -6,6 +6,13 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from starlette.middleware.cors import CORSMiddleware
 
+from agent.capabilities.chat.chat_service import ChatService
+from agent.capabilities.perception.collector.service import PerceptionService
+from agent.capabilities.perception.interaction.interaction_service import InteractionService
+from agent.harness.approval import PROCESS_EXIT_REASON, ApprovalRegistry
+from agent.llm.llm_service import LlmService
+from agent.memory.services import MemoryServices
+from agent.persona.persona_service import PersonaService
 from api.auth import TokenAuthMiddleware
 from api.errors import register_error_handlers
 from api.event_publisher import BusEventPublisher
@@ -25,16 +32,11 @@ from api.routers import (
 )
 from api.routers import memories as memory_routes
 from api.schemas.events import event_component_schemas
+from app.avatar.avatar_service import AvatarService
+from app.menu.menu_service import MenuService
+from app.settings.coordinator import SettingsCoordinator
 from infra.events.bus import EventBus
-from module.agent.approval import PROCESS_EXIT_REASON, ApprovalRegistry
-from module.avatar.avatar_service import AvatarService
-from module.chat.chat_service import ChatService
-from module.interaction.interaction_service import InteractionService
-from module.llm import LlmService
-from module.memory.services import MemoryServices
-from module.menu.menu_service import MenuService
-from module.persona.persona_service import PersonaService
-from service.perception import PerceptionRuntime, PerceptionService
+from service.tick import PerceptionRuntime
 
 
 def create_app(
@@ -52,6 +54,7 @@ def create_app(
     avatar_service: AvatarService | None = None,
     interaction_service: InteractionService | None = None,
     menu_service: MenuService | None = None,
+    settings_coordinator: SettingsCoordinator | None = None,
 ) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -81,6 +84,7 @@ def create_app(
     app.state.avatars = avatar_service
     app.state.interaction = interaction_service
     app.state.menu = menu_service
+    app.state.settings = settings_coordinator
     register_error_handlers(app)
     app.include_router(system.router)
     app.include_router(llm.router)

@@ -5,20 +5,20 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage
 
+from agent.capabilities.chat.chat_service import ChatError, ChatRequest, ChatService
+from agent.capabilities.chat.context import CURRENT_SEPARATOR
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.memory.daily_events import event_text
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
 from config.settings import ModelSettingsSource
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.prompt import load_templates
-from module.chat.chat_service import ChatError, ChatRequest, ChatService
-from module.chat.context import CURRENT_SEPARATOR
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.memory.daily_events import event_text
-from module.memory.daily_log_service import DailyLogService
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -89,7 +89,7 @@ def env(tmp_path: Path):
     directory.mkdir()
     (directory / "芙芙.yaml").write_text(card("芙芙"), encoding="utf-8")
     (directory / "小桌.yaml").write_text(card("小桌"), encoding="utf-8")
-    settings = SettingsService(db_file)
+    settings = settings_doc(db_file)
     daily = DailyLogService(DbDailyLog(db_file), settings, TZ)
     personas = PersonaService(
         directory,

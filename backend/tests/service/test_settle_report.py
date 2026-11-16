@@ -2,10 +2,7 @@
 
 from pathlib import Path
 
-from constants.files import LINES_REPLACE
-from module.agent.approval import ApprovalOutcome, AutoApprovalGate
-from module.agent.review import ReviewService
-from module.files.outcome import (
+from agent.files.outcome import (
     STATUS_COMMITTED,
     STATUS_CONFLICT,
     STATUS_FAILED,
@@ -14,6 +11,9 @@ from module.files.outcome import (
     SettlementOutcome,
     SettleResult,
 )
+from agent.files.registry import LINES_REPLACE
+from agent.harness.approval import ApprovalOutcome, AutoApprovalGate
+from agent.harness.review import ReviewService
 
 TASK = "main-1"
 SUB = "sub-1"

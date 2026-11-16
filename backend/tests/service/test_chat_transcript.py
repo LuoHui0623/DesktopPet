@@ -3,7 +3,7 @@ from zoneinfo import ZoneInfo
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from module.chat.transcript import ChatLine, ChatTranscript
+from agent.capabilities.chat.transcript import ChatLine, ChatTranscript
 
 TZ = ZoneInfo("Asia/Shanghai")
 

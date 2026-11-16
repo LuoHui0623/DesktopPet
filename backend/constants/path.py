@@ -18,7 +18,7 @@ MIGRATIONS_DIR = BACKEND_DIR / "infra" / "store" / "migrations"
 RESOURCES_DIR = BACKEND_DIR / "resources"
 AVATAR_SOURCE_DIR = RESOURCES_DIR / "avatars"
 SKILLS_DIR = RESOURCES_DIR / "skills"
-PROMPTS_DIR = BACKEND_DIR / "module" / "agent" / "prompts"
+PROMPTS_DIR = BACKEND_DIR / "agent" / "prompts" / "subagent"
 
 
 def resolve_from_root(value: str | Path) -> Path:

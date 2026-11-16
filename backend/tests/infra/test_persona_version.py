@@ -2,10 +2,10 @@ from pathlib import Path
 
 import pytest
 
+from agent.persona import repository as persona_version
+from agent.persona.repository import DbPersonaVersions
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.persona import repository as persona_version
-from module.persona.repository import DbPersonaVersions
 
 CREATED_AT = "2026-10-26T09:00:00+08:00"
 

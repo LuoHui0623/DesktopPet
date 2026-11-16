@@ -6,19 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from constants.files import ACTION_APPEND, ACTION_READ, DRAFT, WORLD
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.agent.approval import AutoApprovalGate
-from module.agent.context import TaskContext, task_scope
-from module.agent.review import ReviewService, _log_settlement
-from module.agent.skills import (
-    SkillRegistry,
-    draft_note_skill,
-    memory_retrieve_skill,
-    memory_write_skill,
-)
-from module.files.observability import (
+from agent.files.observability import (
     EVENT_ACTION,
     OUTCOME_ERROR,
     OUTCOME_OK,
@@ -26,14 +14,26 @@ from module.files.observability import (
     span,
     traced,
 )
-from module.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT, SettlementOutcome, SettleResult
-from module.files.permissions import system_permissions
-from module.files.resolver import FileError, ResourceResolver
-from module.files.service import FileService, ModelLimit
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from agent.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT, SettlementOutcome, SettleResult
+from agent.files.permissions import system_permissions
+from agent.files.registry import ACTION_APPEND, ACTION_READ, DRAFT, WORLD
+from agent.files.resolver import FileError, ResourceResolver
+from agent.files.service import FileService, ModelLimit
+from agent.harness.approval import AutoApprovalGate
+from agent.harness.review import ReviewService, _log_settlement
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.repository import DbDailyLog
+from agent.skills.registry import (
+    SkillRegistry,
+    draft_note_skill,
+    memory_retrieve_skill,
+    memory_write_skill,
+)
+from agent.spec.context import TaskContext, task_scope
+from infra.store.db import connect
+from infra.store.migrate import migrate
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 NOTE = "笔记.md"
@@ -181,7 +181,7 @@ def stack(tmp_path: Path):
     service = FileService(
         ResourceResolver(data),
         MemoryEntryService(db_file),
-        DailyLogService(DbDailyLog(db_file), SettingsService(db_file), TZ),
+        DailyLogService(DbDailyLog(db_file), settings_doc(db_file), TZ),
         skills,
         sessions=review.sessions,
         guard=review.guard,

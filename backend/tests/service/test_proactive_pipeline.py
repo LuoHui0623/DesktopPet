@@ -1,9 +1,9 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from module.chat.chat_service import ChatError, ChatReply, ChatRequest, ReplyMessage
-from module.proactive import ProactivePipeline, ProactiveResult
-from service.perception.events import Trigger
+from agent.capabilities.chat.chat_service import ChatError, ChatReply, ChatRequest, ReplyMessage
+from agent.capabilities.perception.events.events import Trigger
+from agent.capabilities.proactive.pipeline import ProactivePipeline, ProactiveResult
 
 TZ = ZoneInfo("Asia/Shanghai")
 AT = datetime(2026, 10, 29, 10, 0, tzinfo=TZ)

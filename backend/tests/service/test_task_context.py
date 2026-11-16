@@ -4,7 +4,8 @@ from types import MappingProxyType
 
 import pytest
 
-from module.agent.context import (
+from agent.files.permissions import ResourcePermission, TaskPermissions, system_permissions
+from agent.spec.context import (
     SOURCE_SYSTEM_AUTO,
     SOURCE_USER,
     TaskContext,
@@ -13,7 +14,6 @@ from module.agent.context import (
     current_task_or_none,
     task_scope,
 )
-from module.files.permissions import ResourcePermission, TaskPermissions, system_permissions
 
 
 def make_context(**overrides) -> TaskContext:

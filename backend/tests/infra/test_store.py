@@ -1,3 +1,4 @@
+import shutil
 import sqlite3
 from pathlib import Path
 
@@ -16,7 +17,7 @@ EXPECTED_TABLES = {
     "capability_run",
     "chat_import",
     "weather_cache",
-    "app_setting",
+    "runtime_state",
     "log_record",
     "memory_structured",
     "schema_version",
@@ -56,7 +57,7 @@ def test_connect_enables_wal_and_foreign_keys(conn: sqlite3.Connection):
 
 def test_first_migrate_creates_all_tables(conn: sqlite3.Connection):
     applied = migrate(conn)
-    assert applied == [1, 2]
+    assert applied == [1, 2, 3, 4, 5]
     assert EXPECTED_TABLES <= tables(conn)
     assert not {"core_memory", "proactive_feedback"} & tables(conn)
 
@@ -65,7 +66,13 @@ def test_second_migrate_is_a_no_op(conn: sqlite3.Connection):
     migrate(conn)
     assert migrate(conn) == []
     rows = conn.execute("SELECT version, name FROM schema_version").fetchall()
-    assert [tuple(row) for row in rows] == [(1, "init"), (2, "memory_structured")]
+    assert [tuple(row) for row in rows] == [
+        (1, "init"),
+        (2, "memory_structured"),
+        (3, "memory_drop_priority"),
+        (4, "memory_revision"),
+        (5, "runtime_state"),
+    ]
 
 
 def test_schema_version_records_checksum(conn: sqlite3.Connection):
@@ -102,9 +109,11 @@ def test_transaction_rolls_back_on_error(conn: sqlite3.Connection):
     migrate(conn)
     with pytest.raises(RuntimeError):
         with transaction(conn):
-            conn.execute("INSERT INTO app_setting (key, value, updated_at) VALUES ('a', '1', 'x')")
+            conn.execute(
+                "INSERT INTO runtime_state (key, value, updated_at) VALUES ('a', '1', 'x')"
+            )
             raise RuntimeError("boom")
-    assert conn.execute("SELECT COUNT(*) FROM app_setting").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM runtime_state").fetchone()[0] == 0
 
 
 def test_failed_migration_is_rolled_back(tmp_path: Path, conn: sqlite3.Connection):
@@ -174,6 +183,9 @@ def test_real_migrations_directory_is_valid():
     assert sorted(path.name for path in migrations_dir.glob("*.sql")) == [
         "0001_init.sql",
         "0002_memory_structured.sql",
+        "0003_memory_drop_priority.sql",
+        "0004_memory_revision.sql",
+        "0005_runtime_state.sql",
     ]
 
 
@@ -236,7 +248,7 @@ def test_agent_run_columns(conn: sqlite3.Connection):
 def test_migration_runs_on_empty_database(tmp_path: Path):
     conn = connect(tmp_path / "pet.db")
     try:
-        assert migrate(conn) == [1, 2]
+        assert migrate(conn) == [1, 2, 3, 4, 5]
         assert migrate(conn) == []
     finally:
         conn.close()
@@ -304,35 +316,34 @@ def test_memory_structured_schema_and_constraints(conn: sqlite3.Connection):
         "id",
         "content",
         "tags",
-        "priority",
         "source_ref",
         "created_at",
         "updated_at",
         "status_state",
         "status_reason",
+        "revision",
     }
     indexes = {row[1] for row in conn.execute("PRAGMA index_list(memory_structured)")}
     assert {"idx_memory_structured_state", "idx_memory_structured_source_content"} <= indexes
 
     conn.execute(
-        "INSERT INTO memory_structured (content, tags, priority, source_ref, created_at, "
-        "updated_at) VALUES ('脆柿子', '[\"喜欢\",\"水果\"]', 2, 'structured.md:2', 't', 't')"
+        "INSERT INTO memory_structured (content, tags, source_ref, created_at, "
+        "updated_at) VALUES ('脆柿子', '[\"喜欢\",\"水果\"]', 'structured.md:2', 't', 't')"
     )
 
-    for content, tags, priority, status in (
-        ("非数组", '"喜欢"', 2, "enabled"),
-        ("对象", '{"a":1}', 2, "enabled"),
-        ("null", "null", 2, "enabled"),
-        ("非法", "not json", 2, "enabled"),
-        ("越界", '["水果"]', 4, "enabled"),
-        ("   ", '["水果"]', 2, "enabled"),
-        ("未知状态", '["水果"]', 2, "deleted"),
+    for content, tags, status in (
+        ("非数组", '"喜欢"', "enabled"),
+        ("对象", '{"a":1}', "enabled"),
+        ("null", "null", "enabled"),
+        ("非法", "not json", "enabled"),
+        ("   ", '["水果"]', "enabled"),
+        ("未知状态", '["水果"]', "deleted"),
     ):
         with pytest.raises(sqlite3.IntegrityError):
             conn.execute(
-                "INSERT INTO memory_structured (content, tags, priority, created_at, updated_at, "
-                "status_state) VALUES (?, ?, ?, 't', 't', ?)",
-                (content, tags, priority, status),
+                "INSERT INTO memory_structured (content, tags, created_at, updated_at, "
+                "status_state) VALUES (?, ?, 't', 't', ?)",
+                (content, tags, status),
             )
 
     # 元素非字符串的数组仍可写入，由读取路径降级（R1 的已知边界）。
@@ -356,3 +367,96 @@ def test_memory_structured_schema_and_constraints(conn: sqlite3.Connection):
         "INSERT INTO memory_structured (content, tags, created_at, updated_at) "
         "VALUES ('重复但无来源', '[\"喜欢\"]', 't', 't')"
     )
+
+
+def test_drop_priority_migration_preserves_existing_rows(tmp_path: Path):
+    """T-11：0003 在已有数据的库上删除 priority 列，其余字段与行数完全不变。"""
+    directory = tmp_path / "migrations"
+    directory.mkdir()
+    for name in ("0001_init.sql", "0002_memory_structured.sql"):
+        shutil.copy(MIGRATIONS_DIR / name, directory / name)
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn, directory) == [1, 2]
+        conn.execute(
+            "INSERT INTO memory_structured "
+            "(content, tags, priority, source_ref, created_at, updated_at, status_state, "
+            "status_reason) VALUES "
+            "('脆柿子', '[\"喜欢\",\"水果\"]', 3, 'structured.md:2', 't1', 't2', 'enabled', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO memory_structured "
+            "(content, tags, priority, created_at, updated_at, status_state, status_reason) "
+            "VALUES ('已弃用', '[\"其他\"]', 1, 't3', 't4', 'disabled', '过期')"
+        )
+        conn.commit()
+        keep = "id, content, tags, source_ref, created_at, updated_at, status_state, status_reason"
+        before = [
+            tuple(row) for row in conn.execute(f"SELECT {keep} FROM memory_structured ORDER BY id")
+        ]
+
+        shutil.copy(
+            MIGRATIONS_DIR / "0003_memory_drop_priority.sql",
+            directory / "0003_memory_drop_priority.sql",
+        )
+        assert migrate(conn, directory) == [3]
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_structured)")}
+        assert "priority" not in columns
+        after = [
+            tuple(row) for row in conn.execute(f"SELECT {keep} FROM memory_structured ORDER BY id")
+        ]
+        assert after == before
+        assert len(after) == 2
+    finally:
+        conn.close()
+
+
+def test_add_revision_migration_initializes_existing_rows(tmp_path: Path):
+    """T-12：0004 在已有数据的库上增加 revision 列，既有条目初始化为 1，其余字段与行数不变。"""
+    directory = tmp_path / "migrations"
+    directory.mkdir()
+    for name in (
+        "0001_init.sql",
+        "0002_memory_structured.sql",
+        "0003_memory_drop_priority.sql",
+    ):
+        shutil.copy(MIGRATIONS_DIR / name, directory / name)
+    conn = connect(tmp_path / "pet.db")
+    try:
+        assert migrate(conn, directory) == [1, 2, 3]
+        conn.execute(
+            "INSERT INTO memory_structured "
+            "(content, tags, source_ref, created_at, updated_at, status_state, status_reason) "
+            "VALUES ('脆柿子', '[\"喜欢\",\"水果\"]', 'structured.md:2', 't1', 't2', "
+            "'enabled', NULL)"
+        )
+        conn.execute(
+            "INSERT INTO memory_structured "
+            "(content, tags, created_at, updated_at, status_state, status_reason) "
+            "VALUES ('已弃用', '[\"其他\"]', 't3', 't4', 'disabled', '过期')"
+        )
+        conn.commit()
+        keep = "id, content, tags, source_ref, created_at, updated_at, status_state, status_reason"
+        before = [
+            tuple(row) for row in conn.execute(f"SELECT {keep} FROM memory_structured ORDER BY id")
+        ]
+
+        shutil.copy(
+            MIGRATIONS_DIR / "0004_memory_revision.sql",
+            directory / "0004_memory_revision.sql",
+        )
+        assert migrate(conn, directory) == [4]
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_structured)")}
+        assert "revision" in columns
+        after = [
+            tuple(row) for row in conn.execute(f"SELECT {keep} FROM memory_structured ORDER BY id")
+        ]
+        assert after == before
+        revisions = [
+            row[0] for row in conn.execute("SELECT revision FROM memory_structured ORDER BY id")
+        ]
+        assert revisions == [1, 1]
+    finally:
+        conn.close()

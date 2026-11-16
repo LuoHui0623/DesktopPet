@@ -2,9 +2,9 @@ import sys
 
 import pytest
 
-from module.agent.chat_output import DispatchRejectedError, ModelOutputError, parse_chat_output
-from module.agent.plan import PlanStep
-from module.agent.subagent import parse_action
+from agent.harness.loop import parse_action
+from agent.prompts.chat_output import DispatchRejectedError, ModelOutputError, parse_chat_output
+from agent.spec.plan import PlanStep
 
 MARK = "｜｜DSML｜｜"
 

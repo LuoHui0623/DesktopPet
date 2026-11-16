@@ -2,12 +2,12 @@ from pathlib import Path
 
 import pytest
 
-from constants.agent import DEFAULT_PERSONA_ID
+from agent.constants import DEFAULT_PERSONA_ID
+from agent.persona.persona_service import PersonaService, PersonaUnavailableError
+from agent.persona.repository import DbPersonaVersions
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.persona.persona_service import ACTIVE_KEY, PersonaService, PersonaUnavailableError
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc, write_section
 
 CARD = "role:\n  名字: {name}\n  人设: 陪伴\npersonality:\n  - {trait}\n"
 BROKEN = "role:\n  名字: 小坏\n"
@@ -24,7 +24,7 @@ class Harness:
         self.markers: list[str] = markers if markers is not None else []
         self.service = PersonaService(
             self.directory,
-            SettingsService(self.db_file),
+            settings_doc(self.db_file),
             DbPersonaVersions(self.db_file),
             clock=lambda: "2026-10-27T09:00:00+08:00",
             session_marker=self.markers.append,
@@ -153,9 +153,20 @@ def test_each_card_keeps_its_own_versions(tmp_path: Path):
     assert harness.versions("小桌") == [1]
 
 
-def test_setting_is_read_from_app_setting(tmp_path: Path):
+def test_active_persona_comes_from_the_persona_section(tmp_path: Path):
     harness = Harness(tmp_path)
     harness.write("芙芙", card("芙芙"))
     harness.write("小桌", card("小桌"))
-    SettingsService(harness.db_file).put(ACTIVE_KEY, "小桌")
+    write_section(harness.db_file, "persona", {"active": "小桌"})
     assert harness.service.active_id() == "小桌"
+
+
+def test_activate_changes_domain_state_and_snapshot(tmp_path: Path):
+    harness = Harness(tmp_path)
+    harness.write("芙芙", card("芙芙"))
+    harness.write("小桌", card("小桌"))
+
+    harness.service.activate("小桌")
+
+    assert harness.service.active_id() == "小桌"
+    assert harness.service.snapshot_settings() == {"active": "小桌"}

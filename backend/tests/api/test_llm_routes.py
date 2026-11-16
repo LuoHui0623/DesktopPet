@@ -3,9 +3,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from agent.llm.llm_service import LlmService
 from api.app import create_app
 from config.settings import ModelSettingsSource
-from module.llm import LlmService
 
 TOKEN = "test-token-value"
 SECRET = "sk-secret-value-do-not-leak"
@@ -156,7 +156,6 @@ def test_routes_report_unavailable_when_service_is_not_configured():
 def test_active_requires_token(config_dir: Path):
     client = make_client(config_dir)
     assert client.get("/api/llm/active").status_code == 401
-    assert client.put("/api/llm/active", json={}).status_code == 401
 
 
 def test_active_defaults_come_from_env(config_dir: Path):
@@ -170,84 +169,7 @@ def test_active_defaults_come_from_env(config_dir: Path):
     }
 
 
-def test_put_switches_chat_model_and_reports_database_source(config_dir: Path):
-    client = make_client(config_dir)
-    response = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"chat": {"provider": "opencode", "model": "gpt-5.6-luna"}},
-    )
-    assert response.status_code == 200
-    body = response.json()
-    assert body["chat"] == {
-        "provider": "opencode",
-        "model": "gpt-5.6-luna",
-        "source": "database",
-    }
-    assert body["consolidate"]["source"] == "env"
-    assert client.get("/api/llm/active", headers=AUTH).json()["chat"] == body["chat"]
-
-
-def test_put_rejects_model_without_required_role(config_dir: Path):
-    client = make_client(config_dir)
-    response = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"consolidate": {"provider": "opencode", "model": "gpt-5.6-luna"}},
-    )
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "llm_selection_invalid"
-    assert "consolidate" in response.json()["error"]["message"]
-    assert client.get("/api/llm/active", headers=AUTH).json()["consolidate"]["source"] == "env"
-
-
-def test_put_rejects_unknown_provider_or_model(config_dir: Path):
-    client = make_client(config_dir)
-    unknown_provider = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"chat": {"provider": "nope", "model": "deepseek-flash"}},
-    )
-    unknown_model = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"chat": {"provider": "deepseek", "model": "nope"}},
-    )
-    assert unknown_provider.status_code == 422
-    assert unknown_model.status_code == 422
-
-
-def test_put_validates_all_selections_before_writing(config_dir: Path):
-    client = make_client(config_dir)
-    response = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={
-            "chat": {"provider": "opencode", "model": "gpt-5.6-luna"},
-            "consolidate": {"provider": "opencode", "model": "gpt-5.6-luna"},
-        },
-    )
-    assert response.status_code == 422
-    body = client.get("/api/llm/active", headers=AUTH).json()
-    assert body["chat"]["source"] == "env"
-
-
-def test_put_rejects_unknown_fields(config_dir: Path):
-    client = make_client(config_dir)
-    response = client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"summary": {"provider": "deepseek", "model": "deepseek-flash"}},
-    )
-    assert response.status_code == 422
-
-
 def test_active_response_never_contains_secret_values(config_dir: Path):
     client = make_client(config_dir)
-    client.put(
-        "/api/llm/active",
-        headers=AUTH,
-        json={"chat": {"provider": "deepseek", "model": "deepseek-flash"}},
-    )
     assert SECRET not in client.get("/api/llm/active", headers=AUTH).text
-    assert SECRET not in client.put("/api/llm/active", headers=AUTH, json={}).text
+    assert SECRET not in client.get("/api/llm/providers", headers=AUTH).text

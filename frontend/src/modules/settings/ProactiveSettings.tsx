@@ -47,7 +47,7 @@ export function ProactiveSettings({
   // 草稿初值来自后端下发的读模型；保存后返回的读模型与草稿一致，切换 tab 会重新挂载。
   const [draft, setDraft] = useState(() => toDraft(settings.proactive));
   const [ledger, setLedger] = useState<SchedulerLedger | null>(null);
-  const { busy, error, notice, save } = useSettingsSave(onSaved);
+  const { busy, error, notice, save } = useSettingsSave(settings.version, onSaved);
 
   // 台账跟随调度配置刷新，保存后立刻显示当日已发送次数。
   useEffect(() => {
@@ -79,14 +79,17 @@ export function ProactiveSettings({
   const onSave = () => {
     if (invalid) return;
     save(
-      () =>
-        saveProactiveConfig({
-          enabled: draft.enabled,
-          min_interval_minutes: interval.value,
-          max_per_day: max.value,
-          dnd_start: draft.dndStart.trim(),
-          dnd_end: draft.dndEnd.trim(),
-        }),
+      (version) =>
+        saveProactiveConfig(
+          {
+            enabled: draft.enabled,
+            min_interval_minutes: interval.value,
+            max_per_day: max.value,
+            dnd_start: draft.dndStart.trim(),
+            dnd_end: draft.dndEnd.trim(),
+          },
+          version,
+        ),
       "主动消息设置已保存，立即生效",
     );
   };

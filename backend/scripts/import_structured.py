@@ -31,8 +31,8 @@ SOURCE_FILE = "structured.md"
 CANDIDATE_FILE = "structured.rewrite.json"
 INSERT_SQL = (
     "INSERT INTO memory_structured "
-    "(content, tags, priority, source_ref, created_at, updated_at, status_state) "
-    "VALUES (?, ?, ?, ?, ?, ?, 'enabled')"
+    "(content, tags, source_ref, created_at, updated_at, status_state) "
+    "VALUES (?, ?, ?, ?, ?, 'enabled')"
 )
 
 
@@ -57,7 +57,7 @@ def _tags_json(tags: list[str]) -> str:
 
 def plan_import(conn: Any, entries: list[dict[str, Any]]) -> ImportPlan:
     rows = conn.execute(
-        "SELECT source_ref, content, tags, priority, created_at FROM memory_structured"
+        "SELECT source_ref, content, tags, created_at FROM memory_structured"
     ).fetchall()
     existing: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
@@ -66,7 +66,6 @@ def plan_import(conn: Any, entries: list[dict[str, Any]]) -> ImportPlan:
             raise ImportConflict(f"表内已存在重复条目：{key[0]} / {key[1]}")
         existing[key] = {
             "tags": row["tags"],
-            "priority": row["priority"],
             "created_at": row["created_at"],
         }
 
@@ -85,11 +84,7 @@ def plan_import(conn: Any, entries: list[dict[str, Any]]) -> ImportPlan:
         if row is None:
             missing.append(entry)
             continue
-        if (
-            row["tags"] != _tags_json(entry["tags"])
-            or row["priority"] != entry["priority"]
-            or row["created_at"] != entry["created_at"]
-        ):
+        if row["tags"] != _tags_json(entry["tags"]) or row["created_at"] != entry["created_at"]:
             raise ImportConflict(
                 f"表内条目 {key[0]} / {key[1]} 与冻结候选不一致；"
                 "重复导入前请先核对，避免覆盖人工修改"
@@ -108,7 +103,6 @@ def import_entries(conn: Any, entries: list[dict[str, Any]], *, apply: bool) -> 
                 (
                     entry["content"],
                     _tags_json(entry["tags"]),
-                    entry["priority"],
                     entry["source_ref"],
                     entry["created_at"],
                     entry["created_at"],

@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from constants.files import DIR_ACTIONS, FILE_ACTIONS
-from module.files.resolver import FileError
+from agent.files.registry import DIR_ACTIONS, FILE_ACTIONS
+from agent.files.resolver import FileError
 
 OLD_KEYS = {"kind", "resources", "skills", "actions", "parameters", "limits", "next"}
 
@@ -104,7 +104,7 @@ def test_editing_status_tracks_occupancy_in_directory_view(env):
 
     from conftest import make_task
 
-    from module.agent.context import task_scope
+    from agent.spec.context import task_scope
 
     other = env.bind(make_task("main-2"))
     with task_scope(other):

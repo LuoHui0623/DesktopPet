@@ -55,6 +55,11 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
 
 pub fn run() {
     let app = tauri::Builder::default()
+        // 单实例插件必须最先注册：第二次启动在插件初始化阶段就被拦下并退出 0，
+        // 不会再去拉起第二个后端（那会撞上后端的单实例锁，最终以退出码 1 结束）。
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            focus_pet_window(app);
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_window_state::Builder::default()
@@ -87,10 +92,7 @@ pub fn run() {
 fn start_backend(app: AppHandle) {
     thread::spawn(move || match launch_backend() {
         Ok(launched) => on_backend_ready(app, launched),
-        Err(message) => {
-            show_error(&app, "后端启动失败", &message);
-            app.exit(1);
-        }
+        Err(message) => fail(&app, "后端启动失败", &message),
     });
 }
 
@@ -98,9 +100,11 @@ fn on_backend_ready(app: AppHandle, launched: Launched) {
     let info = launched.info.clone();
     let exit_app = app.clone();
     let supervisor = Supervisor::new(launched, move |exit: ExitInfo| {
-        eprintln!("后端意外退出：代码 {:?}", exit.code);
-        show_error(&exit_app, "后端已退出", "后端意外退出，应用将关闭。");
-        exit_app.exit(1);
+        fail(
+            &exit_app,
+            "后端已退出",
+            &format!("后端意外退出（代码 {:?}），应用将关闭。", exit.code),
+        );
     });
     let slot = app.state::<BackendSlot>();
     if let Ok(mut current) = slot.supervisor.lock() {
@@ -110,9 +114,18 @@ fn on_backend_ready(app: AppHandle, launched: Launched) {
         *current = Some(info);
     }
     if let Err(error) = window::create_pet_window(&app) {
-        show_error(&app, "窗口创建失败", &error.to_string());
-        app.exit(1);
+        fail(&app, "窗口创建失败", &error.to_string());
     }
+}
+
+/// 第二个进程被单实例插件拦下时，把已有桌宠窗口重新拉到前台。
+fn focus_pet_window(app: &AppHandle) {
+    let Some(window) = app.get_webview_window(window::PET_WINDOW_LABEL) else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
 }
 
 fn launch_backend() -> Result<Launched, String> {
@@ -153,6 +166,14 @@ fn python_path(backend_dir: &Path) -> PathBuf {
     } else {
         venv.join("bin").join("python")
     }
+}
+
+/// 启动失败一律走这里：`cargo run` 只报退出码，模态弹窗会随进程结束消失，
+/// 缺了 stderr 这一行，终端里就只剩 `process didn't exit successfully (exit code: 1)`。
+fn fail(app: &AppHandle, title: &str, message: &str) {
+    eprintln!("[shell] {title}：{message}");
+    show_error(app, title, message);
+    app.exit(1);
 }
 
 fn show_error(app: &AppHandle, title: &str, message: &str) {

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
-from service.perception.constants import MAX_DAILY_LIMIT, MAX_MIN_INTERVAL_MINUTES
-from service.perception.scheduler import SchedulerConfig
+from agent.capabilities.perception.constants import MAX_DAILY_LIMIT, MAX_MIN_INTERVAL_MINUTES
+from agent.capabilities.perception.gate.scheduler import SchedulerConfig
 
 HHMM_PATTERN = r"^([01]\d|2[0-3]):[0-5]\d$"
 

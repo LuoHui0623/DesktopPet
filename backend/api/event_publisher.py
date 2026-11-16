@@ -1,6 +1,11 @@
 from collections.abc import Sequence
 from datetime import datetime
 
+from agent.capabilities.chat.chat_service import PetState, ReplyMessage
+from agent.capabilities.chat.citations import CitedSource
+from agent.harness.approval import ApprovalTicket
+from agent.llm.usage_panel import PanelCall, PanelTurn, UsagePanel, record_to_call
+from agent.llm.usage_service import TurnUsage
 from api.schemas.approval import ApprovalItem, FilePreview, PreviewHunk
 from api.schemas.chat import ReplyMessageOut, SourceOut
 from api.schemas.events import (
@@ -19,11 +24,6 @@ from api.schemas.events import (
 )
 from infra.events.bus import EventBus
 from infra.llm.usage import CallStart, UsageSample
-from module.agent.approval import ApprovalTicket
-from module.chat.chat_service import PetState, ReplyMessage
-from module.chat.citations import CitedSource
-from module.llm.usage_panel import PanelCall, PanelTurn, UsagePanel, record_to_call
-from module.llm.usage_service import TurnUsage
 
 
 def source_out(source: CitedSource) -> SourceOut:

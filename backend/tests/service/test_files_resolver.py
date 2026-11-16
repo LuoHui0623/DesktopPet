@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from constants.files import (
+from agent.files.registry import (
     ACTION_APPEND,
     ACTION_DELETE_LINES,
     ACTION_INSERT,
@@ -18,7 +18,7 @@ from constants.files import (
     STRUCTURED,
     WORLD,
 )
-from module.files.resolver import ResourceResolver
+from agent.files.resolver import ResourceResolver
 
 
 @pytest.fixture

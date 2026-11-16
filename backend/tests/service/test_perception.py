@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -6,22 +5,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from infra.store.db import connect
-from infra.store.migrate import migrate
-from module.settings.settings_service import SettingsService
-from service.perception import (
-    InvalidPerceptionConfig,
-    InvalidPerceptionSample,
-    PerceptionService,
-    ProcessDecision,
-)
-from service.perception.constants import (
+from agent.capabilities.perception.collector.service import PerceptionService
+from agent.capabilities.perception.constants import (
     MAX_AWAY_MINUTES,
     MIN_AWAY_MINUTES,
     MIN_SIT_MINUTES,
-    PROCESS_MUTED_KEY,
-    PROCESS_WHITELIST_KEY,
 )
+from agent.capabilities.perception.events.models import (
+    InvalidPerceptionConfig,
+    InvalidPerceptionSample,
+    ProcessDecision,
+)
+from app.settings.coordinator import SettingsCoordinator
+from app.settings.document import SettingsDocument
+from infra.store.db import connect
+from infra.store.migrate import migrate
 
 NOW = datetime(2026, 10, 29, 10, 0, 0, tzinfo=UTC)
 
@@ -36,24 +34,38 @@ def db_file(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def settings(db_file: Path) -> SettingsService:
-    return SettingsService(db_file)
+def settings(tmp_path: Path) -> SettingsDocument:
+    document = SettingsDocument(tmp_path / "settings.json")
+    document.load()
+    return document
 
 
-def service(db_file: Path, settings: SettingsService) -> PerceptionService:
+def service(settings: SettingsDocument) -> PerceptionService:
     return PerceptionService(settings, clock=lambda: NOW)
 
 
-def whitelist(settings: SettingsService, *names: str) -> None:
-    settings.put(PROCESS_WHITELIST_KEY, json.dumps(list(names)))
+def configure(settings: SettingsDocument, **values: object) -> None:
+    section = dict(settings.section("perception"))
+    section.update(values)
+    settings.replace("perception", section)
+
+
+def configure_scheduler(settings: SettingsDocument, **values: object) -> None:
+    section = dict(settings.section("scheduler"))
+    section.update(values)
+    settings.replace("scheduler", section)
+
+
+def whitelist(settings: SettingsDocument, *names: str) -> None:
+    configure(settings, process_whitelist=list(names))
 
 
 def at(seconds: int = 0) -> datetime:
     return NOW + timedelta(seconds=seconds)
 
 
-def test_initial_state_is_enabled_but_unknown(db_file: Path, settings: SettingsService):
-    state = service(db_file, settings).snapshot()
+def test_initial_state_is_enabled_but_unknown(settings: SettingsDocument):
+    state = service(settings).snapshot()
 
     assert state.enabled is True
     assert state.foreground_enabled is True
@@ -62,10 +74,8 @@ def test_initial_state_is_enabled_but_unknown(db_file: Path, settings: SettingsS
     assert state.idle_seconds is None
 
 
-def test_idle_threshold_marks_away_and_returning_is_active(
-    db_file: Path, settings: SettingsService
-):
-    perception = service(db_file, settings)
+def test_idle_threshold_marks_away_and_returning_is_active(settings: SettingsDocument):
+    perception = service(settings)
 
     perception.ingest("idle", 600_000, at(0))
     assert perception.snapshot().presence == "away"
@@ -74,8 +84,8 @@ def test_idle_threshold_marks_away_and_returning_is_active(
     assert perception.snapshot().presence == "active"
 
 
-def test_busy_covers_fullscreen_and_locked(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_busy_covers_fullscreen_and_locked(settings: SettingsDocument):
+    perception = service(settings)
 
     perception.ingest("fullscreen", True, at(0))
     assert perception.snapshot().busy is True
@@ -88,22 +98,26 @@ def test_busy_covers_fullscreen_and_locked(db_file: Path, settings: SettingsServ
     assert perception.snapshot().busy is False
 
 
-def test_foreground_outside_whitelist_is_dropped(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_foreground_outside_whitelist_is_dropped(settings: SettingsDocument):
+    perception = service(settings)
 
     outcome = perception.ingest("foreground", "chrome", at(0))
 
     assert outcome.accepted is False
     assert perception.snapshot().foreground is None
 
+    # 名单在段快照里：首读之前改段仍会影响服务（真源是段 → 领域状态的初值）。
     whitelist(settings, "code")
+    perception = service(settings)
     perception.ingest("foreground", "Code.EXE", at(10))
 
     assert perception.snapshot().foreground == "code"
 
 
-def test_candidates_are_capped_and_decisions_persist(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_candidates_are_capped_and_decisions_project_into_the_section(
+    settings: SettingsDocument,
+):
+    perception = service(settings)
     for index in range(21):
         perception.ingest("process_candidate", f"app{index}", at(index))
 
@@ -115,7 +129,8 @@ def test_candidates_are_capped_and_decisions_persist(db_file: Path, settings: Se
     state = perception.decide_process("APP20.EXE", ProcessDecision.ALLOW)
     assert state.whitelist == ("app20",)
     assert "app20" not in state.candidates
-    assert json.loads(settings.get(PROCESS_WHITELIST_KEY) or "[]") == ["app20"]
+    # 名单也是配置：领域状态改完即可投射到 `perception` 段。
+    assert perception.snapshot_settings()["process_whitelist"] == ["app20"]
 
     state = perception.decide_process("app20", ProcessDecision.IGNORE)
     assert state.whitelist == ()
@@ -123,28 +138,19 @@ def test_candidates_are_capped_and_decisions_persist(db_file: Path, settings: Se
     assert perception.ingest("process_candidate", "app20", at(30)).accepted is False
 
 
-def test_candidates_stay_in_memory(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_ingesting_candidates_never_touches_the_snapshot(settings: SettingsDocument):
+    perception = service(settings)
+    before = settings.section("perception")
 
-    def setting_count() -> int:
-        conn = sqlite3.connect(db_file)
-        try:
-            return conn.execute("SELECT COUNT(*) FROM app_setting").fetchone()[0]
-        finally:
-            conn.close()
-
-    before = setting_count()
     perception.ingest("process_candidate", "chrome", at(0))
 
-    assert setting_count() == before
+    assert settings.section("perception") == before
     assert perception.snapshot().candidates == ("chrome",)
 
 
-def test_same_kind_and_value_within_five_seconds_keeps_one(
-    db_file: Path, settings: SettingsService
-):
+def test_same_kind_and_value_within_five_seconds_keeps_one(settings: SettingsDocument):
     whitelist(settings, "code")
-    perception = service(db_file, settings)
+    perception = service(settings)
 
     assert perception.ingest("foreground", "code", at(0)).accepted is True
     duplicate = perception.ingest("foreground", "code", at(4))
@@ -153,11 +159,16 @@ def test_same_kind_and_value_within_five_seconds_keeps_one(
     assert duplicate.reason == "duplicate"
 
 
-def test_disabled_switch_drops_samples(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_disabled_switch_drops_samples(settings: SettingsDocument):
+    perception = service(settings)
     perception.ingest("idle", 10_000, at(0))
     perception.ingest("fullscreen", True, at(1))
-    settings.put("perception.enabled", "false")
+    perception.write_config(
+        enabled=False,
+        foreground_enabled=True,
+        idle_away_minutes=10,
+        sit_minutes=90,
+    )
 
     outcome = perception.ingest("idle", 20_000, at(10))
     state = perception.snapshot()
@@ -168,10 +179,10 @@ def test_disabled_switch_drops_samples(db_file: Path, settings: SettingsService)
     assert state.busy is False
 
 
-def test_foreground_switch_only_drops_process_kinds(db_file: Path, settings: SettingsService):
-    settings.put("perception.foreground_enabled", "false")
+def test_foreground_switch_only_drops_process_kinds(settings: SettingsDocument):
+    configure(settings, foreground_enabled=False)
     whitelist(settings, "code")
-    perception = service(db_file, settings)
+    perception = service(settings)
 
     assert perception.ingest("idle", 1_000, at(0)).accepted is True
     assert perception.ingest("foreground", "code", at(1)).reason == "foreground_disabled"
@@ -179,8 +190,8 @@ def test_foreground_switch_only_drops_process_kinds(db_file: Path, settings: Set
     assert perception.ingest("process_candidate", "chrome", at(3)).reason == "foreground_disabled"
 
 
-def test_invalid_values_are_rejected(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_invalid_values_are_rejected(settings: SettingsDocument):
+    perception = service(settings)
 
     with pytest.raises(InvalidPerceptionSample):
         perception.ingest("idle", -1, at(0))
@@ -191,7 +202,7 @@ def test_invalid_values_are_rejected(db_file: Path, settings: SettingsService):
 
 
 def test_derived_events_and_triggers_stay_out_of_daily_log(
-    db_file: Path, settings: SettingsService
+    db_file: Path, settings: SettingsDocument
 ):
     whitelist(settings, "code")
     now = [NOW]
@@ -217,9 +228,9 @@ def test_derived_events_and_triggers_stay_out_of_daily_log(
         conn.close()
 
 
-def test_untriggered_events_reach_context_once(db_file: Path, settings: SettingsService):
+def test_untriggered_events_reach_context_once(db_file: Path, settings: SettingsDocument):
     whitelist(settings, "code")
-    settings.put("scheduler.enabled", "false")
+    configure_scheduler(settings, enabled=False)
     now = [NOW]
     perception = PerceptionService(
         settings,
@@ -237,9 +248,9 @@ def test_untriggered_events_reach_context_once(db_file: Path, settings: Settings
     assert perception.recent_context_events() == ()
 
 
-def test_ingesting_samples_never_writes_daily_log(db_file: Path, settings: SettingsService):
+def test_ingesting_samples_never_writes_daily_log(db_file: Path, settings: SettingsDocument):
     whitelist(settings, "code")
-    perception = service(db_file, settings)
+    perception = service(settings)
 
     perception.ingest("idle", 100_000, at(0))
     perception.ingest("foreground", "code", at(1))
@@ -256,8 +267,10 @@ def test_ingesting_samples_never_writes_daily_log(db_file: Path, settings: Setti
     assert count == 0
 
 
-def test_write_config_persists_and_reloads(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_write_config_only_changes_domain_state(settings: SettingsDocument):
+    """域方法不落盘（`R8`）：写入后段快照不变，投射与持久化由协调器负责。"""
+    perception = service(settings)
+    before = settings.section("perception")
 
     saved = perception.write_config(
         enabled=True,
@@ -269,14 +282,20 @@ def test_write_config_persists_and_reloads(db_file: Path, settings: SettingsServ
     assert saved.enabled is True
     assert saved.foreground_enabled is False
     assert saved.idle_away_minutes == 20
-    assert saved.sit_minutes == 45
-    assert settings.get("perception.idle_away_minutes") == "20"
-    assert settings.get("perception.sit_minutes") == "45"
-    assert service(db_file, settings).config() == saved
+    assert settings.section("perception") == before
+    assert perception.snapshot_settings()["idle_away_minutes"] == 20
+
+    coordinator = SettingsCoordinator(settings, {"perception": perception.snapshot_settings})
+    coordinator.save("perception", version=settings.version)
+
+    reloaded = SettingsDocument(settings.path)
+    reloaded.load()
+    assert reloaded.section("perception")["idle_away_minutes"] == 20
+    assert reloaded.section("perception")["sit_minutes"] == 45
 
 
-def test_write_config_takes_effect_without_a_restart(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_write_config_takes_effect_without_a_restart(settings: SettingsDocument):
+    perception = service(settings)
     perception.ingest("idle", 90_000, at(0))
     assert perception.snapshot().presence == "active"
 
@@ -290,10 +309,8 @@ def test_write_config_takes_effect_without_a_restart(db_file: Path, settings: Se
     assert perception.snapshot().presence == "away"
 
 
-def test_turning_perception_off_with_config_clears_the_buffer(
-    db_file: Path, settings: SettingsService
-):
-    perception = service(db_file, settings)
+def test_turning_perception_off_with_config_clears_the_buffer(settings: SettingsDocument):
+    perception = service(settings)
     perception.ingest("idle", 600_000, at(0))
     perception.ingest("fullscreen", True, at(1))
     perception.ingest("process_candidate", "chrome", at(2))
@@ -315,8 +332,9 @@ def test_turning_perception_off_with_config_clears_the_buffer(
     assert perception.ingest("idle", 1_000, at(3)).reason == "disabled"
 
 
-def test_write_config_rejects_out_of_range_thresholds(db_file: Path, settings: SettingsService):
-    perception = service(db_file, settings)
+def test_write_config_rejects_out_of_range_thresholds(settings: SettingsDocument):
+    perception = service(settings)
+    before = settings.section("perception")
 
     for minutes in (MIN_AWAY_MINUTES - 1, MAX_AWAY_MINUTES + 1):
         with pytest.raises(InvalidPerceptionConfig):
@@ -334,13 +352,15 @@ def test_write_config_rejects_out_of_range_thresholds(db_file: Path, settings: S
             sit_minutes=MIN_SIT_MINUTES - 1,
         )
 
-    assert settings.get("perception.enabled") is None
+    # 校验失败不改领域状态，也不写快照。
+    assert perception.config().enabled is True
+    assert settings.section("perception") == before
 
 
-def test_write_config_keeps_the_process_lists(db_file: Path, settings: SettingsService):
+def test_write_config_keeps_the_process_lists(settings: SettingsDocument):
     whitelist(settings, "code")
-    settings.put(PROCESS_MUTED_KEY, json.dumps(["chrome"]))
-    perception = service(db_file, settings)
+    configure(settings, process_muted=["chrome"])
+    perception = service(settings)
 
     saved = perception.write_config(
         enabled=False,

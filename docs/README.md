@@ -48,14 +48,14 @@
 
 ## 当前迁移状态
 
-- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `service/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `module/chat/transcript.py` 的当日时间线（正文从 `daily_log` 读取，不存内存快照；感知事件每轮单独读取，最多 5 条）；主动管线在 `module/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
+- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `agent/capabilities/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `agent/capabilities/chat/transcript.py` 的当日时间线（正文从 `daily_log` 读取，不存内存快照；感知事件每轮单独读取，最多 5 条）；主动管线在 `agent/capabilities/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
 - **`Arch.md` 区分目标与现状**：「backend/（当前代码目录）」与「当前组件落点（迁移基线）」记录当前目录和实现落点；「目标分层职责」「目标依赖方向」「责任归属与迁移状态」记录已确认的逻辑职责、依赖规则及代表链路。除已完成的 LLM/client 首批外，目标拆分尚未迁移，不应把目标归属读成当前代码位置。主动气泡与忽略、形象组与人设挂载、形象包与状态联动动图、像素级穿透、基础互动、右键菜单、独立状态窗口均已实现；形象域的业务设计独立到 [docs/AVATAR/](AVATAR/README.md)（包、状态、动画、窗口与形象组均已实现），`Arch.md` 的「形象域」只保留分层与落点；互动的上报、节流与上下文注入见「基础互动」，右键菜单的读模型、原生菜单与动作分发见「右键菜单」，状态窗口的当前轮次面板与开发/正式展示边界见「状态窗口」。
 - **`PERCEPTION.md` 作为采集细节附录保留**（已被 OBSERVER.md 顶部标注为旧稿）：
   - 保留：状态模型、采集方式、怎么获取进程名（小节）、判断条件、事件分层、开关与默认值。OBSERVER.md 不再重复 Win32 细节。
   - 已由 OBSERVER.md 取代：主题（能聊什么）（事件→主题、话术门槛）、节制规则（主动消息的刹车）（开口闸门）。两份若冲突，以 OBSERVER.md 为准；主题的话术示例在 chat 的提示词定稿前暂留，仅作参考，不是契约。
   - 后续若要合并，只把状态模型、采集方式、判断条件的有效细节补进 OBSERVER.md，再删除重复段；不整体搬运。
-- **当前/目标边界**：感知当前实现在 `service/perception`；目标逻辑上由 service 提供采样/runtime 工具、感知业务责任解释观测并产生 event，再由 chat 入口通过公开契约消费。该职责方向已在 `Arch.md` 的「责任归属与迁移状态」确认，但目标物理目录及迁移尚未实施；域文档仍按“观测域”描述，不将其实现包名写死。
-- **文件域已按契约实现**：`docs/FILES/` 五份主题文档记录的口径（`index` 单参数两视图、动作集按条目 `type` 分组、条目队列与并 action、全文哈希与分区处置、视图类型分层）已落到 `backend/module/files/` 与 `backend/module/agent/review.py`。工具层按动作拆分、不再有 `edit` 聚合入口；写动作只入队，人工授权只在 review 一处，提交前复核全文哈希，冲突只报告「检测到哈希不一致」且不自动合并。端到端不变量见 [test_files_end_to_end.py](../backend/tests/acceptance/test_files_end_to_end.py)。
+- **当前/目标边界**：感知当前实现在 `agent/capabilities/perception`；目标逻辑上由 service 提供采样/runtime 工具、感知业务责任解释观测并产生 event，再由 chat 入口通过公开契约消费。该职责方向已在 `Arch.md` 的「责任归属与迁移状态」确认，但目标物理目录及迁移尚未实施；域文档仍按“观测域”描述，不将其实现包名写死。
+- **文件域已按契约实现**：`docs/FILES/` 五份主题文档记录的口径（`index` 单参数两视图、动作集按条目 `type` 分组、条目队列与并 action、全文哈希与分区处置、视图类型分层）已落到 `backend/agent/files/` 与 `backend/agent/harness/review.py`。工具层按动作拆分、不再有 `edit` 聚合入口；写动作只入队，人工授权只在 review 一处，提交前复核全文哈希，冲突只报告「检测到哈希不一致」且不自动合并。端到端不变量见 [test_files_end_to_end.py](../backend/tests/acceptance/test_files_end_to_end.py)。
 
 ## 域文档的固定结构
 

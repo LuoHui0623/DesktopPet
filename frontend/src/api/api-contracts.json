@@ -1,43 +1,6 @@
 {
   "operations": [
     {
-      "operationId": "activate_avatar",
-      "method": "PUT",
-      "path": "/api/avatars/active",
-      "tags": [
-        "avatars"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/ActivateAvatarIn"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/AvatarsResponse"
-        },
-        "404": null,
-        "422": {
-          "$ref": "#/components/schemas/HTTPValidationError"
-        }
-      }
-    },
-    {
-      "operationId": "activate_persona",
-      "method": "PUT",
-      "path": "/api/personas/active",
-      "tags": [
-        "personas"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/PersonaActivateRequest"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/PersonasResponse"
-        },
-        "422": null
-      }
-    },
-    {
       "operationId": "clear_perception_records",
       "method": "POST",
       "path": "/api/perception/clear",
@@ -49,6 +12,23 @@
         "200": {
           "$ref": "#/components/schemas/PerceptionClearResponse"
         }
+      }
+    },
+    {
+      "operationId": "create_memory_entry",
+      "method": "POST",
+      "path": "/api/memories/entries",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/MemoryEntryCreate"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/EntryAddResult"
+        },
+        "422": null
       }
     },
     {
@@ -66,6 +46,42 @@
           "$ref": "#/components/schemas/PerceptionStateResponse"
         },
         "422": null
+      }
+    },
+    {
+      "operationId": "disable_memory_entry",
+      "method": "POST",
+      "path": "/api/memories/entries/{entry_id}/disable",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/EntryDisableRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MemoryEntryView"
+        },
+        "404": null,
+        "422": null
+      }
+    },
+    {
+      "operationId": "enable_memory_entry",
+      "method": "POST",
+      "path": "/api/memories/entries/{entry_id}/enable",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/MemoryEntryView"
+        },
+        "404": null,
+        "422": {
+          "$ref": "#/components/schemas/HTTPValidationError"
+        }
       }
     },
     {
@@ -107,20 +123,6 @@
       "responses": {
         "200": {
           "$ref": "#/components/schemas/MenuResponse"
-        }
-      }
-    },
-    {
-      "operationId": "get_perception_config",
-      "method": "GET",
-      "path": "/api/perception/config",
-      "tags": [
-        "perception"
-      ],
-      "request": null,
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/PerceptionConfigView"
         }
       }
     },
@@ -289,6 +291,35 @@
       }
     },
     {
+      "operationId": "list_memory_entries",
+      "method": "GET",
+      "path": "/api/memories/entries",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/EntryListResponse"
+        },
+        "422": null
+      }
+    },
+    {
+      "operationId": "list_memory_tags",
+      "method": "GET",
+      "path": "/api/memories/tags",
+      "tags": [
+        "memories"
+      ],
+      "request": null,
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/TagListResponse"
+        }
+      }
+    },
+    {
       "operationId": "list_personas",
       "method": "GET",
       "path": "/api/personas",
@@ -300,6 +331,42 @@
         "200": {
           "$ref": "#/components/schemas/PersonasResponse"
         }
+      }
+    },
+    {
+      "operationId": "merge_memory_tags",
+      "method": "POST",
+      "path": "/api/memories/tags/merge",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/TagMergeRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/TagMergeResponse"
+        },
+        "404": null,
+        "422": null
+      }
+    },
+    {
+      "operationId": "preview_tag_merge",
+      "method": "POST",
+      "path": "/api/memories/tags/merge/preview",
+      "tags": [
+        "memories"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/TagMergeRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/TagMergePreviewResponse"
+        },
+        "404": null,
+        "422": null
       }
     },
     {
@@ -348,9 +415,7 @@
         "$ref": "#/components/schemas/StructuredMemoryUpdate"
       },
       "responses": {
-        "200": {
-          "$ref": "#/components/schemas/StructuredMemoryUpdate"
-        },
+        "200": {},
         "422": {
           "$ref": "#/components/schemas/HTTPValidationError"
         }
@@ -374,23 +439,6 @@
         "422": null,
         "502": null,
         "503": null
-      }
-    },
-    {
-      "operationId": "set_active_llm",
-      "method": "PUT",
-      "path": "/api/llm/active",
-      "tags": [
-        "llm"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/ActiveLlmRequest"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/ActiveLlmResponse"
-        },
-        "422": null
       }
     },
     {
@@ -434,36 +482,21 @@
       }
     },
     {
-      "operationId": "update_perception_config",
+      "operationId": "update_memory_entry",
       "method": "PUT",
-      "path": "/api/perception/config",
+      "path": "/api/memories/entries/{entry_id}",
       "tags": [
-        "perception"
+        "memories"
       ],
       "request": {
-        "$ref": "#/components/schemas/PerceptionConfigIn"
+        "$ref": "#/components/schemas/EntryUpdateRequest"
       },
       "responses": {
         "200": {
-          "$ref": "#/components/schemas/PerceptionConfigView"
+          "$ref": "#/components/schemas/MemoryEntryView"
         },
-        "422": null
-      }
-    },
-    {
-      "operationId": "update_scheduler_config",
-      "method": "PUT",
-      "path": "/api/scheduler/config",
-      "tags": [
-        "scheduler"
-      ],
-      "request": {
-        "$ref": "#/components/schemas/SchedulerConfigIn"
-      },
-      "responses": {
-        "200": {
-          "$ref": "#/components/schemas/SchedulerConfigView"
-        },
+        "404": null,
+        "409": null,
         "422": null
       }
     },
@@ -482,6 +515,7 @@
           "$ref": "#/components/schemas/SettingsView"
         },
         "404": null,
+        "409": null,
         "422": {
           "$ref": "#/components/schemas/HTTPValidationError"
         }
@@ -501,9 +535,28 @@
         "200": {
           "$ref": "#/components/schemas/SettingsView"
         },
+        "409": null,
         "422": {
           "$ref": "#/components/schemas/HTTPValidationError"
         }
+      }
+    },
+    {
+      "operationId": "update_settings_model",
+      "method": "PUT",
+      "path": "/api/settings/model",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/ActiveLlmRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "409": null,
+        "422": null
       }
     },
     {
@@ -520,6 +573,25 @@
         "200": {
           "$ref": "#/components/schemas/SettingsView"
         },
+        "409": null,
+        "422": null
+      }
+    },
+    {
+      "operationId": "update_settings_persona",
+      "method": "PUT",
+      "path": "/api/settings/persona",
+      "tags": [
+        "settings"
+      ],
+      "request": {
+        "$ref": "#/components/schemas/PersonaActivateRequest"
+      },
+      "responses": {
+        "200": {
+          "$ref": "#/components/schemas/SettingsView"
+        },
+        "409": null,
         "422": null
       }
     },
@@ -537,6 +609,7 @@
         "200": {
           "$ref": "#/components/schemas/SettingsView"
         },
+        "409": null,
         "422": null
       }
     }
@@ -1256,6 +1329,101 @@
         "title": "DefaultInfo",
         "type": "object"
       },
+      "EntryAddResult": {
+        "properties": {
+          "entry": {
+            "$ref": "#/components/schemas/MemoryEntryView"
+          },
+          "new_tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "New Tags",
+            "type": "array"
+          },
+          "reused": {
+            "title": "Reused",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "entry",
+          "reused",
+          "new_tags"
+        ],
+        "title": "EntryAddResult",
+        "type": "object"
+      },
+      "EntryDisableRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "title": "EntryDisableRequest",
+        "type": "object"
+      },
+      "EntryListResponse": {
+        "properties": {
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/MemoryEntryView"
+            },
+            "title": "Entries",
+            "type": "array"
+          }
+        },
+        "required": [
+          "entries"
+        ],
+        "title": "EntryListResponse",
+        "type": "object"
+      },
+      "EntryUpdateRequest": {
+        "description": "人工修改请求：在 content/tags 之外必带预期 revision（Q27 乐观冲突检测）。",
+        "properties": {
+          "content": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content"
+          },
+          "expected_revision": {
+            "minimum": 1,
+            "title": "Expected Revision",
+            "type": "integer"
+          },
+          "tags": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tags"
+          }
+        },
+        "required": [
+          "expected_revision"
+        ],
+        "title": "EntryUpdateRequest",
+        "type": "object"
+      },
       "FilePreview": {
         "properties": {
           "authors": {
@@ -1535,6 +1703,97 @@
         "title": "MemoriesResponse",
         "type": "object"
       },
+      "MemoryEntryCreate": {
+        "description": "条目写入契约：AI 的 add 与存量转换导入共用同一套标签规则。",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "source_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Ref"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "content",
+          "tags"
+        ],
+        "title": "MemoryEntryCreate",
+        "type": "object"
+      },
+      "MemoryEntryView": {
+        "description": "条目读回视图：供设置页编辑，携带 revision 作乐观锁；不含已弃用的 source_ref。",
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Reason"
+          },
+          "status_state": {
+            "title": "Status State",
+            "type": "string"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "updated_at": {
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "content",
+          "tags",
+          "status_state",
+          "revision",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "MemoryEntryView",
+        "type": "object"
+      },
       "MenuItemOut": {
         "properties": {
           "checked": {
@@ -1622,6 +1881,23 @@
           "roles"
         ],
         "title": "ModelInfo",
+        "type": "object"
+      },
+      "ModelSettingsView": {
+        "description": "模型分组：可选 provider 清单（派生）与当前生效模型（配置）。",
+        "properties": {
+          "active": {
+            "$ref": "#/components/schemas/ActiveLlmResponse"
+          },
+          "providers": {
+            "$ref": "#/components/schemas/LlmProvidersResponse"
+          }
+        },
+        "required": [
+          "providers",
+          "active"
+        ],
+        "title": "ModelSettingsView",
         "type": "object"
       },
       "PerceptionClearResponse": {
@@ -2295,7 +2571,7 @@
         ]
       },
       "SettingsView": {
-        "description": "设置页四个分组的统一读模型；真源仍是 app_setting 与形象清单。",
+        "description": "设置页六个分组的统一读模型；`version` 供 `If-Match` 乐观锁回传。\n\n配置项的真源是各域领域状态，`data/settings.json` 是其持久化镜像；形象包、\nprovider 可用性等派生信息在读时实时计算，不入快照（`D12`）。",
         "properties": {
           "avatar": {
             "$ref": "#/components/schemas/AvatarsResponse"
@@ -2303,17 +2579,30 @@
           "interaction": {
             "$ref": "#/components/schemas/InteractionConfigView"
           },
+          "model": {
+            "$ref": "#/components/schemas/ModelSettingsView"
+          },
           "perception": {
             "$ref": "#/components/schemas/PerceptionConfigView"
           },
+          "persona": {
+            "$ref": "#/components/schemas/PersonasResponse"
+          },
           "proactive": {
             "$ref": "#/components/schemas/SchedulerConfigView"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
           }
         },
         "required": [
+          "version",
           "perception",
           "proactive",
           "avatar",
+          "persona",
+          "model",
           "interaction"
         ],
         "title": "SettingsView",
@@ -2385,6 +2674,140 @@
           "text"
         ],
         "title": "StructuredMemoryUpdate",
+        "type": "object"
+      },
+      "TagListResponse": {
+        "properties": {
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "tags"
+        ],
+        "title": "TagListResponse",
+        "type": "object"
+      },
+      "TagMergePreviewResponse": {
+        "properties": {
+          "affected": {
+            "title": "Affected",
+            "type": "integer"
+          },
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/TagPathChangeView"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_existed": {
+            "title": "Target Existed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "target_existed",
+          "affected",
+          "changes"
+        ],
+        "title": "TagMergePreviewResponse",
+        "type": "object"
+      },
+      "TagMergeRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source",
+          "target"
+        ],
+        "title": "TagMergeRequest",
+        "type": "object"
+      },
+      "TagMergeResponse": {
+        "properties": {
+          "affected": {
+            "title": "Affected",
+            "type": "integer"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "target": {
+            "title": "Target",
+            "type": "string"
+          },
+          "target_existed": {
+            "title": "Target Existed",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "source",
+          "target",
+          "affected",
+          "target_existed"
+        ],
+        "title": "TagMergeResponse",
+        "type": "object"
+      },
+      "TagPathChangeView": {
+        "description": "单条条目合并/改名前后的有序路径（Q27/第 29 条预览）。",
+        "properties": {
+          "after": {
+            "items": {
+              "type": "string"
+            },
+            "title": "After",
+            "type": "array"
+          },
+          "before": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Before",
+            "type": "array"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "entry_id": {
+            "title": "Entry Id",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "entry_id",
+          "content",
+          "before",
+          "after"
+        ],
+        "title": "TagPathChangeView",
         "type": "object"
       },
       "UsageCallFinishedEvent": {

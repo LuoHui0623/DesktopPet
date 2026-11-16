@@ -1,10 +1,10 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
+from agent.harness.approval import RESOLVE_CLOSED, RESOLVE_OK, RESOLVE_UNKNOWN, ApprovalRegistry
 from api.errors import error_response
 from api.event_publisher import approval_item
 from api.schemas.approval import ApprovalAck, ApprovalDecision, ApprovalList
-from module.agent.approval import RESOLVE_CLOSED, RESOLVE_OK, RESOLVE_UNKNOWN, ApprovalRegistry
 
 router = APIRouter(prefix="/api", tags=["agent"])
 

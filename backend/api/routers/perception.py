@@ -1,24 +1,24 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
+from agent.capabilities.perception.collector.service import PerceptionService
+from agent.capabilities.perception.events.models import (
+    InvalidPerceptionSample,
+    PerceptionSnapshot,
+    ProcessDecision,
+)
+from agent.capabilities.perception.gate.settings import SECTION as PERCEPTION_SECTION
+from agent.capabilities.perception.gate.settings import PerceptionConfig
 from api.errors import error_response
 from api.schemas.perception import (
     PerceptionClearResponse,
-    PerceptionConfigIn,
     PerceptionConfigView,
     PerceptionIngestResponse,
     PerceptionRequest,
     PerceptionStateResponse,
     ProcessDecisionRequest,
 )
-from service.perception import (
-    InvalidPerceptionConfig,
-    InvalidPerceptionSample,
-    PerceptionConfig,
-    PerceptionService,
-    PerceptionSnapshot,
-    ProcessDecision,
-)
+from app.settings.coordinator import SettingsCoordinator
 
 router = APIRouter(prefix="/api/perception", tags=["perception"])
 
@@ -78,36 +78,6 @@ def config_view(config: PerceptionConfig) -> PerceptionConfigView:
     return PerceptionConfigView.of(config)
 
 
-@router.get(
-    "/config",
-    operation_id="get_perception_config",
-    response_model=PerceptionConfigView,
-)
-def get_perception_config(request: Request) -> PerceptionConfigView:
-    return config_view(_service(request).config())
-
-
-@router.put(
-    "/config",
-    operation_id="update_perception_config",
-    response_model=PerceptionConfigView,
-    responses={422: {"description": "感知配置取值不合法"}},
-)
-def update_perception_config(
-    request: Request, body: PerceptionConfigIn
-) -> Response | PerceptionConfigView:
-    try:
-        saved = _service(request).write_config(
-            enabled=body.enabled,
-            foreground_enabled=body.foreground_enabled,
-            idle_away_minutes=body.idle_away_minutes,
-            sit_minutes=body.sit_minutes,
-        )
-    except InvalidPerceptionConfig as exc:
-        return error_response(422, "invalid_perception_config", str(exc))
-    return config_view(saved)
-
-
 @router.post(
     "/clear",
     operation_id="clear_perception_records",
@@ -133,4 +103,8 @@ def decide_perception_process(
         snapshot = service.decide_process(body.exe, ProcessDecision(body.decision))
     except InvalidPerceptionSample as exc:
         return error_response(422, "invalid_perception", str(exc))
+    # 名单也是配置：决策后立即投射进快照，避免重启丢失（`R8`）。
+    coordinator: SettingsCoordinator | None = request.app.state.settings
+    if coordinator is not None:
+        coordinator.project(PERCEPTION_SECTION)
     return _state(snapshot)

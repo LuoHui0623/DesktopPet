@@ -1,0 +1,63 @@
+from dataclasses import fields
+from pathlib import Path
+
+import pytest
+
+from agent.memory.contracts import (
+    CHAT_ROLES,
+    RECOLLECTION_ROLE,
+    ROLES,
+    DailyLogRecord,
+    DailyLogRow,
+)
+from infra.store.db import connect
+from infra.store.kv import RuntimeStateRecord, RuntimeStateRow
+from infra.store.migrate import migrate
+
+
+@pytest.fixture
+def conn(tmp_path: Path):
+    connection = connect(tmp_path / "pet.db")
+    migrate(connection)
+    yield connection
+    connection.close()
+
+
+def column_names(conn, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def test_daily_log_row_matches_columns(conn):
+    assert {field.name for field in fields(DailyLogRow)} == column_names(conn, "daily_log")
+
+
+def test_daily_log_record_covers_every_writable_column(conn):
+    generated = column_names(conn, "daily_log") - {field.name for field in fields(DailyLogRecord)}
+    assert generated == {"id"}
+
+
+def test_runtime_state_row_matches_columns(conn):
+    assert {field.name for field in fields(RuntimeStateRow)} == column_names(conn, "runtime_state")
+
+
+def test_runtime_state_record_matches_columns(conn):
+    assert {field.name for field in fields(RuntimeStateRecord)} == column_names(
+        conn, "runtime_state"
+    )
+
+
+@pytest.mark.parametrize("role", sorted(ROLES))
+def test_daily_log_accepts_every_contract_role(conn, role: str):
+    conn.execute(
+        "INSERT INTO daily_log (event_time, role, content, persona_id, created_at) "
+        "VALUES ('2026-10-25T09:00:00.000+08:00', ?, 'x', '芙芙', "
+        "'2026-10-25T09:00:00.000+08:00')",
+        (role,),
+    )
+    stored = conn.execute("SELECT role FROM daily_log").fetchall()
+    assert [row["role"] for row in stored] == [role]
+
+
+def test_recollection_role_stays_out_of_the_chat_timeline():
+    assert RECOLLECTION_ROLE in ROLES
+    assert RECOLLECTION_ROLE not in CHAT_ROLES

@@ -8,12 +8,18 @@ import type {
   ChatHistoryQuery,
   ChatHistoryResponse,
   ChatReplyResponse,
+  EntryAddResult,
+  EntryListResponse,
+  EntryUpdateRequest,
   InteractionConfig,
   InteractionKind,
   InteractionResponse,
   LlmProvidersResponse,
   MemoriesQuery,
   MemoriesResponse,
+  MemoryEntriesQuery,
+  MemoryEntryCreate,
+  MemoryEntryView,
   MenuResponse,
   PerceptionConfig,
   PerceptionIngestResponse,
@@ -26,6 +32,10 @@ import type {
   SchedulerLedger,
   SettingsView,
   StructuredMemoryUpdate,
+  TagListResponse,
+  TagMergePreview,
+  TagMergeRequest,
+  TagMergeResult,
 } from "./types";
 
 export interface HealthResponse {
@@ -66,13 +76,6 @@ export function getActiveLlm(client: ApiClient): Promise<ActiveLlmResponse> {
   return request<ActiveLlmResponse>(client, "GET", "/api/llm/active");
 }
 
-export function setActiveLlm(
-  client: ApiClient,
-  selection: ActiveLlmRequest,
-): Promise<ActiveLlmResponse> {
-  return request<ActiveLlmResponse>(client, "PUT", "/api/llm/active", { body: selection });
-}
-
 export function listMemories(
   client: ApiClient,
   query: MemoriesQuery = {},
@@ -89,22 +92,70 @@ export function saveStructuredMemory(
   });
 }
 
+export function listMemoryEntries(
+  client: ApiClient,
+  query: MemoryEntriesQuery = {},
+): Promise<EntryListResponse> {
+  return request<EntryListResponse>(client, "GET", "/api/memories/entries", { query });
+}
+
+export function createMemoryEntry(
+  client: ApiClient,
+  payload: MemoryEntryCreate,
+): Promise<EntryAddResult> {
+  return request<EntryAddResult>(client, "POST", "/api/memories/entries", { body: payload });
+}
+
+export function updateMemoryEntry(
+  client: ApiClient,
+  entryId: number,
+  payload: EntryUpdateRequest,
+): Promise<MemoryEntryView> {
+  return request<MemoryEntryView>(client, "PUT", `/api/memories/entries/${entryId}`, {
+    body: payload,
+  });
+}
+
+export function enableMemoryEntry(client: ApiClient, entryId: number): Promise<MemoryEntryView> {
+  return request<MemoryEntryView>(client, "POST", `/api/memories/entries/${entryId}/enable`);
+}
+
+export function disableMemoryEntry(
+  client: ApiClient,
+  entryId: number,
+  reason: string,
+): Promise<MemoryEntryView> {
+  return request<MemoryEntryView>(client, "POST", `/api/memories/entries/${entryId}/disable`, {
+    body: { reason },
+  });
+}
+
+export function listMemoryTags(client: ApiClient): Promise<TagListResponse> {
+  return request<TagListResponse>(client, "GET", "/api/memories/tags");
+}
+
+export function previewTagMerge(
+  client: ApiClient,
+  payload: TagMergeRequest,
+): Promise<TagMergePreview> {
+  return request<TagMergePreview>(client, "POST", "/api/memories/tags/merge/preview", {
+    body: payload,
+  });
+}
+
+export function mergeMemoryTags(
+  client: ApiClient,
+  payload: TagMergeRequest,
+): Promise<TagMergeResult> {
+  return request<TagMergeResult>(client, "POST", "/api/memories/tags/merge", { body: payload });
+}
+
 export function listPersonas(client: ApiClient): Promise<PersonasResponse> {
   return request<PersonasResponse>(client, "GET", "/api/personas");
 }
 
-export function activatePersona(client: ApiClient, personaId: string): Promise<PersonasResponse> {
-  return request<PersonasResponse>(client, "PUT", "/api/personas/active", {
-    body: { id: personaId },
-  });
-}
-
 export function listAvatars(client: ApiClient): Promise<AvatarsResponse> {
   return request<AvatarsResponse>(client, "GET", "/api/avatars");
-}
-
-export function activateAvatar(client: ApiClient, id: string): Promise<AvatarsResponse> {
-  return request<AvatarsResponse>(client, "PUT", "/api/avatars/active", { body: { id } });
 }
 
 export function getMenu(client: ApiClient): Promise<MenuResponse> {
@@ -113,13 +164,6 @@ export function getMenu(client: ApiClient): Promise<MenuResponse> {
 
 export function getSchedulerConfig(client: ApiClient): Promise<SchedulerConfig> {
   return request<SchedulerConfig>(client, "GET", "/api/scheduler/config");
-}
-
-export function updateSchedulerConfig(
-  client: ApiClient,
-  config: SchedulerConfig,
-): Promise<SchedulerConfig> {
-  return request<SchedulerConfig>(client, "PUT", "/api/scheduler/config", { body: config });
 }
 
 export function ingestPerception(
@@ -157,29 +201,74 @@ export function getSettings(client: ApiClient): Promise<SettingsView> {
   return request<SettingsView>(client, "GET", "/api/settings");
 }
 
+function settingsHeaders(version: number): Record<string, string> {
+  return { "If-Match": String(version) };
+}
+
 export function updateSettingsPerception(
   client: ApiClient,
   config: PerceptionConfig,
+  version: number,
 ): Promise<SettingsView> {
-  return request<SettingsView>(client, "PUT", "/api/settings/perception", { body: config });
+  return request<SettingsView>(client, "PUT", "/api/settings/perception", {
+    body: config,
+    headers: settingsHeaders(version),
+  });
 }
 
 export function updateSettingsProactive(
   client: ApiClient,
   config: SchedulerConfig,
+  version: number,
 ): Promise<SettingsView> {
-  return request<SettingsView>(client, "PUT", "/api/settings/proactive", { body: config });
+  return request<SettingsView>(client, "PUT", "/api/settings/proactive", {
+    body: config,
+    headers: settingsHeaders(version),
+  });
 }
 
-export function updateSettingsAvatar(client: ApiClient, id: string): Promise<SettingsView> {
-  return request<SettingsView>(client, "PUT", "/api/settings/avatar", { body: { id } });
+export function updateSettingsAvatar(
+  client: ApiClient,
+  id: string,
+  version: number,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/avatar", {
+    body: { id },
+    headers: settingsHeaders(version),
+  });
+}
+
+export function updateSettingsPersona(
+  client: ApiClient,
+  id: string,
+  version: number,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/persona", {
+    body: { id },
+    headers: settingsHeaders(version),
+  });
+}
+
+export function updateSettingsModel(
+  client: ApiClient,
+  selection: ActiveLlmRequest,
+  version: number,
+): Promise<SettingsView> {
+  return request<SettingsView>(client, "PUT", "/api/settings/model", {
+    body: selection,
+    headers: settingsHeaders(version),
+  });
 }
 
 export function updateSettingsInteraction(
   client: ApiClient,
   config: InteractionConfig,
+  version: number,
 ): Promise<SettingsView> {
-  return request<SettingsView>(client, "PUT", "/api/settings/interaction", { body: config });
+  return request<SettingsView>(client, "PUT", "/api/settings/interaction", {
+    body: config,
+    headers: settingsHeaders(version),
+  });
 }
 
 export function getSchedulerLedger(client: ApiClient): Promise<SchedulerLedger> {

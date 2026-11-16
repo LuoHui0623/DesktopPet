@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
+from agent.capabilities.perception.interaction.interaction_service import InteractionService
 from api.app import create_app
-from module.interaction.interaction_service import InteractionService
 
 TOKEN = "interaction-token"
 AUTH = {"X-Pet-Token": TOKEN}

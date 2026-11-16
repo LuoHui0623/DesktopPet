@@ -8,22 +8,22 @@ import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
 
-from config.persona import PersonaConfig
+from agent.files.registry import LINES_REPLACE
+from agent.harness.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
+from agent.harness.dispatch import Orchestrator
+from agent.harness.loop import SubAgent, SubAgentDraft, SubAgentResult
+from agent.harness.repository import DbAgentRuns
+from agent.harness.review import ReviewService
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.persona.loader import PersonaConfig
+from agent.persona.persona_service import PersonaSnapshot
+from agent.skills.registry import TASK_SKILL, SkillRegistry, SkillSpec, task_skill
+from agent.spec.context import SOURCE_SYSTEM_AUTO, SOURCE_USER
+from agent.spec.plan import PlanError, PlanStep, parse_plan
 from config.settings import ModelSettingsSource
-from constants.files import LINES_REPLACE
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
-from module.agent.context import SOURCE_SYSTEM_AUTO, SOURCE_USER
-from module.agent.orchestrator import Orchestrator
-from module.agent.plan import PlanError, PlanStep, parse_plan
-from module.agent.repository import DbAgentRuns
-from module.agent.review import ReviewService
-from module.agent.skills import TASK_SKILL, SkillRegistry, SkillSpec, task_skill
-from module.agent.subagent import SubAgent, SubAgentDraft, SubAgentResult
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.persona.persona_service import PersonaSnapshot
 
 TZ = ZoneInfo("Asia/Shanghai")
 GATE = AutoApprovalGate()

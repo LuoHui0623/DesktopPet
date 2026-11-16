@@ -1,9 +1,9 @@
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 
+from agent.llm.llm_service import LlmService
 from api.errors import error_response
 from api.schemas.llm import (
-    ActiveLlmRequest,
     ActiveLlmResponse,
     ActiveModelInfo,
     DefaultInfo,
@@ -12,8 +12,6 @@ from api.schemas.llm import (
     ProviderInfo,
     ReloadResponse,
 )
-from config.settings import CAPABILITY_VARS, DefaultModel
-from module.llm import LlmService, ModelSelectionError
 
 router = APIRouter(prefix="/api/llm", tags=["llm"])
 
@@ -25,13 +23,8 @@ def _service(request: Request) -> LlmService:
     return service
 
 
-@router.get(
-    "/providers",
-    operation_id="list_llm_providers",
-    response_model=LlmProvidersResponse,
-)
-async def list_llm_providers(request: Request) -> LlmProvidersResponse:
-    service = _service(request)
+def providers_view(service: LlmService) -> LlmProvidersResponse:
+    """provider 清单与默认模型；设置页的模型分组与 /api/llm/providers 共用。"""
     settings = service.current()
     statuses = {status.name: status for status in service.providers()}
 
@@ -65,6 +58,15 @@ async def list_llm_providers(request: Request) -> LlmProvidersResponse:
     )
 
 
+@router.get(
+    "/providers",
+    operation_id="list_llm_providers",
+    response_model=LlmProvidersResponse,
+)
+async def list_llm_providers(request: Request) -> LlmProvidersResponse:
+    return providers_view(_service(request))
+
+
 @router.post(
     "/reload",
     operation_id="reload_llm_config",
@@ -87,7 +89,8 @@ def _active_info(service: LlmService, capability: str) -> ActiveModelInfo | None
     return ActiveModelInfo(provider=active.provider, model=active.model, source=active.source)
 
 
-def _active_response(service: LlmService) -> ActiveLlmResponse:
+def active_view(service: LlmService) -> ActiveLlmResponse:
+    """当前生效的 chat/consolidate 模型；设置页的模型分组与 /api/llm/active 共用。"""
     return ActiveLlmResponse(
         chat=_active_info(service, "chat"),
         consolidate=_active_info(service, "consolidate"),
@@ -100,24 +103,4 @@ def _active_response(service: LlmService) -> ActiveLlmResponse:
     response_model=ActiveLlmResponse,
 )
 async def get_active_llm(request: Request) -> ActiveLlmResponse:
-    return _active_response(_service(request))
-
-
-@router.put(
-    "/active",
-    operation_id="set_active_llm",
-    response_model=ActiveLlmResponse,
-    responses={422: {"description": "模型不存在，或不满足该能力的角色要求"}},
-)
-async def set_active_llm(request: Request, body: ActiveLlmRequest) -> Response | ActiveLlmResponse:
-    service = _service(request)
-    selections: dict[str, DefaultModel] = {}
-    for capability in CAPABILITY_VARS:
-        item = getattr(body, capability)
-        if item is not None:
-            selections[capability] = DefaultModel(provider=item.provider, model=item.model)
-    try:
-        service.set_active_models(selections)
-    except ModelSelectionError as exc:
-        return error_response(422, "llm_selection_invalid", str(exc))
-    return _active_response(service)
+    return active_view(_service(request))

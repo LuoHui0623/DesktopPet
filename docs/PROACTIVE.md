@@ -1,7 +1,7 @@
 # 主动管线设计
 
 > 职责：定义解析器产出 Trigger 之后，如何调用 chat、写台账、推送 `proactive.message`，以及失败与并发处理。
-> 依赖：观测域解析器（Trigger）、ChatService（单入口）、`app_setting` 台账、WS 事件总线、`chat_active` 端口。
+> 依赖：观测域解析器（Trigger）、ChatService（单入口）、`runtime_state` 台账、WS 事件总线、`chat_active` 端口。
 > 不回答：采集、事件阈值、勿扰/限额判定（见 [OBSERVER.md](OBSERVER.md)）、话术内容（见 [CHAT.md](CHAT.md)）、气泡渲染。
 > 状态：已实现。一条 `proactive.message` 可携带 1–4 条发言，含逐工具只读判定、合并回注与可选 `notices`。入口 `ProactivePipeline.handle(trigger)`；前端气泡与忽略见「与前端/气泡的边界」。
 
@@ -19,9 +19,9 @@
 
 ## 概念定义
 
-- **管线（pipeline）**：Trigger 的消费者，主动消息的编排者。落点 `module/proactive/pipeline.py`。
+- **管线（pipeline）**：Trigger 的消费者，主动消息的编排者。落点 `agent/capabilities/proactive/pipeline.py`。
 - **Trigger**：解析器输出的唯一指令，`{topic, reason}`；`reason` 是事实摘要，不是话术。
-- **发送台账**：`app_setting` 的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线写。
+- **发送台账**：`runtime_state` 表的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线写。
 - **主动消息**：一次成功生成并推送的 `me` 回复。它在 `daily_log` 中就是普通 `me` 行，不加 `source`。
 - **最终并发保护**：管线在调用 chat 前再检查一次 `chat_active`。这不是重新判定规则，只防止“解析器判定后、生成前用户刚好开始对话”的竞态。
 
@@ -35,10 +35,10 @@ observer → parser → Trigger → pipeline → chat → llm
 
 | 组件 | 落点 | 说明 |
 |---|---|---|
-| 管线 | `module/proactive/pipeline.py` | 唯一入口 `handle(trigger)` |
+| 管线 | `agent/capabilities/proactive/pipeline.py` | 唯一入口 `handle(trigger)` |
 | 解析器 | 观测域 | 产出 Trigger；不 import 管线 |
-| chat | `module/chat/` | 单入口；管线只依赖 `ChatRequest` / `ChatReply` |
-| 台账 | `app_setting` | 解析器读；管线发送成功后写 |
+| chat | `agent/capabilities/chat/` | 单入口；管线只依赖 `ChatRequest` / `ChatReply` |
+| 台账 | `runtime_state` | 解析器读；管线发送成功后写 |
 | WS | `infra/events/bus.py` | 新增 `proactive.message` 事件 |
 
 约束：
@@ -145,7 +145,7 @@ handle(trigger)
 
 | 键 | 来源 | 用途 |
 |---|---|---|
-| `scheduler.sent` | `app_setting` | 写当日台账 |
+| `scheduler.sent` | `runtime_state` | 写当日台账 |
 | `scheduler.enabled` | 解析器已判定 | 管线不重复判断 |
 | `scheduler.min_interval_minutes` / `max_per_day` / `dnd_*` | 解析器已判定 | 管线不重复判断 |
 

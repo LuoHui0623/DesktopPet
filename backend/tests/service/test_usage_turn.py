@@ -6,21 +6,21 @@ from zoneinfo import ZoneInfo
 import pytest
 from langchain_core.messages import AIMessage
 
+from agent.capabilities.chat.chat_service import ChatError, ChatRequest, ChatService
+from agent.llm.contracts import UsageRecord
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink, insert
+from agent.llm.usage_service import DbUsageReader, TurnUsage, UsageService, aggregate_turn
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_templates
 from config.settings import ModelSettingsSource
 from infra.llm.usage import CallStart, UsageSample
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.prompt import load_templates
-from module.chat.chat_service import ChatError, ChatRequest, ChatService
-from module.llm import LlmService
-from module.llm.contracts import UsageRecord
-from module.llm.repository import db_usage_sink, insert
-from module.llm.usage_service import DbUsageReader, TurnUsage, UsageService, aggregate_turn
-from module.memory.daily_log_service import DailyLogService
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -274,9 +274,9 @@ class Harness:
         self.usage = UsageService(DbUsageReader(self.db_file), self.events)
         self.chat = ChatService(
             self.llm,
-            DailyLogService(DbDailyLog(self.db_file), SettingsService(self.db_file), TZ),
+            DailyLogService(DbDailyLog(self.db_file), settings_doc(self.db_file), TZ),
             PersonaService(
-                personas_dir, SettingsService(self.db_file), DbPersonaVersions(self.db_file)
+                personas_dir, settings_doc(self.db_file), DbPersonaVersions(self.db_file)
             ),
             load_templates(),
             db_usage_sink(self.db_file),

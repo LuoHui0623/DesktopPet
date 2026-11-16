@@ -1,7 +1,7 @@
 # 文件域动作集契约
 
 > 职责：定义文件域有哪些动作、每个动作归哪一组、动作与权限如何一一对应、动作条目的 `args` 与 `desc` 如何派生。
-> 依赖：`backend/module/agent/tools/files.py`（动作 schema）、`backend/module/files/permissions.py`（权限投影）、`backend/module/files/handlers.py`（`ACTION_DOCS`）。
+> 依赖：`backend/agent/tools/files.py`（动作 schema）、`backend/agent/files/permissions.py`（权限投影）、`backend/agent/files/handlers.py`（`ACTION_DOCS`）。
 > 不回答：入参判别（见 [ADDRESSING.md](ADDRESSING.md)）、动作产生的条目如何入队与合并（见 [QUEUE.md](QUEUE.md)）。
 > 状态：已实现（契约与实现一致）。
 

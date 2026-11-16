@@ -1,14 +1,14 @@
 """T11：按行 diff、hunk 分段、标注与 review 两层视图。"""
 
-from module.files.ranges import ChangeQueue
-from module.files.review import (
+from agent.files.ranges import ChangeQueue
+from agent.files.review import (
     DECORATION_INSERT,
     KIND_ADD,
     KIND_REMOVE,
     FileState,
     build_review,
 )
-from module.files.text import text_state
+from agent.files.text import text_state
 
 PATH = "/a.md"
 

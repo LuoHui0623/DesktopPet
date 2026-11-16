@@ -2,14 +2,14 @@
 
 import pytest
 
-from constants.files import (
+from agent.files.ranges import ChangeQueue, apply_actions
+from agent.files.registry import (
     LINES_APPEND,
     LINES_DELETE,
     LINES_INSERT,
     LINES_REPLACE,
 )
-from module.files.ranges import ChangeQueue, apply_actions
-from module.files.resolver import FileError
+from agent.files.resolver import FileError
 
 
 def test_every_write_action_normalizes_to_four_lines_ops(env):

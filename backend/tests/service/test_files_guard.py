@@ -5,9 +5,9 @@ import threading
 import pytest
 from conftest import make_permissions, make_task
 
-from module.agent.context import task_scope
-from module.files.guard import FileBusy, FileGuard
-from module.files.resolver import FileDenied, FileError
+from agent.files.guard import FileBusy, FileGuard
+from agent.files.resolver import FileDenied, FileError
+from agent.spec.context import task_scope
 
 
 def test_same_task_reentry_does_not_stack(env):

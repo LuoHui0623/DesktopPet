@@ -6,12 +6,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from agent.memory.daily_events import EventError
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.repository import DbDailyLog
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.memory.daily_events import EventError
-from module.memory.daily_log_service import DailyLogService
-from module.memory.repository import DbDailyLog
-from module.settings.settings_service import SettingsService
+from tests.support import settings_doc
 
 TZ = ZoneInfo("Asia/Shanghai")
 
@@ -28,7 +28,7 @@ def db_file(tmp_path: Path) -> Path:
 def make_service(db_file: Path, now: datetime) -> DailyLogService:
     return DailyLogService(
         DbDailyLog(db_file),
-        SettingsService(db_file),
+        settings_doc(db_file),
         TZ,
         clock=lambda tz: now.astimezone(tz),
     )
@@ -75,7 +75,7 @@ def test_master_and_reply_times_are_sampled_separately_by_default(db_file: Path)
     ticks = itertools.count()
     service = DailyLogService(
         DbDailyLog(db_file),
-        SettingsService(db_file),
+        settings_doc(db_file),
         TZ,
         clock=lambda tz: (base + timedelta(seconds=next(ticks))).astimezone(tz),
     )
@@ -95,13 +95,6 @@ def test_proactive_reply_writes_only_one_me_record(db_file: Path):
     assert [(r.role, r.content) for r in records] == [("me", "今天也辛苦啦")]
 
 
-def test_proactive_reply_ignores_the_legacy_temporary_setting(db_file: Path):
-    SettingsService(db_file).put("memory.temporary_mode", "true")
-    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
-    assert service.record_reply("照常留痕") is True
-    assert [(r.role, r.content) for r in service.read_day("2026-10-25")] == [("me", "照常留痕")]
-
-
 def test_date_follows_configured_timezone(db_file: Path):
     utc_late = datetime(2026, 10, 25, 17, 30, tzinfo=ZoneInfo("UTC"))
     service = make_service(db_file, utc_late)
@@ -111,16 +104,6 @@ def test_date_follows_configured_timezone(db_file: Path):
         "2026-10-26",
     ]
     assert service.read_day("2026-10-25") == []
-
-
-def test_legacy_temporary_setting_does_not_block_turns(db_file: Path):
-    SettingsService(db_file).put("memory.temporary_mode", "true")
-    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
-    assert service.record_turn("不要留痕", "照常回复") is True
-    assert [(r.role, r.content) for r in service.read_day("2026-10-25")] == [
-        ("master", "不要留痕"),
-        ("me", "照常回复"),
-    ]
 
 
 def test_session_boundary_is_written_as_structured_event(db_file: Path):
@@ -136,13 +119,6 @@ def test_invalid_event_is_rejected_and_nothing_is_written(db_file: Path):
     with pytest.raises(EventError):
         service.record_event("dispatch_failed", topic="回忆")
     assert service.read_day("2026-10-25") == []
-
-
-def test_event_is_still_written_with_the_legacy_temporary_setting(db_file: Path):
-    SettingsService(db_file).put("memory.temporary_mode", "true")
-    service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
-    assert service.record_event("dispatch_failed", topic="回忆", reason="超时") is True
-    assert [r.role for r in service.read_day("2026-10-25")] == ["event"]
 
 
 def test_read_day_rejects_invalid_date(db_file: Path):
@@ -194,7 +170,7 @@ def test_read_day_uses_the_active_persona_by_default(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     service.record_user("芙芙的", persona_id="芙芙")
     service.record_user("小桌的", persona_id="小桌")
-    SettingsService(db_file).put("persona.active", "小桌")
+    settings_doc(db_file).replace("persona", {"active": "小桌"})
     assert [r.content for r in service.read_day("2026-10-25")] == ["小桌的"]
     assert [r.content for r in service.read_day("2026-10-25", persona_id="芙芙")] == ["芙芙的"]
 
@@ -218,7 +194,7 @@ def test_restore_excludes_events_and_other_personas_but_keeps_order(db_file: Pat
 def test_new_records_follow_the_switched_persona(db_file: Path):
     service = make_service(db_file, datetime(2026, 10, 25, 9, 0, tzinfo=TZ))
     service.record_user("芙芙在")
-    SettingsService(db_file).put("persona.active", "小桌")
+    settings_doc(db_file).replace("persona", {"active": "小桌"})
     service.record_user("小桌在")
     assert service.active_persona() == "小桌"
     assert [r.content for r in service.read_day("2026-10-25")] == ["小桌在"]

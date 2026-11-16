@@ -13,6 +13,7 @@ import {
 
 function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
   return {
+    version: 1,
     perception: {
       enabled: true,
       foreground_enabled: true,
@@ -27,6 +28,17 @@ function makeView(overrides: Partial<SettingsView> = {}): SettingsView {
       dnd_end: "08:00",
     },
     avatar: { persona: "芙芙", active: "default", preset_states: [], packs: [] },
+    persona: { active: "芙芙", personas: [] },
+    model: {
+      providers: {
+        version: "1",
+        providers: [],
+        defaults: {},
+        warnings: [],
+        last_reload_errors: [],
+      },
+      active: { chat: null, consolidate: null },
+    },
     interaction: {
       report_enabled_kinds: ["click"],
       hover_dwell_ms: 300,

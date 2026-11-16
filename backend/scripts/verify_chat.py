@@ -13,21 +13,27 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from agent.capabilities.chat.chat_service import (
+    ChatError,
+    ChatRequest,
+    ChatService,
+    split_sentences,
+)
+from agent.llm.active import LlmActiveSettings
+from agent.llm.llm_service import LlmService
+from agent.llm.repository import db_usage_sink
+from agent.memory.daily_log_service import DailyLogService
+from agent.memory.entry_service import MemoryEntryService
+from agent.memory.recollection_service import Recollection
+from agent.memory.repository import DbDailyLog
+from agent.persona.persona_service import PersonaService, PersonaUnavailableError
+from agent.persona.repository import DbPersonaVersions
+from agent.prompts.templates import load_capabilities, load_templates
+from app.settings.document import SettingsDocument
 from config.settings import ModelSettingsSource, load_service_settings
 from constants.speech import SENTENCE_MAX_WIDTH, visible_width
 from infra.store.db import connect
 from infra.store.migrate import migrate
-from module.agent.prompt import load_capabilities, load_templates
-from module.chat.chat_service import ChatError, ChatRequest, ChatService, split_sentences
-from module.llm import LlmService
-from module.llm.repository import db_usage_sink
-from module.memory.daily_log_service import DailyLogService
-from module.memory.entry_service import MemoryEntryService
-from module.memory.recollection_service import Recollection
-from module.memory.repository import DbDailyLog
-from module.persona.persona_service import PersonaService, PersonaUnavailableError
-from module.persona.repository import DbPersonaVersions
-from module.settings.settings_service import SettingsService
 
 SEEDED_RECALL = "昨天主人提到想学做菜，我答应帮他找几个简单的家常菜谱。"
 
@@ -104,10 +110,13 @@ def main() -> int:
     finally:
         conn.close()
 
+    document = SettingsDocument(settings.data_dir / "settings.json")
+    document.load()
+
     llm = LlmService(
         ModelSettingsSource(),
         usage_sink=db_usage_sink(db_file),
-        active_store=SettingsService(db_file),
+        active=LlmActiveSettings(document),
     )
     llm.start()
     active = llm.active_model("chat")
@@ -116,10 +125,8 @@ def main() -> int:
         return 1
 
     timezone = ZoneInfo(settings.timezone)
-    daily = DailyLogService(DbDailyLog(db_file), SettingsService(db_file), timezone)
-    personas = PersonaService(
-        settings.personas_dir, SettingsService(db_file), DbPersonaVersions(db_file)
-    )
+    daily = DailyLogService(DbDailyLog(db_file), document, timezone)
+    personas = PersonaService(settings.personas_dir, document, DbPersonaVersions(db_file))
     raws: list[str] = []
     systems: list[str] = []
     try:
