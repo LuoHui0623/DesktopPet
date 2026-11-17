@@ -16,11 +16,11 @@ from agent.files.permissions import (
     TaskPermissions,
     system_permissions,
 )
-from agent.files.registry import WORLD
 from agent.files.resolver import ResourceResolver
 from agent.files.service import FileService
 from agent.harness.approval import AutoApprovalGate
 from agent.harness.review import ReviewService
+from agent.resources import WORLD
 from agent.skills.registry import SkillRegistry
 from agent.spec.context import TaskContext, task_scope
 

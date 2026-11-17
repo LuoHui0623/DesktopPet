@@ -11,12 +11,12 @@ from datetime import timedelta, tzinfo
 from typing import Protocol
 
 from agent.files.format import day_text, moment, parse_moment, render_permanent
-from agent.files.registry import PERMANENT, STRUCTURED
 from agent.files.resolver import FileError
 from agent.files.text import grep_lines, numbered
 from agent.files.views import Listing
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService, render_entry_lines
+from agent.resources import PERMANENT, STRUCTURED
 from agent.skills.registry import SkillRegistry
 from agent.spec.context import TaskContext
 from infra.llm.tokens import TokenCounter, TokenCountError, create_counter

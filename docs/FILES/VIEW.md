@@ -12,7 +12,12 @@
 ```json
 {
   "support": {
-    "dir_resources": ["world"],
+    "dir_resources": [
+      {
+        "resource_id": "world",
+        "description": "资源目录；可新建目录与文件、编辑和删除文件；草稿本与结构化记忆仍按各自更严格的规则处理"
+      }
+    ],
     "dir_actions": [
       {"action": "index", "args": "", "desc": "列出目录条目"},
       {"action": "create_dir", "args": "path：新目录的相对路径（必填）", "desc": "在目录内新建子目录"},
@@ -66,7 +71,7 @@
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `support.dir_resources` | `string[]` | 一级目录的 `resource_id`，不是显示名，可直接回传 |
+| `support.dir_resources` | `DirResource[]` | 一级目录条目：`resource_id`（可直接回传）与 `description`（该目录能做什么） |
 | `support.dir_actions` | `ActionSpec[]` | `dir` 组动作，条目带 `path` |
 | `support.file_actions` | `ActionSpec[]` | `file` 组动作，条目省略 `path` |
 
@@ -93,6 +98,7 @@
 - **dir 的 `path` 带尾分隔符**，如 `A\`。这不是纯展示约定：字段可直接回传给 `read` 与写动作，服务端按同一实际路径归一。
 - **file 才有 `editing_status`**，dir 不声明该字段，不为对齐而填 `null`。
 - **全量返回**：`entries` 与 `dir_resources` 均无截断字段、无续取参数。
+- **`dir_resources` 是对象不是字符串**：只有 `resource_id` 能回传，`description` 是说明、不是名字，也不参与寻址。说明取自资源登记表（`agent/resources.py`），与 `index(MEMORY)` 的对象说明同源，不各写一份。
 
 ## 类型分层
 
@@ -159,11 +165,12 @@ class FileItem(FileEntry):
 
 ## 其它领域
 
-`SKILLS`、`TOOLS`、`MEMORY` 只承诺「返回清单」：
+`SKILLS`、`TOOLS` 只承诺「返回清单」：
 
 - 不定义字段集合、数据来源与相互关系。
 - `TOOLS` 不与 `file_actions` 承诺同源。
-- `MEMORY` 只给名称，不展示分区、条目、条目 ID；读取仍走 `read` / `grep`，写入仍走 `memory` 工具。
+
+`MEMORY` 不是「只给名称」：它承担对象说明职责——列出记忆里有哪些对象，并给出每个对象的可访问方式（可读参数、能否检索、写入通道）；仍不展示分区、条目正文与条目 ID。正文读取与检索分别走 `read`、`grep`，写入走 `memory` 工具。对象清单与参数口径见 [../MEMORY/ACCESS.md](../MEMORY/ACCESS.md)。【实现现状】`index(MEMORY)` 仍只返回 `{name, label}`，登记表里的 `description`、可读参数与写入通道尚未输出。
 
 ## 移除的旧键
 

@@ -8,12 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from agent.files.permissions import system_permissions
-from agent.files.registry import (
-    ACTION_REPLACE_LINES,
-    PERMANENT,
-    STRUCTURED,
-    WORLD,
-)
+from agent.files.registry import ACTION_REPLACE_LINES
 from agent.files.resolver import ResourceResolver
 from agent.files.schemas import ACTION_DOCS
 from agent.files.service import FileService, ModelLimit
@@ -23,6 +18,7 @@ from agent.memory.contracts import DailyLogRecord, MemoryEntryCreate
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService
 from agent.memory.repository import DbDailyLog
+from agent.resources import PERMANENT, STRUCTURED, WORLD
 from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,
@@ -120,7 +116,7 @@ def test_index_returns_the_files_domain_view(tools):
     assert result["action"] == "index"
     payload = json.loads(result["content"])
     support = payload["support"]
-    assert support["dir_resources"] == [WORLD]
+    assert [item["resource_id"] for item in support["dir_resources"]] == [WORLD]
     assert [item["action"] for item in support["dir_actions"]] == [
         "index",
         "create_dir",

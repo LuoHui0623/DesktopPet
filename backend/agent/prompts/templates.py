@@ -5,7 +5,6 @@ from pathlib import Path
 from string import Template
 from typing import Literal
 
-from agent.files.registry import RESOURCE_ORDER, RESOURCES
 from agent.persona.loader import (
     THEME_SPECS,
     FieldsSpec,
@@ -23,6 +22,7 @@ from agent.prompts.chat_system import (
     Topic,
     TopicContext,
 )
+from agent.resources import RESOURCE_ORDER, RESOURCES
 from constants.path import CAPABILITIES_FILE
 from constants.speech import PERSONA_HINT_CHARS, SENTENCE_MAX_CHARS, SENTENCE_MAX_WIDTH
 

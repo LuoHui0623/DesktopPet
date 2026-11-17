@@ -53,19 +53,10 @@ from agent.files.registry import (
     ACTION_READ,
     ACTION_REPLACE_LINES,
     ACTION_REPLACE_REGEX,
-    DOMAIN_FILES,
-    DOMAIN_MEMORY,
-    DOMAIN_SKILLS,
-    DOMAIN_TOOLS,
     LINES_APPEND,
     LINES_DELETE,
     LINES_INSERT,
     LINES_REPLACE,
-    PERMANENT,
-    RESOURCES,
-    STRUCTURED,
-    WORLD,
-    normalize_domain,
 )
 from agent.files.resolver import FileDenied, FileError, Resource, ResourceResolver
 from agent.files.session import SessionStore, TaskSession, TrackedFile
@@ -82,6 +73,17 @@ from agent.files.views import (
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService
 from agent.memory.memory_service import compile_pattern, expect_matches, parse_ranges
+from agent.resources import (
+    DOMAIN_FILES,
+    DOMAIN_MEMORY,
+    DOMAIN_SKILLS,
+    DOMAIN_TOOLS,
+    PERMANENT,
+    STRUCTURED,
+    WORLD,
+    normalize_domain,
+    resources_of,
+)
 from agent.skills.registry import SkillRegistry
 from agent.spec.context import TaskContext, TaskContextError, current_task
 from infra.llm.tokens import TokenCounter
@@ -164,8 +166,7 @@ class FileService:
         if domain == DOMAIN_TOOLS:
             return ToolIndex(lambda: catalog.tool_listing(self._context().permissions))
         if domain == DOMAIN_MEMORY:
-            specs = [RESOURCES[STRUCTURED], RESOURCES[PERMANENT]]
-            return MemoryIndex(lambda: catalog.memory_listing(specs))
+            return MemoryIndex(lambda: catalog.memory_listing(resources_of(DOMAIN_MEMORY)))
         raise FileError(f"未知领域：{domain}")
 
     def _file_support(self) -> FileSupport:

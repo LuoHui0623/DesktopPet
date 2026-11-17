@@ -7,7 +7,6 @@ import pytest
 
 from agent.files import token as snapshot_token
 from agent.files.permissions import system_permissions
-from agent.files.registry import DRAFT, WORLD
 from agent.files.resolver import FileError, ResourceResolver
 from agent.files.service import FileService, ModelLimit
 from agent.harness.approval import AutoApprovalGate
@@ -15,6 +14,7 @@ from agent.harness.review import ReviewService
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService
 from agent.memory.repository import DbDailyLog
+from agent.resources import DRAFT, WORLD
 from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,

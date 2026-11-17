@@ -1,7 +1,7 @@
 # 文件域寻址契约
 
 > 职责：定义 `index` 的单一入参如何被解析成两种视图、解析失败如何报错、资源名注册受什么约束。
-> 依赖：`agent/files/registry.py`（`RESOURCES` 登记处）、`backend/agent/tools/files.py`（`IndexArgs`）、`backend/agent/files/service.py`（`index`）。
+> 依赖：`agent/resources.py`（`RESOURCES` 登记处与领域归属）、`agent/files/registry.py`（动作词表）、`backend/agent/tools/files.py`（`IndexArgs`）、`backend/agent/files/service.py`（`index`）。
 > 不回答：两种视图的字段与类型分层（见 [VIEW.md](VIEW.md)）、动作清单（见 [ACTIONS.md](ACTIONS.md)）。
 > 状态：已实现（契约与实现一致）。
 
@@ -55,11 +55,11 @@ index(target)
 | `FILES` | 一级目录的 `resource_id` 列表与两组动作清单 | 目录内条目、文件元信息、占用状态 |
 | `SKILLS` | 清单，字段与来源不定义 | 说明书正文、适用工具、调用参数 |
 | `TOOLS` | 占位入口，形态不定义 | 参数、调用前提；不承诺与 `file_actions` 同源 |
-| `MEMORY` | 清单，字段与来源不定义 | 分区、条目、条目 ID、写入路径 |
+| `MEMORY` | 记忆对象清单与各自的可访问方式（可读参数、能否检索、写入通道） | 分区与条目正文、条目 ID |
 
 `FILES`、`MEMORY` 是入参取值，不是实体。`structured`、`permanent` 属 `MEMORY`，不出现在 `FILES` 的 `dir_resources` 中。
 
-`SKILLS`、`TOOLS`、`MEMORY` 本轮只承诺「返回清单」，不定义字段集合，也不定义三者之间的相互关系。这三个领域的字段细化不在本契约范围内。
+`SKILLS`、`TOOLS` 只承诺「返回清单」，不定义字段集合，也不定义二者之间的相互关系。`MEMORY` 承担对象说明职责：列出记忆里有哪些对象，并给出每个对象的可访问方式（可读参数、能否检索、写入通道），但不展示分区、条目正文与条目 ID；对象清单与参数口径见 [../MEMORY/ACCESS.md](../MEMORY/ACCESS.md)。
 
 ## 完整性与可见性
 
@@ -72,12 +72,12 @@ index(target)
 只有 `FILES` 有目录层级，且只有一级可操作目录：
 
 ```text
-index("FILES")            → dir_resources: ["world"]
+index("FILES")            → dir_resources: [{resource_id: "world", description: ...}]
 index("world")            → entries: [A.py, A\ ]
 index("A\")               → 子目录条目，可继续 index
 ```
 
-- `dir_resources` 的值是 `resource_id`，可直接回传给 `index`、`read` 与各写动作的 `resource` 参数，不存在显示名与 ID 的换算。
+- `dir_resources` 的每一项是对象：`resource_id` 可直接回传给 `index`、`read` 与各写动作的 `resource` 参数，不存在显示名与 ID 的换算；`description` 说明它能做什么，不是显示名。
 - 条目的 `path` 一律**相对 root resource**（`world`），而不是相对当前被索引的子目录：`index("A")` 返回 `A\B.py`，不是 `B.py`。因此 `path` 可原样回传给 `index`、`read` 与写动作，不会误指根目录下的同名文件。
 - 目录条目的 `path` 带尾分隔符；服务端按同一实际路径归一。
 - `draft` 是小世界根目录下的文件，出现在 `index("world")` 的 `entries` 中，不出现在 `dir_resources` 里。

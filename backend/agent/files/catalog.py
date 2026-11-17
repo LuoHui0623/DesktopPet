@@ -12,18 +12,14 @@ from agent.files.guard import FileGuard
 from agent.files.permissions import TaskPermissions
 from agent.files.registry import (
     DIR_ACTIONS,
-    DIR_RESOURCE_ORDER,
-    DRAFT,
     FILE_ACTIONS,
-    RESOURCES,
-    WORLD,
-    ResourceSpec,
 )
 from agent.files.resolver import FileError, Resource
 from agent.files.views import (
     ActionSpec,
     DirEntries,
     DirEntry,
+    DirResource,
     FileEntry,
     FileItem,
     FileSupport,
@@ -32,16 +28,24 @@ from agent.files.views import (
     dir_path,
     permission_filter,
 )
+from agent.resources import (
+    DIR_RESOURCE_ORDER,
+    DIR_RESOURCES,
+    DRAFT,
+    RESOURCES,
+    WORLD,
+    ResourceSpec,
+)
 
 DEFAULT_SKIP = frozenset({"__pycache__"})
 
 
 def file_support(permissions: TaskPermissions) -> FileSupport:
-    """领域视图：一级目录的 `resource_id` 与两组动作清单。"""
+    """领域视图：一级目录的 `resource_id` 与说明，以及两组动作清单。"""
     resources = [
-        resource_id
-        for resource_id in DIR_RESOURCE_ORDER
-        if permissions.allows(resource_id, "index")
+        DirResource(resource_id=spec.id, description=spec.description)
+        for spec in DIR_RESOURCES
+        if permissions.allows(spec.id, "index")
     ]
     actions = permissions.actions_for(WORLD)
     return FileSupport(

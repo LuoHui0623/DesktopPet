@@ -133,21 +133,28 @@ def compile_pattern(pattern: str) -> re.Pattern[str]:
     return regex
 
 
-def render_daily_turns(records: Sequence[DailyLogEntry]) -> list[str]:
+def render_daily_turns(records: Sequence[DailyLogEntry], *, with_id: bool = False) -> list[str]:
+    """按 master 边界分轮渲染；``with_id`` 时每条消息前置 ``[#行号]`` 锚点。
+
+    行号只作提示词内定位用（T-07），不落库、不进入回忆正文。
+    """
     turns: list[list[DailyLogEntry]] = []
     for record in records:
         if record.role == "master" or not turns:
             turns.append([record])
         else:
             turns[-1].append(record)
-    return [" / ".join(_render_daily_line(record) for record in turn) for turn in turns]
+    return [
+        " / ".join(_render_daily_line(record, with_id=with_id) for record in turn) for turn in turns
+    ]
 
 
-def _render_daily_line(record: DailyLogEntry) -> str:
+def _render_daily_line(record: DailyLogEntry, *, with_id: bool = False) -> str:
+    anchor = f"[#{record.id}] " if with_id and record.id is not None else ""
     if record.role == "event":
-        return f"事件：{_flatten(event_text(record.content))}"
+        return f"{anchor}事件：{_flatten(event_text(record.content))}"
     labels = {"master": "用户", "me": "宠物"}
-    return f"{labels.get(record.role, record.role)}：{_flatten(record.content)}"
+    return f"{anchor}{labels.get(record.role, record.role)}：{_flatten(record.content)}"
 
 
 def _flatten(text: str) -> str:

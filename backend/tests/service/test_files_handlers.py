@@ -15,10 +15,10 @@ from agent.files.handlers import (
     ReadLimiter,
 )
 from agent.files.permissions import system_permissions
-from agent.files.registry import PERMANENT, STRUCTURED
 from agent.files.resolver import FileError
 from agent.files.text import numbered
 from agent.memory.memory_service import number_lines, section
+from agent.resources import PERMANENT, STRUCTURED
 from agent.skills.registry import SkillRegistry, draft_note_skill
 from agent.spec.context import TaskContext
 from infra.llm.tokens import TokenCount, TokenCountError

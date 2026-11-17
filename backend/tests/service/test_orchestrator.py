@@ -168,17 +168,27 @@ def setup(tmp_path: Path):
         llm.start()
         skills_dir = tmp_path / "skills"
         skills_dir.mkdir()
-        (skills_dir / "note.md").write_text(
-            "# 写笔记\n\n> 把用户给的内容记到便签上。\n", encoding="utf-8"
-        )
+        for slug, name, description in (
+            ("note", "写笔记", "把用户给的内容记到便签上。"),
+            ("query", "查笔记", "翻阅已经记下的便签。"),
+            ("mixed", "混合笔记", "既能记下也能翻阅便签。"),
+        ):
+            folder = skills_dir / slug
+            folder.mkdir()
+            (folder / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {description}\n---\n\n# {name}\n",
+                encoding="utf-8",
+            )
         skills = SkillRegistry(skills_dir)
         skills.register(SkillSpec("写笔记", "note", ("write_note",), ("记下",)))
-        skills.register(SkillSpec("查笔记", "note", ("read",), ("查一下",)))
-        skills.register(SkillSpec("混合笔记", "note", ("read", "write_note"), ("读一下",)))
+        skills.register(SkillSpec("查笔记", "query", ("read",), ("查一下",)))
+        skills.register(SkillSpec("混合笔记", "mixed", ("read", "write_note"), ("读一下",)))
         if with_task:
-            (skills_dir / "planning.md").write_text(
-                "# 任务规划\n\n> 先只读核对现状，再输出任务清单。\n\n"
-                "## 执行流程\n\n1. 核对现状。\n",
+            folder = skills_dir / "planning"
+            folder.mkdir()
+            (folder / "SKILL.md").write_text(
+                "---\nname: 任务\ndescription: 先只读核对现状，再输出任务清单。\n---\n\n"
+                "# 任务规划\n\n## 执行流程\n\n1. 核对现状。\n",
                 encoding="utf-8",
             )
             skills.register(task_skill())

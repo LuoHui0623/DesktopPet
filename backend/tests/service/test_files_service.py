@@ -12,12 +12,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from agent.files.permissions import ResourcePermission, TaskPermissions, system_permissions
-from agent.files.registry import (
-    DRAFT,
-    PERMANENT,
-    STRUCTURED,
-    WORLD,
-)
 from agent.files.resolver import FileDenied, FileError, ResourceResolver
 from agent.files.service import FileService, ModelLimit
 from agent.harness.approval import ApprovalDraft, ApprovalOutcome, AutoApprovalGate
@@ -27,6 +21,7 @@ from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService
 from agent.memory.memory_service import MemoryWriteError
 from agent.memory.repository import DbDailyLog
+from agent.resources import DRAFT, PERMANENT, STRUCTURED, WORLD
 from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,
@@ -196,7 +191,7 @@ def world(stack, name: str) -> Path:
 def test_index_files_lists_dir_resources_and_action_groups(stack):
     payload = json.loads(stack["service"].index("FILES"))
     support = payload["support"]
-    assert support["dir_resources"] == [WORLD]
+    assert [item["resource_id"] for item in support["dir_resources"]] == [WORLD]
     assert [item["action"] for item in support["dir_actions"]] == [
         "index",
         "create_dir",
@@ -623,7 +618,7 @@ def test_index_support_projects_the_task_permission_intersection(stack):
     with task_scope(task):
         support = json.loads(stack["service"].index("FILES"))["support"]
 
-    assert support["dir_resources"] == [WORLD]
+    assert [item["resource_id"] for item in support["dir_resources"]] == [WORLD]
     assert [item["action"] for item in support["dir_actions"]] == ["index", "create_file"]
     assert [item["action"] for item in support["file_actions"]] == ["read", "append"]
 

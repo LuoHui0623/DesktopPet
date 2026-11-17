@@ -16,10 +16,10 @@ from agent.files.registry import (
     ACTION_REPLACE_REGEX,
     DIR_ACTIONS,
     FILE_ACTIONS,
-    WORLD,
 )
 from agent.files.resolver import FileDenied, FileError
 from agent.files.schemas import ACTION_DOCS
+from agent.resources import WORLD
 from agent.spec.context import task_scope
 
 
@@ -135,7 +135,7 @@ def test_each_action_checks_its_own_permission(env):
 
 
 def test_world_supports_all_write_actions_but_draft_does_not_delete_file():
-    from agent.files.registry import RESOURCES
+    from agent.resources import RESOURCES
 
     assert ACTION_APPEND in RESOURCES[WORLD].edit_supports
     assert ACTION_INSERT in RESOURCES[WORLD].edit_supports

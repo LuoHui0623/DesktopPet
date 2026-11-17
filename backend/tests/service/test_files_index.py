@@ -6,6 +6,7 @@ import pytest
 
 from agent.files.registry import DIR_ACTIONS, FILE_ACTIONS
 from agent.files.resolver import FileError
+from agent.resources import RESOURCES
 
 OLD_KEYS = {"kind", "resources", "skills", "actions", "parameters", "limits", "next"}
 
@@ -31,7 +32,9 @@ def test_domain_view_is_case_insensitive_and_has_only_new_keys(env):
     assert set(upper) == {"support"}
     assert OLD_KEYS.isdisjoint(upper)
     support = upper["support"]
-    assert support["dir_resources"] == ["world"]
+    assert support["dir_resources"] == [
+        {"resource_id": "world", "description": RESOURCES["world"].description}
+    ]
     assert {item["action"] for item in support["dir_actions"]} == set(DIR_ACTIONS)
     assert {item["action"] for item in support["file_actions"]} == set(FILE_ACTIONS)
     for item in support["dir_actions"] + support["file_actions"]:

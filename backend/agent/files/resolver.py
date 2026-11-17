@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from agent.files.registry import (
+from agent.resources import (
     DRAFT,
     PERMANENT,
     RESOURCES,

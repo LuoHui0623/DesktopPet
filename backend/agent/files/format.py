@@ -5,8 +5,8 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, time, tzinfo
 from pathlib import Path
 
-from agent.files.registry import WORLD
 from agent.files.resolver import FileError, Resource
+from agent.resources import WORLD
 
 
 def relative_path(path: Path, root: Path) -> str:

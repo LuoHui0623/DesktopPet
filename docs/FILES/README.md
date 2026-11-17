@@ -67,7 +67,7 @@
 | 层级 | 位置 | 状态 |
 | --- | --- | --- |
 | 工具层 | `backend/agent/tools/files.py` | 每个动作一个工具；无 `edit` 聚合入口 |
-| 常量与登记 | `agent/files/registry.py` | `RESOURCES` 登记、领域保留字与动作分组 |
+| 常量与登记 | `agent/resources.py`（`RESOURCES` 登记、领域归属与说明）、`agent/files/registry.py`（动作名与分组） | 资源是领域范畴，文件域与记忆域共用一份登记 |
 | 权限 | `backend/agent/files/permissions.py` | 按任务权限快照投影动作 |
 | 服务 | `backend/agent/files/service.py` | 索引、读取、检索与写动作入队；不落盘、不审批 |
 | 处理器与视图 | `backend/agent/files/handlers.py`、`views.py`、`catalog.py` | 虚拟资源读取、索引序列化与条目投影 |

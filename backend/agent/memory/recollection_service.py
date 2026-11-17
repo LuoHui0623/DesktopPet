@@ -13,6 +13,7 @@ from datetime import date, timedelta
 from agent.harness.approval import AutoApprovalGate
 from agent.memory.contracts import DailyLogEntry
 from agent.memory.daily_log_service import DailyLogService
+from agent.memory.memory_service import render_daily_turns
 from agent.persona.persona_service import PersonaSnapshot
 from agent.spec.context import SOURCE_SYSTEM_AUTO
 
@@ -24,6 +25,11 @@ NO_HISTORY_REASON = "昨天没有聊天，也没有更早的聊天记录可以�
 CHAT_SIDES = frozenset({"master", "me"})
 RECALL_HINT = "请用第一人称写一段一到三句话的回忆，只使用当前人设在那一天的记录。"
 RECOLLECTION_TOPIC = "回忆"
+# 内联素材（T-07）：当天日志带行号锚点；此前回忆链取最近 N 天、升序、超长从最旧端截断。
+RECOLLECTION_CHAIN_DAYS = 30
+RECOLLECTION_CHAIN_MAX_CHARS = 3000
+DAILY_MATERIAL_HEADING = "【当天日志】每条前的 [#行号] 仅作定位锚点，不要写进回忆："
+CHAIN_HEADING = "【此前每日回忆】只作承接前情的背景，不作为抽取来源："
 
 
 def _iso(day: date | str) -> str:
@@ -136,7 +142,7 @@ class RecollectionService:
     ):
         return self._orchestrator.dispatch(
             RECOLLECTION_TOPIC,
-            _task_for(day, is_yesterday=is_yesterday),
+            _task_for(day, is_yesterday=is_yesterday, material=self._material(day, persona)),
             gate=AutoApprovalGate(),
             persona=persona,
             source=SOURCE_SYSTEM_AUTO,
@@ -145,6 +151,23 @@ class RecollectionService:
             # 回忆任务是固定的“总结这一天”，不需要再拆解；失败会占用当天唯一的回忆位。
             plan_first=False,
         )
+
+    def _material(self, day: str, persona: PersonaSnapshot) -> str:
+        """被回忆日的内联素材（T-07）：带行号锚点的当天日志 + 此前每日回忆链。
+
+        日志只取当天、不跨日；回忆链只作承接前情的背景、不作为抽取来源。
+        两段都为空时返回空串，任务文案退化为纯提示。
+        """
+        sections: list[str] = []
+        turns = render_daily_turns(
+            self._daily.restore_day(day, persona_id=persona.id), with_id=True
+        )
+        if turns:
+            sections.append(f"{DAILY_MATERIAL_HEADING}\n" + "\n".join(turns))
+        chain = self._recollection_chain(day, persona.id)
+        if chain:
+            sections.append(f"{CHAIN_HEADING}\n" + "\n".join(chain))
+        return "\n\n".join(sections)
 
     def _choose(self, target: str, persona: PersonaSnapshot) -> tuple[str, bool] | None:
         if self._has_chat(target, persona.id):
@@ -169,13 +192,36 @@ class RecollectionService:
                 days.append(day)
         return sorted(days, reverse=True)
 
+    def _recollection_chain(self, before: str, persona_id: str) -> list[str]:
+        """此前每日回忆链：最近 ``RECOLLECTION_CHAIN_DAYS`` 天、日期升序、超长截最旧。"""
+        end = date.fromisoformat(before)
+        floor = end - timedelta(days=RECOLLECTION_CHAIN_DAYS)
+        lines: list[str] = []
+        for day in reversed(self._earlier_days(before)):
+            if not floor <= day < end:
+                continue
+            entry = self._daily.read_recollection(day.isoformat(), persona_id=persona_id)
+            if entry is None or _failed(entry.content):
+                continue
+            lines.append(f"{day.isoformat()}：{entry.content}")
+        return _clip_oldest(lines)
+
     def _store(self, day: str, content: str, *, persona_id: str) -> Recollection:
         entry = self._daily.record_recollection(day, content, persona_id=persona_id)
         stored = entry.content if entry is not None else content
         return Recollection(day, stored, ok=not _failed(stored))
 
 
-def _task_for(day: str, *, is_yesterday: bool) -> str:
+def _clip_oldest(lines: list[str]) -> list[str]:
+    """总长超上限时从最旧端逐条丢弃（T-07「超长截最旧」）。"""
+    kept = list(lines)
+    while kept and sum(len(line) + 1 for line in kept) > RECOLLECTION_CHAIN_MAX_CHARS:
+        kept.pop(0)
+    return kept
+
+
+def _task_for(day: str, *, is_yesterday: bool, material: str = "") -> str:
     prefix = "" if is_yesterday else f"昨天没有聊天，上次聊天在 {day}："
     when = f"{day}（昨天）" if is_yesterday else day
-    return f"{prefix}请回忆 {when} 的对话。{RECALL_HINT}"
+    task = f"{prefix}请回忆 {when} 的对话。{RECALL_HINT}"
+    return f"{task}\n\n{material}" if material else task

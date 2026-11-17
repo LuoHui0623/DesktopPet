@@ -11,14 +11,16 @@ from agent.files.registry import (
     ACTION_READ,
     ACTION_REPLACE_LINES,
     ACTION_REPLACE_REGEX,
+    READ_ACTIONS,
+)
+from agent.files.resolver import ResourceResolver
+from agent.resources import (
     DRAFT,
     PERMANENT,
-    READ_ACTIONS,
     RESOURCES,
     STRUCTURED,
     WORLD,
 )
-from agent.files.resolver import ResourceResolver
 
 
 @pytest.fixture

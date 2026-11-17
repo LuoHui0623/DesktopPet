@@ -16,7 +16,7 @@ from agent.files.observability import (
 )
 from agent.files.outcome import STATUS_COMMITTED, STATUS_CONFLICT, SettlementOutcome, SettleResult
 from agent.files.permissions import system_permissions
-from agent.files.registry import ACTION_APPEND, ACTION_READ, DRAFT, WORLD
+from agent.files.registry import ACTION_APPEND, ACTION_READ
 from agent.files.resolver import FileError, ResourceResolver
 from agent.files.service import FileService, ModelLimit
 from agent.harness.approval import AutoApprovalGate
@@ -24,6 +24,7 @@ from agent.harness.review import ReviewService, _log_settlement
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.entry_service import MemoryEntryService
 from agent.memory.repository import DbDailyLog
+from agent.resources import DRAFT, WORLD
 from agent.skills.registry import (
     SkillRegistry,
     draft_note_skill,

@@ -10,15 +10,15 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from typing import Any, ClassVar, Literal
 
 from agent.files.guard import EditingStatus
-from agent.files.registry import (
-    ACTION_GROUP,
+from agent.files.registry import ACTION_GROUP
+from agent.files.schemas import derive_args, first_sentence
+from agent.resources import (
     DOMAIN_FILES,
     DOMAIN_MEMORY,
     DOMAIN_SKILLS,
     DOMAIN_TOOLS,
     normalize_domain,
 )
-from agent.files.schemas import derive_args, first_sentence
 
 
 @dataclass(frozen=True)
@@ -29,8 +29,16 @@ class ActionSpec:
 
 
 @dataclass(frozen=True)
+class DirResource:
+    """一级目录：`resource_id` 可原样回传给 `index` 与 `read`，`description` 说明它能做什么。"""
+
+    resource_id: str
+    description: str
+
+
+@dataclass(frozen=True)
 class Support:
-    dir_resources: list[str]
+    dir_resources: list[DirResource]
     dir_actions: list[ActionSpec]
     file_actions: list[ActionSpec]
 
@@ -124,7 +132,11 @@ class ToolIndex(Index):
 
 
 class MemoryIndex(Index):
-    """只给名称，不展示分区、条目与条目 ID。"""
+    """记忆对象清单：由资源登记表按 `domain = MEMORY` 投影，只排序，不读正文。
+
+    当前每项仍是 `{name, label}`；`description` 与可读参数、写入通道待扩，
+    口径见 `docs/MEMORY/ACCESS.md`。
+    """
 
     domain: ClassVar[str] = DOMAIN_MEMORY
 

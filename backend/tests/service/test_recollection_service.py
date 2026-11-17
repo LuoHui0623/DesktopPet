@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from agent.harness.dispatch import Checkpoint
 from agent.memory.daily_log_service import DailyLogService
 from agent.memory.memory_service import render_daily_turns
 from agent.memory.recollection_service import (
+    CHAIN_HEADING,
+    DAILY_MATERIAL_HEADING,
     FAILURE_PREFIX,
     MAX_ATTEMPTS,
     NO_HISTORY_REASON,
@@ -307,7 +310,7 @@ def test_a_recorded_failure_stops_further_dispatch(tmp_path: Path):
     assert "检索超时" in result.content
 
 
-def test_the_retrieval_material_excludes_previous_recollections(tmp_path: Path):
+def test_the_day_log_material_excludes_recollection_rows(tmp_path: Path):
     env = make_env(tmp_path)
     seed_chat(env.daily, YESTERDAY)
     env.daily.record_recollection(YESTERDAY, "这是一段旧回忆")
@@ -316,6 +319,65 @@ def test_the_retrieval_material_excludes_previous_recollections(tmp_path: Path):
 
     assert "这是一段旧回忆" not in text
     assert "用户：昨天聊了咖啡" in text
+
+
+def test_the_task_inlines_the_day_log_with_row_id_anchors(tmp_path: Path):
+    env = make_env(tmp_path)
+    seed_chat(env.daily, YESTERDAY)
+    user_row, reply_row = env.daily.restore_day(YESTERDAY)
+    orchestrator = FakeOrchestrator()
+
+    RecollectionService(orchestrator, env.daily).ensure(TODAY, persona=snapshot())
+
+    [task] = tasks(orchestrator)
+    assert DAILY_MATERIAL_HEADING in task
+    assert f"[#{user_row.id}] 用户：昨天聊了咖啡" in task
+    assert f"[#{reply_row.id}] 宠物：嗯嗯，记住了" in task
+    assert len(re.findall(r"\[#\d+\]", task)) == 2
+
+
+def test_the_task_inlines_the_recollection_chain_in_date_order(tmp_path: Path):
+    env = make_env(tmp_path)
+    seed_chat(env.daily, YESTERDAY)
+    env.daily.record_recollection("2026-10-14", "更早的回忆")
+    env.daily.record_recollection("2026-10-16", "更近的回忆")
+    orchestrator = FakeOrchestrator()
+
+    RecollectionService(orchestrator, env.daily).ensure(TODAY, persona=snapshot())
+
+    [task] = tasks(orchestrator)
+    assert CHAIN_HEADING in task
+    assert task.index("2026-10-14：更早的回忆") < task.index("2026-10-16：更近的回忆")
+    assert task.index(CHAIN_HEADING) > task.index(DAILY_MATERIAL_HEADING)
+
+
+def test_the_chain_keeps_only_the_recent_thirty_days(tmp_path: Path):
+    env = make_env(tmp_path)
+    seed_chat(env.daily, YESTERDAY)
+    env.daily.record_recollection("2026-09-10", "太久以前的回忆")
+    env.daily.record_recollection("2026-10-16", "窗口内的回忆")
+    orchestrator = FakeOrchestrator()
+
+    RecollectionService(orchestrator, env.daily).ensure(TODAY, persona=snapshot())
+
+    [task] = tasks(orchestrator)
+    assert "窗口内的回忆" in task
+    assert "太久以前的回忆" not in task
+
+
+def test_the_chain_drops_the_oldest_entry_when_too_long(tmp_path: Path):
+    env = make_env(tmp_path)
+    seed_chat(env.daily, YESTERDAY)
+    long_text = "很长的回忆" * 800
+    env.daily.record_recollection("2026-10-15", long_text)
+    env.daily.record_recollection("2026-10-16", "最新的一条回忆")
+    orchestrator = FakeOrchestrator()
+
+    RecollectionService(orchestrator, env.daily).ensure(TODAY, persona=snapshot())
+
+    [task] = tasks(orchestrator)
+    assert "最新的一条回忆" in task
+    assert long_text not in task
 
 
 def test_generation_uses_the_given_persona_snapshot(tmp_path: Path):
