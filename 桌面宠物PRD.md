@@ -236,4 +236,4 @@
 - 模型服务及调用信息：见 [docs/LLM.md](docs/LLM.md)。
 - 人设关联的形象资源：见 [docs/AVATAR/GROUP.md](docs/AVATAR/GROUP.md)。
 - 记忆域业务概念与召回策略草案：见 [docs/MEMORY/README.md](docs/MEMORY/README.md)（草案，不构成产品口径）。
-- 文件权限、编辑审批、并发与失败处理的实现契约：见 [docs/CHAT.md](docs/CHAT.md)；资源归属与已确认、待定范围的背景讨论见 [Design.md](Design.md)，其中标记为待定或远期建议的内容不视为本 PRD 已确认的要求。
+- 文件权限、编辑审批、并发与失败处理的实现契约：见 [docs/CHAT.md](docs/CHAT.md)；人设挂载与资源归属的现行口径以 docs/AVATAR/ 与 docs/FILES/ 各主题文档为准。
