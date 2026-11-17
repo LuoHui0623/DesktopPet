@@ -1,9 +1,11 @@
 # 桌面宠物 · 架构设计
 
-- 对应需求与技术选型：[桌面宠物PRD.md](桌面宠物PRD.md)
+> **状态**：现行。区分「目标分层职责」与「当前组件落点（迁移基线）」；目标拆分已完成目录迁移（`module` 包已删除），当前代码位置以迁移基线表为准。
+
+- 对应需求：[桌面宠物PRD.md](桌面宠物PRD.md)；技术选型见本文「架构总览 · 技术栈」。
 - 文档职责：本文件只描述架构（前后端如何划分、如何通信、代码如何组织、各层做什么）。需求取舍见 PRD。
 - 后端架构：「目标分层职责」至「责任归属与迁移状态」定义目标职责、依赖规则与代表链路；「当前组件落点（迁移基线）」单独记录当前实现落点。T1–T6 已完成目录与决策侧拆分：`module` 包删除，代码按 `agent`（模型自主决策）与 `app`（用户显式指挥）分层，`service` 只保留运行期机制，用户配置收束为 `data/settings.json` 六段快照。逐批计划与进度不由本架构文档维护。
-- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task`；用户派发先由固定的「任务」子代理整理成可并行的任务清单，再按任务内容路由技能；本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据；被动对话每轮按输入关键词只读召回早于当天的历史片段（排除当天、`assistant`、`event` 与 `回忆`），失败静默；设置页六段配置（模型、人设、感知、主动消息、形象、互动）统一读写 `data/settings.json`，写请求以 `If-Match` 乐观锁防止旧快照覆盖。
+- 已实现范围：感知采集/判定/调度、主动管线与主动气泡、形象组按人设挂载与状态联动动图（GIF/PNG 序列、静态主形象）、像素级穿透、基础互动、右键菜单与独立状态窗口；对话按当天 `daily_log` 恢复并支持多条连续发言，模型调用完整请求/回复落库，状态窗口展示当前轮 token 与耗时并区分开发/正式模式；提示词按主题注册表装配，派发协议为 `topic/task`；用户派发先由固定的「任务」子代理整理成可并行的任务清单，再按任务内容路由技能；本轮所有子代理结果合并成一条 `assistant` 回注，被动轮串行、记忆读取失败以 `notices` 降级提示；用户来源的 `index`/`read`/`grep` 逐次审批，任务可挂起并在重连时回放票据；被动对话每轮按输入关键词只读召回早于当天的历史片段（排除当天、`assistant`、`event` 与 `回忆`），失败静默；设置页六段配置（模型、人设、感知、主动消息、形象、互动）统一读写 `data/settings.json`，写请求以 `If-Match` 乐观锁防止旧快照覆盖；结构化记忆已条目化（有序 tags 分区、停用为软删除、`revision` 乐观锁），人设事实（身份、外观、心愿、对话偏好）归人设卡片并由人设块注入。
 
 ---
 
@@ -245,7 +247,7 @@ backend/
 │  └─ speech.py              # 发言上限：单轮最多 4 条（REPLY_MAX_ITEMS）、单句显示宽度 80（SENTENCE_MAX_WIDTH）与 visible_width()
 │
 ├─ resources/                # 【资源】代码随附的静态资源，入 Git
-│  ├─ skills/                # 技能说明书：每个能力一个 <file>.md，开头的 > 引用块即“何时使用”
+│  ├─ skills/                # 技能说明书：每个能力一个 <slug>/SKILL.md，frontmatter 的 name / description 即能力名与“何时使用”
 │  └─ avatars/               # 内置形象组：<人设 id>/default/（manifest.json + static.png + 帧图），首次启动复制到数据目录
 │
 ├─ config/                   # 【配置】进程级配置与部署级模型定义；用户配置不进这里
@@ -316,7 +318,7 @@ backend/
 │  ├─ pet.db                 # SQLite：daily_log、llm_call、agent_run、runtime_state
 │  ├─ settings.json          # 六段配置快照：version、updated_at 与 perception/scheduler/avatar/persona/llm/interaction
 │  ├─ avatars/               # 形象组：<人设 id>/<pack_id>/manifest.json、static.png 与帧图，首次启动从 resources/avatars/<默认人设>/default 复制
-│  ├─ memory/                # structured.md（结构化记忆，纯文本大纲）与 index.json（由代码生成）
+│  ├─ memory/                # index.json（每日对话的月份分组，由代码生成）；结构化记忆存 pet.db 的 memory_structured 表
 │  ├─ resources/             # 资源库：草稿本.md 与 表情包/，首次启动由 prepare_workspace 生成，已有内容不覆盖
 │  ├─ logs/                  # 后端日志
 │  └─ backend.lock           # 单实例锁
@@ -449,6 +451,8 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 
 两个直接使用 infra 的边界是有意例外：业务 repository 可使用 `infra/store` 的连接、事务等原语，因为 SQL、行映射和记录语义由数据所有者负责；API 的 WS 适配可使用 `infra/events` 订阅进程内事件，但事件的业务含义仍由产生/消费业务所有者定义。它们不授权 API 路由直接写 SQL，也不允许 infra bus 代替产品事件契约。
 
+`agent/spec` 是契约层：只定义数据形状与校验（任务上下文、派发计划、运行记录、工具结果），不 import `agent/files`、`agent/skills`、`agent/harness`、`agent/memory` 等实现包；技能域单向使用它，`AgentRunRecord.skill` 只保存技能名字符串，不引入技能类型。该方向由 `tests/agent/test_layer_dependency.py` 校验（`Q2` 口径：只约束方向，不定义跨域契约类型）。
+
 `main.py` 是对象组合根，负责构造实现并注入；`api.app` 可以注册路由并管理已注入 runtime 的应用生命周期，但不创建跨域服务。HTTP/WS 是 API 的外部契约，领域间公开业务契约与传输 DTO 不要求一一对应。只有存在真实跨边界协作、替换或错误隔离需求时才引入显式 Protocol/DTO/adapter。错误保留来源并分层处理：infra/service 显式保留技术失败，领域层转成该用例可处理的业务结果或错误，api 映射为外部契约；不得静默吞错或返回成功形状掩盖失败。
 
 ### 责任归属与迁移状态
@@ -497,11 +501,11 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 | **仓储（CRUD）** | `agent/<域>/repository.py`、`app/avatar/` | 各表的读写，只返回数据，不做规则判断；连接与事务原语来自 `infra/store/db.py` |
 | **结构化记忆读写、行号 helper、索引生成** | `agent/memory/` | 记忆是 Pet 自身的数据，业务用例；文件 IO 在 `infra/files/` |
 | **文件读写与权限** | `infra/files/io.py`（原子写入等 IO 原语）、`infra/files/access.py`（底层路径白名单） | IO 与穿越防护技术细节 |
-| **受管资源与统一文件动作** | `agent/files/registry.py`（资源注册表与权限矩阵）、`agent/files/resolver.py`（ID/路径解析）、`agent/files/service.py`（动作稳定入口）、`agent/files/handlers.py`（虚拟资源处理器）、`agent/files/text.py`（行级文本处理）、`agent/files/format.py`（展示格式化）、`agent/files/token.py`（快照令牌）、`agent/files/settle.py`（结算引擎）、`agent/files/outcome.py`（结算结果）、`agent/files/observability.py`（阶段日志与耗时）、`agent/tools/files.py`（工具封装） | 业务规则：哪些资源可读写、路径如何归属、编辑冲突与永久记忆读取上限 |
+| **受管资源与统一文件动作** | `agent/resources.py`（资源登记：领域归属、能力与说明）、`agent/files/registry.py`（动作词表与分组）、`agent/files/resolver.py`（ID/路径解析）、`agent/files/service.py`（动作稳定入口）、`agent/files/handlers.py`（虚拟资源处理器）、`agent/files/text.py`（行级文本处理）、`agent/files/format.py`（展示格式化）、`agent/files/token.py`（快照令牌）、`agent/files/settle.py`（结算引擎）、`agent/files/outcome.py`（结算结果）、`agent/files/observability.py`（阶段日志与耗时）、`agent/tools/files.py`（工具封装） | 业务规则：哪些资源可读写、路径如何归属、编辑冲突与永久记忆读取上限 |
 | **sub agent 编排与 ReAct 循环** | `agent/harness/dispatch.py`、`loop.py` | 业务编排；agent 只使用工具，不直接访问 infra |
 | **记忆写入与记忆来源** | `agent/capabilities/chat/citations.py`（引用过滤）、`agent/skills/registry.py`（能力登记） | 业务规则：写不写由主 agent 决定；只有本次注入上下文中的记忆可作为来源 |
-| **技能说明书与统一文件工具** | `resources/skills/*.md`（说明书）、`agent/skills/registry.py`（登记与解析）、`agent/tools/files.py`（动作入口，写动作先形成草稿） | 业务规则：主 agent 只见能力名，说明书由子代理按需查阅；所有资源共用一套动作与权限 |
-| **草稿本（小本本）** | `agent/files/workspace.py`（启动准备）、`agent/files/registry.py`（`draft` 资源）、`resources/skills/draft_note.md`（说明书） | 业务规则：草稿本是短期便签，只由派发子代理读写；可按行编辑，但不能删除文件本体 |
+| **技能说明书与统一文件工具** | `resources/skills/<slug>/SKILL.md`（说明书，frontmatter 给 `name` / `description`）、`agent/skills/registry.py`（解析与登记）、`agent/tools/files.py`（动作入口，写动作先形成草稿） | 业务规则：主 agent 只见能力名，说明书由子代理按需查阅；所有资源共用一套动作与权限 |
+| **草稿本（小本本）** | `agent/files/workspace.py`（启动准备）、`agent/resources.py`（`draft` 资源）、`resources/skills/draft_note/SKILL.md`（说明书） | 业务规则：草稿本是短期便签，只由派发子代理读写；可按行编辑，但不能删除文件本体 |
 | **Win32 感知采集**（空闲、前台、全屏、锁屏、白名单进程） | `frontend/src-tauri/src/perception.rs` | 桌面壳侧采集，变化时上报；后端不引入平台依赖 |
 | **离开 / 回来、久坐、应用启停等九种事件** | `agent/capabilities/perception/events/parser.py` | 输入域解析器：阈值与事件成立条件 |
 | **勿扰、间隔、每日与主题上限** | `agent/capabilities/perception/gate/scheduler.py`、`events/parser.py` | 开口闸门与当日台账 |
@@ -565,7 +569,7 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 
 ### 结构化记忆写入与检索
 
-日常对话每天完整保留在 `daily_log`，不做日终摘要。对话上下文由 `agent/capabilities/chat/context.py` 决定内容与降级顺序，排版由 `service/context.py` 完成；正文由 `agent/capabilities/chat/transcript.py` 每次按当天与当前人设从 `daily_log` 读取 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；装配时按记录 id 移除本轮输入，紧邻的重复输入在上下文里只保留最后一次（库里都保留）。`daily_log` 同时用于历史查询、记忆检索与展示。记录角色为 `master`（主人）、`me`（宠物）、`assistant`（子代理回灌）与 `event`（事件），每行带 `persona_id`。`event` 的内容为结构化 JSON（含 `type`），类型表见 `agent/memory/daily_events.py`；event 只用于审计，不进入任何一轮的模型上下文，可见诊断经合并后的 `assistant` 回注与 `notices` 呈现。
+日常对话每天完整保留在 `daily_log`，不做日终摘要；另在每天首轮为「最近一个有对话的日子」生成一条 `回忆` 角色的旁注（第一人称一到三句，按 人设 + 被结算日 幂等），只用于跨日承接，不进聊天时间线与快照。对话上下文由 `agent/capabilities/chat/context.py` 决定内容与降级顺序，排版由 `service/context.py` 完成；正文由 `agent/capabilities/chat/transcript.py` 每次按当天与当前人设从 `daily_log` 读取 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；装配时按记录 id 移除本轮输入，紧邻的重复输入在上下文里只保留最后一次（库里都保留）。`daily_log` 同时用于历史查询、记忆检索与展示。记录角色为 `master`（主人）、`me`（宠物）、`assistant`（子代理回灌）与 `event`（事件），每行带 `persona_id`。`event` 的内容为结构化 JSON（含 `type`），类型表见 `agent/memory/daily_events.py`；event 只用于审计，不进入任何一轮的模型上下文，可见诊断经合并后的 `assistant` 回注与 `notices` 呈现。
 
 写不写入结构化记忆由主 agent 决定：对话模型输出结构化结果，`type=dispatch` 时按 `task` 派发子代理。
 
@@ -579,10 +583,10 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
   ─► 审批：逐项等待用户确认（topic / task / content / tools；主动轮不审批）
        └─ 用户来源执行时，index / read / grep 每次调用前各开一张读取票据；拒绝只结束该次调用，任务继续
   ─► 执行：并行运行子代理（consolidate 模型，ReAct，最多 8 步）
-       ├─ resources/skills/<file>.md：子代理先用 index 看技能清单，再 read 打开说明书
+       ├─ resources/skills/<slug>/SKILL.md：子代理先用 index 看技能清单，再 read 打开说明书
        ├─ agent/tools/files：index / read / grep / edit（写动作由 action 区分）
        │    首次工具调用必须是 index（finish 除外），用于查看能力、路径与下一步提示
-       │    资源 ID 由 agent/files/registry.py 登记（draft、structured、permanent、world），
+       │    资源 ID 由 agent/resources.py 登记（draft、structured、permanent、world），
        │    agent/files/resolver 把 ID 或路径解析到运行时数据目录并做白名单校验
        │    结构化写入经 MemoryWriter：敏感信息被拒，成功后重建记忆索引
        │    草稿本与结构化记忆可按行编辑但不能删除文件本体；world 可新建、改写、删除文件
@@ -599,13 +603,15 @@ frontend: npm run gen:api   （即 scripts/gen-api-contracts.mts；npm run gen:a
 
 结构化记忆读取失败不中断本轮：`ChatService` 把失败记入 `ChatReply.notices`（当前只有 `memory_unloaded`），HTTP 响应与 `chat.done` / `proactive.message` 都透传该字段，前端据此显示提示；诊断只写日志，不把记忆正文带进提示。被动轮同一会话一次只处理一轮，第二个请求返回 `session_busy`；`master` 落库失败返回 `record_failed`，不调模型、不回复。
 
-拟人化的能力划分放在技能说明书里，代码只登记「技能名 + 说明书文件 + 工具清单 + 路由关键词」：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。技能名只用于审计与日志，模型按任务内容描述即可。写入后，用户可在设置页查看与编辑。另有一份内部 `任务` 能力（`resources/skills/planning.md`），只由派发执行器作为固定第一交接使用：它不参与关键词路由，也不出现在主 agent 的能力清单和子代理的 `SKILLS` 索引里；规划失败会回退原计划。
+拟人化的能力划分放在技能说明书里：说明书是元数据源，frontmatter 提供 `name` 与 `description`，代码只登记「目录名 + 工具清单 + 路由关键词」，登记时校验目录说明书声明的名称与代码登记名一致，不一致直接报错：`记忆写入`、`记忆检索`、`自记笔记` 各一份说明书。技能名只用于审计与日志，模型按任务内容描述即可。写入后，用户可在设置页查看与编辑。另有一份内部 `任务` 能力（`resources/skills/planning/SKILL.md`），只由派发执行器作为固定第一交接使用：它不参与关键词路由，也不出现在主 agent 的能力清单和子代理的 `SKILLS` 索引里；规划失败会回退原计划。
 
-草稿本（`自记笔记`）是**短期便签**，与 `daily_log` 这份长期记忆分开，在资源注册表中对应 `draft`：`read` 看现状，`edit(action=append/insert)` 追加，`edit(action=replace_lines/replace_regex)` 按行修改，`edit(action=delete)` 提供 `line_ranges` 删除内容但不能删除文件本体。资源库与草稿本在后端启动时由 `agent/files/workspace.prepare_workspace()` 创建，已存在的文件内容不覆盖；资源解析器按 `settings.data_dir` 构造，因此 `PET_DATA_DIR` 换了资源库也跟着走。
+草稿本（`自记笔记`）是**短期便签**，与 `daily_log` 这份长期记忆分开，在资源注册表中对应 `draft`：`read` 看现状，`append` / `insert` 追加，`replace_lines` / `replace_regex` 按行修改，`delete_lines` 提供 `line_ranges` 删除内容但不能删除文件本体。资源库与草稿本在后端启动时由 `agent/files/workspace.prepare_workspace()` 创建，已存在的文件内容不覆盖；资源解析器按 `settings.data_dir` 构造，因此 `PET_DATA_DIR` 换了资源库也跟着走。
 
 ### 记忆查看与检索
 
-设置页通过 `GET /api/memories?date=` 读取结构化记忆全文与每日对话，用 `PUT /api/memories/structured` 保存结构化记忆全文，均不经过子代理。子代理通过统一的四个文件工具、八个动作访问资源：`index` 看资源、能力与目录元数据，`read` 读文本（支持 `line_ranges`），`grep` 按正则检索；`edit` 承担五个写动作（`replace_lines`、`replace_regex`、`append`、`insert`、`delete`），其中 `draft`/`world` 的写入先形成待审批草稿，结算确认后才由提交器落盘，提交前磁盘已变时做 `base`/磁盘/草稿三方合并，冲突不覆盖并要求重新读取；`structured` 则由记忆域校验后即时写入。`resource` 取 `draft`、`structured`、`permanent`、`world` 或 `skill`；永久记忆按 `date` 或 `from`/`to` 读取当前人设，单次结果超过子代理模型 `max_tokens` 时明确失败；`skill` 配合 `name` 读取说明书。检索能力（`index` / `read` / `grep`）已随「记忆检索」能力接入对话。用户来源的每次读取调用都先弹一张读取票据（动作、资源/路径、参数摘要与模型）；系统自动只读跳过审批但仍受同一权限快照约束。
+设置页通过 `GET /api/memories?date=` 读取结构化记忆视图（`structured_text()`）与每日对话，条目级编辑走 `/api/memories/entries` 系列接口（新增、带 `expected_revision` 的更新、`enable` / `disable`）与 tag 合并接口，均不经过子代理；`PUT /api/memories/structured` 的整篇覆盖入口已关闭（固定返回 409，见 `Q8`）。子代理通过统一的文件工具访问资源：`index` 按层级给不同视图——`target` 取 `MEMORY` 时返回记忆对象清单与各自的可访问方式（口径见 [docs/MEMORY/ACCESS.md](docs/MEMORY/ACCESS.md)），取 `FILES` 时返回可索引目录与两组动作，取目录名时返回条目；`read` 读文本（支持 `line_ranges`），`grep` 按正则检索；写动作各自独立成工具——`create_dir`、`delete_dir`、`create_file`、`delete_file`、`append`、`insert`、`replace_lines`、`replace_regex`、`delete_lines`，不再有聚合的 `edit`。其中 `draft`/`world` 的写入先形成待审批草稿，结算确认后才由提交器落盘，提交前磁盘已变时做 `base`/磁盘/草稿三方合并，冲突不覆盖并要求重新读取。`structured` 与 `permanent` 是只读视图：`structured` 的条目由 `memory` 工具的 `add` / `enable` / `disable` 经记忆域事务写入，`permanent` 按 `date` 或 `from`/`to` 读取当前人设，单次结果超过子代理模型 `max_tokens` 时明确失败。两者没有磁盘路径，不进入文件占用与版本校验——`FileGuard` 只服务于磁盘文件的占用协调与外部变更检测。`resource` 取 `draft`、`structured`、`permanent`、`world` 或 `skill`；`skill` 配合 `name` 读取说明书。检索能力（`index` / `read` / `grep`）已随「记忆检索」能力接入对话。用户来源的每次读取调用都先弹一张读取票据（动作、资源/路径、参数摘要与模型）；系统自动只读跳过审批但仍受同一权限快照约束。
+
+结构化条目落在 `pet.db` 的 `memory_structured` 表，字段为 `id`、`content`、`tags`（有序 JSON 数组）、`source_ref`、`created_at`、`updated_at`、`status_state`、`status_reason`、`revision`。迁移只增不改：`0002` 建表、`0003` 删除 `priority`（全量注入后无消费方）、`0004` 增加 `revision`（乐观锁，既有行初始化为 1）。写入只经 `agent/memory/entry_service.py`：正文与 tags 先做格式校验、敏感信息拦截；复用判据为「同正文 + 同有序路径逐位一致」，不同路径各自成条；停用是软删除且原因必填，不提供物理删除；人工编辑必须带 `expected_revision`，条件未命中即返回冲突且不覆盖。注入时按有序 tags 组装 Markdown 树（`render_entry_lines`），只取启用条目、全量注入、不排序、不设独立字符预算，超窗由对话侧的逐块降级兜底。口径正文见 [docs/MEMORY/README.md](docs/MEMORY/README.md)。
 
 ### 能力执行
 
@@ -648,7 +654,7 @@ app/avatar ─► GET /api/avatars（人设、目录、状态清单、当前启�
 
 - 互动配置是 `data/settings.json` 的 `interaction` 段，真源为 `agent/capabilities/perception/interaction/constants.py` 的默认值与同目录 `config.py` 的校验；非法取值保持原配置，未知种类被过滤。设置页与悬浮窗读同一份配置。
 - 悬浮窗在收到 Tauri 事件 `settings-changed` 且 `domain` 为 `interaction` 时重新拉取配置，保存后立即生效，不需要重启。取不到后端时使用 `FALLBACK_INTERACTION_CONFIG`（仅这一处兜底，其它窗口不在组件里写死默认值）。
-- 互动不写数据库、不写 `daily_log`、不进入 `structured.md`；后端重启或超过有效期即丢弃。
+- 互动不写数据库、不写 `daily_log`、不进入结构化记忆；后端重启或超过有效期即丢弃。
 - 只有用户发起的对话消费队列；主动消息（`trigger_reason`）不消费，互动留到下一次用户对话。
 - 行为文案由后端 `INTERACTION_LABELS` 决定，前端只上报种类，避免两侧文案漂移。
 - 悬停不抢焦点；右键打开原生菜单（见「右键菜单」），打开前同样以种类 `menu` 上报一次。
@@ -753,7 +759,7 @@ Tauri src/menu.rs
 | GET | `/api/agent/approvals` | `list_approvals` | 列出当前挂起的审批票据（含逐次读取票据） |
 | POST | `/api/agent/approvals` | `submit_approval` | 提交派发、逐次读取或结算审批结果 |
 | GET | `/api/memories` | `list_memories` | 结构化记忆全文与每日索引；可传 `date` 取某天对话 |
-| PUT | `/api/memories/structured` | `save_structured_memory` | 保存结构化记忆全文 |
+| PUT | `/api/memories/structured` | `save_structured_memory` | 整篇覆盖写已关闭，固定返回 409；人工编辑走 `/api/memories/entries` |
 | GET | `/api/personas` | `list_personas` | 人设卡片列表与当前启用项（启用走 `PUT /api/settings/persona`） |
 | GET | `/api/avatars` | `list_avatars` | 当前人设的形象组：包列表（含 manifest 内容与 `static`）、状态清单 `preset_states`、人设 id 与可空的当前启用项 |
 | GET | `/api/avatars/{persona_id}/{pack_id}/{path}` | `get_avatar_asset` | 当前人设组内的包资源（帧图与主形象），只读、需令牌、拒绝越界与跨组路径 |
@@ -804,7 +810,7 @@ Tauri src/menu.rs
 | 人设卡片 | `backend/config/personas/<id>.yaml` | 是（不含密钥） | 每张卡一个文件，id 为文件名 |
 | 解析规则 | `backend/config/README.md` | 是 | `.env`、`llm.yaml`、默认模型的解析与校验规则 |
 
-读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。`PET_*` 相对路径按项目根目录解析。完整解析规则见 `backend/config/README.md`。角色卡的主题与解析方式（`role` 为编码填充，`personality` 与 `language_style` 为可扩展列表）见该文件的「人设卡片（personas/）」。
+读取优先级：进程环境变量 > `backend/config/.env`。配置目录固定由 `config/` 自身位置推导，与启动时的工作目录无关。`PET_*` 相对路径按项目根目录解析。完整解析规则见 `backend/config/README.md`。角色卡的主题与解析方式（`role` 为编码填充，`personality`、`language_style`、`appearance`、`wishes` 为可扩展列表，呈现顺序为 说话风格 → 外观形象 → 心愿清单）见该文件的「人设卡片（personas/）」。人设事实（身份、外观、心愿、对话偏好）归人设卡片并由人设块必保注入，不留在结构化条目里。
 
 ### 变量
 

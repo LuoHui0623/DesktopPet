@@ -219,7 +219,7 @@ opencode:
 
 ## 解析产物：model_settings
 
-`config/settings.py` 的 `load_model_settings()` 是唯一的解析入口，返回不可变的 `ModelSettings`：
+解析入口在 `backend/infra/llm/configuration.py` 的 `load_model_settings()`；`config/settings.py` 保留同名函数仅作兼容重导出，返回不可变的 `ModelSettings`：
 
 | 字段 | 内容 |
 |---|---|
@@ -230,7 +230,7 @@ opencode:
 | `warnings` | 不阻断启动的提示，如密钥缺失、默认模型未设置、未识别的键 |
 
 - `ModelSettings` 中不包含密钥值，只包含密钥的环境变量名。
-- 业务层（`backend/agent/llm/llm_service.py`）用 `model_settings` 装配模型客户端，并负责热更新，见 `Arch.md` 的「热更新」。
+- 模型客户端由 `backend/infra/llm/`（`configuration.py` 解析、`client.py` 装配与缓存）负责，热更语义见 [docs/LLM.md](../../docs/LLM.md)；`agent/llm/llm_service.py` 只保留能力选择，不再承担解析与装配。
 - 解析失败时抛出 `ModelSettingsError`，其 `errors` 为收集到的全部错误。
 
 ## 通用配置 PET_*
@@ -251,7 +251,7 @@ opencode:
 | `PET_DEV_MODE` | `0` | 状态窗口展示模式：`1/true/yes/on` 为开发模式，`0/false/no` 或留空为正式模式；其他值启动失败。只由 Tauri 调试构建注入，正式构建不设置 |
 
 - 所有错误一次性汇总，抛出 `ServiceSettingsError`。
-- 启动入口（T4）在解析失败时打印 `errors` 并以非零状态退出。
+- 后端启动入口在解析失败时打印 `errors` 并以非零状态退出。
 - 勿扰时段、最小间隔、每日上限不再从 `.env` 读取：唯一真源是 `data/settings.json` 的 `scheduler` 段，由设置页的 `PUT /api/settings/proactive` 写入（`GET /api/scheduler/config` 只读，见 `Arch.md` 的「设置页」）。旧的 `PET_QUIET_HOURS`、`PET_PROACTIVE_MAX_PER_HOUR`、`PET_PROACTIVE_MAX_PER_DAY` 已随该组配置迁移废弃：`DEPRECATED_SCHEDULER_KEYS` 只把它们读出来，在启动日志里提示一次「本次启动已忽略」，既不写入 `settings.json` 也不参与任何配置；`ServiceSettings` 没有对应字段，这三个键可以直接从 `.env` 删除。
 - 同理，感知（`perception`）、调度（`scheduler`）、形象（`avatar.active`）、人设（`persona.active`）、模型（`llm.active`）与互动（`interaction`）也不读 `.env`，都由设置页按段写入 `data/settings.json`。
 
@@ -270,6 +270,10 @@ opencode:
 | `role` | 编码填充 | 必须是映射，必须包含 `名字`、`人设`（非空字符串）；允许扩展字段（非空字符串） | 以 `你的名字是{名字}。{人设}` 开头，扩展字段逐行列在其后 |
 | `personality` | 可扩展 | 可选；字符串列表，元素为非空字符串，顺序无关 | `性格：` 加无序列表 |
 | `language_style` | 可扩展 | 可选；字符串列表，规则同上 | `说话风格：` 加无序列表 |
+| `appearance` | 可扩展 | 可选；字符串列表，规则同上 | `外观形象：` 加无序列表，排在说话风格之后 |
+| `wishes` | 可扩展 | 可选；字符串列表，规则同上 | `心愿清单：` 加无序列表，排在最后 |
+
+`appearance` 与 `wishes` 用于承载原本散落在结构化记忆里的人设事实（外观形象、心愿清单）：这类设定属于人设、必须注入，迁入后原结构化条目停用，不再重复注入。`REQUIRED_THEMES` 仍只有 `role`，其余列表型主题都可缺省。
 
 - 顶层不得出现未登记的主题，否则解析失败并列出可用主题。
 - `role` 必须存在。列表型主题如果出现，不能为空列表；不需要时请删除该键。

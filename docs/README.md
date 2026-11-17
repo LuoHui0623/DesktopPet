@@ -5,13 +5,17 @@
 
 ## 文档清单
 
+> 本地图覆盖设计文档：根级 PRD / Arch / Design 与 docs/ 全部主题文档，以及被域文档依赖的 backend/config/README.md。任务工单（Task*.md）为临时协作文档，不纳入地图。
+
 | 文档 | 回答什么 | 不回答什么 | 状态 |
 |---|---|---|---|
 | [桌面宠物PRD.md](../桌面宠物PRD.md) | 产品方向、业务需求、用户场景、范围与业务口径 | 技术选型、架构实现、任务排期与进度 | 草案，待产品评审 |
-| [Arch.md](../Arch.md) | 跨域架构：前后端划分、目录、依赖方向、跨域契约、数据流、配置 | 单域内部细节、任务状态 | 现行（区分目标职责与当前实现；除 LLM/client 首批外迁移未完成） |
+| [Arch.md](../Arch.md) | 跨域架构：前后端划分、目录、依赖方向、跨域契约、数据流、配置与技术选型 | 单域内部细节、任务状态 | 现行（区分目标职责与当前实现；目录拆分已完成，代码位置以「当前组件落点」为准） |
+| [Design.md](../Design.md) | 主/子 Agent 分工、人设与资源归属、文件访问与审批的设计讨论（含已确认方向、当前实现快照与待定事项） | 现行域契约正文（文件域见 docs/FILES/*，上下文见 CHAT） | 草案（文件域部分已被 docs/FILES/* 取代；人设挂载与资源归属仍有效） |
 | [docs/LLM.md](LLM.md) | 模型域：provider/model、能力映射、快照/热更、装配缓存、用量、不可用 | 提示词、上下文、重试、句长 | 已实现 |
 | [docs/CHAT.md](CHAT.md) | 对话域：单入口、上下文、生成契约、落账、快照、引用、派发 | 模型配置、感知阈值、开口判定 | 已实现 |
-| [docs/MEMORY/README.md](MEMORY/README.md) | 记忆域：边界与业务概念（recall / 策略 / 卡片 / 追溯元数据），指向权威文档与代码落点 | 产品需求、跨域契约、任务排期、已实现契约正文 | 草案（概念来自 `Draft.md` 的「记忆系统」讨论中提案；11-09 起关键词召回已落最小实现） |
+| [docs/MEMORY/README.md](MEMORY/README.md) | 记忆域：条目模型与字段、有序 tags 分区、状态与版本、检索片段、日结回忆、注入口径 | 产品需求、注入块顺序与超窗降级、跨域契约、任务排期 | 已实现 |
+| [docs/MEMORY/ACCESS.md](MEMORY/ACCESS.md) | 记忆读取协议：`index` 的分层职责、记忆对象清单、`read` / `grep` 的语义边界 | 条目字段与业务规则、文件域动作全集 | 已实现（`index(MEMORY)` 的输出尚未带出说明字段） |
 | [docs/AVATAR/README.md](AVATAR/README.md) | 形象域导航：边界、概念、组件地图、阅读路径 | 各主题的详细契约正文 | 已实现 |
 | [docs/AVATAR/PACK.md](AVATAR/PACK.md) | 形象包：目录、manifest、静态主形象、资源约束、目录接口、包级失败 | 状态选择、逐帧解码、窗口穿透 | 已实现 |
 | [docs/AVATAR/STATE.md](AVATAR/STATE.md) | 状态层：注册表、行为解析、状态表、回退链、状态扩展 | 事件产生时机、动画播放、命中判定 | 已实现 |
@@ -26,7 +30,8 @@
 | [docs/FILES/ACTIONS.md](FILES/ACTIONS.md) | 动作集：`dir`/`file` 分组判据、逐动作语义、`args` 与 `desc` 派生、权限命名 | 入参判别、条目的入队与合并 | 已实现 |
 | [docs/FILES/VIEW.md](FILES/VIEW.md) | 视图：两视图 JSON、条目字段、`Index`/`FileEntry` 类型分层、序列化约定、旧键移除 | 判别与报错、动作语义 | 已实现 |
 | [docs/FILES/QUEUE.md](FILES/QUEUE.md) | 队列与授权：条目三元组、四种 lines 操作、状态机、并 action、按行 diff、提交边界 | 哈希与外部变更判定、动作参数 | 已实现 |
-| [docs/FILES/VERSION.md](FILES/VERSION.md) | 版本与一致性：归一化哈希、`H0`/`H1`、只读副本边界、分区处置、锁与读取可见性 | 条目合并与 review 呈现 | 已实现 |
+| [docs/FILES/VERSION.md](FILES/VERSION.md) | 版本与一致性：归一化哈希、`H0`/`H1`、只读副本边界、分区处置、锁与读取可见性、快照 token | 条目合并与 review 呈现 | 已实现 |
+| [backend/config/README.md](../backend/config/README.md) | 配置解析：`.env` / `llm.yaml` / 人设卡片的完整解析规则、校验规则、密钥解析、错误汇总 | 架构层面的设计（见 Arch 的「配置」） | 已实现 |
 
 ## 阅读顺序
 
@@ -48,8 +53,9 @@
 
 ## 当前迁移状态
 
-- **四份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md` 的契约均已实现。感知的观测器、解析器与调度闸门在 `agent/capabilities/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `agent/capabilities/chat/transcript.py` 的当日时间线（正文从 `daily_log` 读取，不存内存快照；感知事件每轮单独读取，最多 5 条）；主动管线在 `agent/capabilities/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
-- **`Arch.md` 区分目标与现状**：「backend/（当前代码目录）」与「当前组件落点（迁移基线）」记录当前目录和实现落点；「目标分层职责」「目标依赖方向」「责任归属与迁移状态」记录已确认的逻辑职责、依赖规则及代表链路。除已完成的 LLM/client 首批外，目标拆分尚未迁移，不应把目标归属读成当前代码位置。主动气泡与忽略、形象组与人设挂载、形象包与状态联动动图、像素级穿透、基础互动、右键菜单、独立状态窗口均已实现；形象域的业务设计独立到 [docs/AVATAR/](AVATAR/README.md)（包、状态、动画、窗口与形象组均已实现），`Arch.md` 的「形象域」只保留分层与落点；互动的上报、节流与上下文注入见「基础互动」，右键菜单的读模型、原生菜单与动作分发见「右键菜单」，状态窗口的当前轮次面板与开发/正式展示边界见「状态窗口」。
+- **五份已实现的域文档**：`docs/LLM.md`、`docs/CHAT.md`、`docs/OBSERVER.md`（含解析器契约）、`docs/PROACTIVE.md`、`docs/MEMORY/`（[README.md](MEMORY/README.md) 与 [ACCESS.md](MEMORY/ACCESS.md)）的契约均已实现。感知的观测器、解析器与调度闸门在 `agent/capabilities/perception`；chat 使用 `chat(ChatRequest)` 单入口与 `agent/capabilities/chat/transcript.py` 的当日时间线（正文从 `daily_log` 读取，不存内存快照；感知事件每轮单独读取，最多 5 条）；主动管线在 `agent/capabilities/proactive/pipeline.py`，解析器 Trigger 经运行时交给 `handle` 生成并推送 `proactive.message`。observer/parser 的包拆分仍未做。
+- **记忆域已按契约实现**：结构化条目在 `memory_structured`（`priority` 已删、`revision` 已加，停用为软删除），写入走 `agent/memory/entry_service.py` 的 add / enable / disable / update / tag 改写，注入在 `agent/capabilities/chat/context.py` 与 `backend/service/context.py`，关键词召回在 `agent/memory/recall.py`，日结回忆在 `agent/memory/recollection_service.py`；超窗按 感知事件 → 每日回忆 → 召回片段 → 最旧历史轮 逐块降级。`docs/MEMORY/` 两份文档已从草案收敛到已实现口径，不再保留已否决概念。
+- **`Arch.md` 区分目标与现状**：「backend/（当前代码目录）」与「当前组件落点（迁移基线）」记录当前目录和实现落点；「目标分层职责」「目标依赖方向」「责任归属与迁移状态」记录已确认的逻辑职责、依赖规则及代表链路。目录拆分已完成（T1–T6，`module` 包已删除），目标逻辑职责与当前落点的对应关系以迁移基线表为准；主动气泡与忽略、形象组与人设挂载、形象包与状态联动动图、像素级穿透、基础互动、右键菜单、独立状态窗口均已实现；形象域的业务设计独立到 [docs/AVATAR/](AVATAR/README.md)（包、状态、动画、窗口与形象组均已实现），`Arch.md` 的「形象域」只保留分层与落点；互动的上报、节流与上下文注入见「基础互动」，右键菜单的读模型、原生菜单与动作分发见「右键菜单」，状态窗口的当前轮次面板与开发/正式展示边界见「状态窗口」。
 - **`PERCEPTION.md` 作为采集细节附录保留**（已被 OBSERVER.md 顶部标注为旧稿）：
   - 保留：状态模型、采集方式、怎么获取进程名（小节）、判断条件、事件分层、开关与默认值。OBSERVER.md 不再重复 Win32 细节。
   - 已由 OBSERVER.md 取代：主题（能聊什么）（事件→主题、话术门槛）、节制规则（主动消息的刹车）（开口闸门）。两份若冲突，以 OBSERVER.md 为准；主题的话术示例在 chat 的提示词定稿前暂留，仅作参考，不是契约。
@@ -83,7 +89,7 @@
 | 感知事件边界 | 感知事件不落库、不写 `daily_log`、不扩 `EVENT_TYPES` | [OBSERVER.md](OBSERVER.md) 的「与事件分层的关系」 |
 | 判定集中 | 解析器集中判定，只输出 `Trigger{topic, reason}` | [OBSERVER.md](OBSERVER.md) 的「解析器输出」 |
 | chat 职责 | ChatService 提供完整 chat 能力，不做主动编排 | [CHAT.md](CHAT.md) 的「定位」 |
-| 上下文来源 | 当天 `daily_log` 的 `master` / `me` / `assistant` 行，加上当日可进入上下文的感知事件（最多 5 条）；current 与历史用分隔串区分 | [CHAT.md](CHAT.md) 的「上下文组装」 |
+| 上下文来源 | 当天 `daily_log` 的 `master` / `me` / `assistant` 行，加上当日可进入上下文的感知事件；current 与历史用分隔串区分。感知事件目标态为「按主题优先级至多一个」（未实施，现状最多 5 条 + 互动单独注入） | [CHAT.md](CHAT.md) 的「上下文组装」与「感知事件的注入」、[OBSERVER.md](OBSERVER.md) 的「上下文主题的 taxonomy 与优先级」 |
 | 连续发言 | 一轮回复 1–4 条，`text` 是数组；解析层兼容旧字符串，提示词只教数组 | [CHAT.md](CHAT.md) 的「结构化输出」 |
 | 句长预算 | 单句按显示宽度 80 计（东亚宽字符 2、其余 1），中文约 40 字、英文约 80 字符；上限只管 `text` 里每一条发言，不管整个 output 长度 | [CHAT.md](CHAT.md) 的「句长与引用」 |
 | 角色与时间戳 | 上下文用户的每一句话（历史行与本次输入）都带 `[master][HH:MM:SS]`，主动轮用 `【当前时间】`；界面按 `created_at`/`at` 装配，不写正文 | [CHAT.md](CHAT.md) 的「快照规则」 |
@@ -101,10 +107,18 @@
 | 草稿本（小本本） | 短期便签，与长期记忆分开；只有派发子代理能读写，写入走审批；资源库在数据目录下，启动自动建文件且不覆盖 | [CHAT.md](CHAT.md) 的「派发分支」 |
 | 模型调用落库 | 每次调用（含失败）把完整请求与回复正文写入 `llm_call`，回复同时保留归一化文本（`reply_text`）与未解析原始响应（`reply_raw`），按轮次关联；汇总只累加已知 token，模型耗时取调用区间并集 | [LLM.md](LLM.md) 的「调用记录」 |
 | 状态窗口 | 只展示当前轮次；换轮替换、关窗不落库、重连以服务端快照为准；开发模式显示完整请求、未解析原始响应与归一化回复，正式模式只显示 token 与耗时，边界由服务端裁剪 | [Arch.md](../Arch.md) 的「状态窗口」、[LLM.md](LLM.md) 的「实时事件」 |
-| 记忆预算 | 结构化记忆全文注入、不设预算不截断；只有检索片段受 600 字符预算约束，超限整条舍弃并记 warning | [CHAT.md](CHAT.md) 的「输入顺序」 |
+| 记忆预算 | 结构化记忆全文注入、必保、不排序；结构化记忆与检索片段都不设独立字符预算；超窗按 感知事件 → 每日回忆 → 召回片段 → 最旧历史轮 逐块丢弃，必保块超窗报 `context_overflow` | [CHAT.md](CHAT.md) 的「输入顺序」与「超窗降级」 |
+| 记忆条目模型 | 一条一个事实：正文单行 ≤30 字、禁换行与顿号；分区由有序 `tags` 表达，首标签为分区，顺序不同即不同路径 | [MEMORY/README.md](MEMORY/README.md) 的「结构化条目」与「已定口径」 |
+| 记忆写入复用 | 复用判据为「同正文 + 同有序路径逐位一致」；停用条目被再次写入时自动重新启用；近义标签不自动合并 | [MEMORY/README.md](MEMORY/README.md) 的「读写的对外契约」 |
+| 记忆停用与版本 | 无物理删除，停用必写原因、不再注入；人工编辑必须带 `expected_revision`，冲突即拒绝并提示刷新 | [MEMORY/README.md](MEMORY/README.md) 的「读写的对外契约」 |
+| 历史召回 | 单一关键词确定性召回：只查早于当天的 `master` / `me`，至多 6 条原文，带真实行 id 作提示词内锚点，不产生用户可见来源 | [MEMORY/README.md](MEMORY/README.md) 的「检索片段」、[CHAT.md](CHAT.md) 的「每轮召回」 |
+| 日结回忆 | 每天首轮为最近一个有对话的日子结算一次，按 `(人设, 被结算日)` 幂等；产物为一条 `回忆` 行，失败行落库但不注入 | [CHAT.md](CHAT.md) 的「昨天的回忆」、[MEMORY/README.md](MEMORY/README.md) 的「日结回忆」 |
+| 人设事实归属 | 人设设定归人设块、必保注入；普通记忆留结构化条目。结构化条目里遗留的人设事实已迁出并置停用（原因「已迁入人设」） | [MEMORY/README.md](MEMORY/README.md) 的「已定口径」 |
 | 记忆默认落库 | 不再提供临时模式：每轮都写 `daily_log`，结构化记忆写入只受敏感信息规则约束 | [CHAT.md](CHAT.md) 的「daily_log」 |
 | 文件域寻址 | `index` 单参数两视图；四个保留字全大写书写、判别归一大小写；未注册与已注册非目录分别报错；`entries` 与 `dir_resources` 全量返回 | [FILES/ADDRESSING.md](FILES/ADDRESSING.md) 的「单一入参」至「完整性与可见性」 |
 | 文件动作集 | 按受体条目 `type` 分 `dir`/`file` 两组；`create_file`、`delete_file` 归 `dir`；不存在 `edit` 聚合入口 | [FILES/ACTIONS.md](FILES/ACTIONS.md) 的「分组判据」与「独立动作，不设聚合入口」 |
 | 写入授权 | 人工授权只在 review 一处，按 hunk（action）批准、不同 hunk 允许部分批准；并 action 默认允许不经批准；review 为变更列表 + 按行连续 diff | [FILES/QUEUE.md](FILES/QUEUE.md) 的「授权」至「review 呈现」 |
 | 版本与外部变更 | 以 `utf-8-sig` 去 BOM、`\n` 归一后的 SHA-256 为版本；`diff_lines` 相交的条目作废重提，不相交的按偏移保留原批准 | [FILES/VERSION.md](FILES/VERSION.md) 的「版本」至「外部变更的分区处置」 |
 | 文件域不变量 | 提交前文件不变、只提交 `approved`、清空不等于删除、非空目录不删等八条 | [FILES/README.md](FILES/README.md) 的「不变量」 |
+| 快照 token | `read` / `grep` 结果末尾的快照 token 标记读取版本，写动作可回传做提前失效校验，不是权限凭据 | [FILES/VERSION.md](FILES/VERSION.md) 的「快照 token（模型可见）」 |
+| LLM 配置解析 | `.env` / `llm.yaml` 的解析条目、校验规则与密钥间接引用细则归 backend/config/README.md；LLM.md 只保留域语义（校验时机、不可用语义、密钥不落库） | [LLM.md](LLM.md) 的「配置」、[backend/config/README.md](../backend/config/README.md) 的「校验规则」与「密钥解析」 |

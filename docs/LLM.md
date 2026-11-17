@@ -130,7 +130,7 @@ data/settings.json 的 llm.active.<capability>
 
 ## 调用记录
 
-- 落点表为 `llm_call`（首次建表时名为 `llm_usage`，迁移 `0010_llm_call` 改名，与 `agent_run`、`capability_run`、`behavior_event` 的命名对齐；迁移 `0012_usage_turn` 增加 `turn_id` 与其索引；迁移 `0013_llm_call_reply_raw` 增加未解析原始响应 `reply_raw`）。
+- 落点表为 `llm_call`，与 `agent_run`、`capability_run`、`behavior_event` 的命名对齐；表内含轮次关联 `turn_id` 及其索引，以及未解析原始响应 `reply_raw`（迁移历史已合并，以上均为基线迁移 `0001_init` 的表结构）。
 - 每个 client 包装为 `TrackedChatModel`，每次调用记录：
   `provider`、`model`、`purpose`、`run_id`、`turn_id`、`tokens_in`、`tokens_out`、`usage_raw`、`started_at`、`finished_at`、`latency_ms`、`success`、`prompt_hash`、`prompt_text`、`reply_text`、`reply_raw`。
 - `purpose` 取能力名（`chat` / `consolidate`）；主动轮复用 `chat`，不新增 `proactive`。
@@ -196,23 +196,13 @@ data/settings.json 的 llm.active.<capability>
 
 ### 校验规则
 
-启动与每次重载执行，任一失败即整体拒绝：
-
-1. `LLM_PROVIDERS` 中每个 provider 必须有 `<P>_BASE_URL`。
-2. 每个启用的 provider 必须在 `llm.yaml` 中有预设。
-3. 同一 provider 下模型 `name` 不得重复；`id` 不要求唯一。
-4. `DEFAULT_<能力>_MODEL` 必须解析到已启用 provider 下、`roles` 包含该能力的模型：
-   - `<provider>/<name>` 直接查找；
-   - 裸 `<name>` 要求跨 provider 唯一，否则报错。
-5. `temperature` 在 0–2；`max_tokens` 大于 0；`context_window` 大于 0，`tokenizer` 非空（缺省 `128000` / `cl100k_base`）。
+启动与每次重载执行，任一失败即整体拒绝。具体校验条目（provider 与 `base_url` 对齐、模型 `name` 唯一、默认模型解析、`temperature` / `max_tokens` / `context_window` / `tokenizer` 取值）以 [backend/config/README.md](../backend/config/README.md) 的「校验规则」为权威，此处不复制清单。
 
 密钥缺失不属于配置错误：provider 标记为不可用，启动成功，调用时返回明确错误。
 
 ### 密钥
 
-- 只存在系统环境变量，不写入 `.env`、`llm.yaml`、数据库。
-- `.env` 中的 `<PROVIDER>_API_KEY` 是间接引用，值是系统环境变量名：`DEEPSEEK_API_KEY=PET_API_KEY` 表示 `deepseek` 的密钥从 `PET_API_KEY` 读取。未写该键时默认读 `<PROVIDER>_API_KEY`。
-- 值必须匹配 `^[A-Z_][A-Z0-9_]*$`；写密钥本身（如 `DEEPSEEK_API_KEY=sk-…`）启动报错。值等于键名时等价于未写。
+- 只存在系统环境变量，不写入 `.env`、`llm.yaml`、数据库；间接引用格式与校验细则见 [backend/config/README.md](../backend/config/README.md) 的「密钥解析」。
 - `GET /api/llm/providers` 不返回密钥值，只返回可用状态与原因。
 
 ## 失败与降级

@@ -59,10 +59,10 @@ chat → llm
 
 | 组件 | 目标落点 | 现状 |
 |---|---|---|
-| 观测器 | `agent/capabilities/perception/collector/service.py`（或保留 `agent/capabilities/perception/collector/service.py`） | `agent/capabilities/perception/collector/service.py` |
+| 观测器 | `agent/capabilities/perception/collector/service.py` | `agent/capabilities/perception/collector/service.py` |
 | 解析器 | `agent/capabilities/perception/events/parser.py` | `agent/capabilities/perception/events/parser.py`，内含主题映射与闸门 |
 | 闸门配置 / 台账 | 解析器读配置与台账；管线写台账 | `agent/capabilities/perception/gate/scheduler.py`，职责待拆 |
-| 运行时 | 观测域单一时钟：`observer.tick → parser.consume → on_trigger` | `service/tick.py` |
+| 运行时 | 观测域单一时钟：`observer.tick → parser.consume → on_trigger` | `backend/service/tick.py` 的 `PerceptionRuntime`，感知包内不含 tick 循环 |
 | 管线 | `agent/capabilities/proactive/pipeline.py` | 已实现，由运行时投入工作线程执行 |
 
 包迁移未定；本文只约定“谁依赖谁”，不把包名写死。
@@ -200,6 +200,22 @@ parser 产出 Trigger
 
 `presence_away` / `busy_enter` 只作为状态事实与上下文抑制依据，不产生主题。
 
+### 上下文主题的 taxonomy 与优先级
+
+进入被动上下文的感知事件按三类主题归类，主题之间有固定优先级；这套 taxonomy 只用于**上下文选取**，与主动消息的话术主题键（`greeting_return`、`sit_long` 等）是两套东西，不互相替代。
+
+| 主题 | 优先级 | 可感知池 | 含义 |
+|---|---|---|---|
+| 用户状态 | 高 | `presence_return`（回来）、`busy_exit`（忙碌结束） | 主人的状态发生了与桌宠相关的转折 |
+| 应用活动 | 中 | `app_launched`（打开）、`app_quit`（关闭）、`app_in_use`（持续使用） | 主人在用什么 |
+| 互动 | 低 | 互动上报的行为 | 主人与桌宠的直接接触 |
+
+- **可感知池不扩**：`presence_away` / `busy_enter` / `sit_long` / `late_night` 仍只驱动主动触发，不进上下文；taxonomy 概念上覆盖它们，但可感知池维持上述 5 种事件加互动。
+- **选取规则**：每轮按主题优先级选出唯一最高优先级主题，在该主题内取最近发生的一个事件，其余未选中事件（含其他主题）全部丢弃并清空。
+- **互动的地位**：只有当没有更高优先级主题事件时才被感知；被抑制只是不进上下文，互动本身仍照常记录与结算。
+- **注入形态**：单一选取之后如何与本次输入合并且「至多一个」地注入，归 [CHAT.md](CHAT.md) 的「感知事件的注入」。
+- **现状**：上述 taxonomy 与优先级序已定，代码尚未改造——当前上下文仍按「当天最多 5 条事件 + 互动单独注入」两条通道呈现，未做主题内单一选取。
+
 ## 阈值归属
 
 | 规则 | 归属 | 理由 |
@@ -234,7 +250,7 @@ parser 产出 Trigger
 | 对话进行中 | 不开口（注入 `chat_active` 端口） | 否 |
 | 深夜 23:00–05:00 | 只允许 `late_night` | 否 |
 
-台账：数据库 `runtime_state` 表的 `scheduler.sent`，形状 `{date, topics: {key: n}, total: n}`；解析器读，管线在发送成功后写；跨日归零。
+台账：数据库 `runtime_state` 表的 `scheduler.sent`；形状与写入时机以 [PROACTIVE.md](PROACTIVE.md) 的「发送台账」为权威（解析器只读，不写）；跨日归零。
 
 已知限制：最小间隔依赖进程内 `last_sent_at`，重启后从空开始；台账只保当日计数，不保上次发送时刻。
 

@@ -3,7 +3,7 @@
 > 职责：定义 ChatService 的唯一入口、请求/回复契约、上下文组装、生成校验与落账。
 > 依赖：`agent/llm`（模型）、`agent/memory`（daily_log / 结构化记忆）、`agent/persona`、`agent`（派发分支）、观测域解析器（current 事件）。
 > 不回答：模型配置与热更（见 [LLM.md](LLM.md)）、感知采集与阈值（见 [OBSERVER.md](OBSERVER.md)）、主动判定与管线（见 [PROACTIVE.md](PROACTIVE.md)）、气泡与前端渲染。
-> 状态：已实现。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，当天对话每次组装时从 `daily_log` 读取。已覆盖多条连续发言与显示宽度句长、秒级时间戳、跨重启恢复、上下文窗口检查、子代理正文回灌、主动轮只读派发、主题注册表与范畴分组编排、「昨天的回忆」注入、current 消息装配、记录身份去重、topic/task 派发、合并回注与 notices 降级。11-09 起，被动轮按本轮输入自动召回早于当天的历史对话并注入检索片段（只读、失败静默）。
+> 状态：已实现。唯一入口为 `ChatService.chat(ChatRequest)`；被动与主动共用同一条上下文、生成与落账路径，当天对话每次组装时从 `daily_log` 读取。已覆盖多条连续发言与显示宽度句长、秒级时间戳、跨重启恢复、上下文窗口检查、子代理正文回灌、主动轮只读派发、主题注册表与范畴分组编排、「昨天的回忆」注入、current 消息装配、记录身份去重、topic/task 派发、合并回注与 notices 降级；被动轮按本轮输入自动召回早于当天的历史对话并注入检索片段（只读、失败静默）。
 
 ## 定位
 
@@ -27,13 +27,13 @@ ChatService 提供**完整的对话能力**：把一次输入组装成上下文�
 - **Transcript（当日快照）**：按当前人设从 `daily_log` 读取当天的 `master` / `me` / `assistant` 行；不在进程内保存快照，事件与感知每轮单独读取。
 - **Context（上下文）**：系统提示词 + 日期分隔线 + 昨天的回忆 + 结构化记忆全文 + 检索片段（每轮召回）+ 当日历史 + current 区（感知事件与本次输入）。系统提示词由主题注册表按范畴分组拼装，日期分隔线紧跟其后（见「日期标记」）。
 - **昨日回忆（Recollection）**：把过去某一天（默认昨天）的对话交给「记忆检索」子代理压缩成的一段第一人称正文，落库到被回忆的那一天，下一轮起注入上下文（见「昨天的回忆」）。
-- **每轮召回（Recall）**：被动轮按本轮输入的关键词，在早于当天的 `master` / `me` 记录里做只读检索，取最多 6 条交给上下文预算裁剪（见「每轮召回」）；不调模型、不审批、不落库。
+- **每轮召回（Recall）**：被动轮按本轮输入的关键词，在早于当天的 `master` / `me` 记录里做只读检索，取最多 6 条片段注入上下文（不设字符预算，超窗由逐块降级丢弃，见「每轮召回」）；不调模型、不审批、不落库。
 - **Dispatch（派发）**：模型输出计划，由后端审批（被动轮）或按只读规则自动放行（主动轮）并执行子代理，再把本轮所有结果合并成一条 assistant 回注给模型生成最终回复。
 - **`allow_dispatch`**：本次调用是否允许派发。它是能力开关，不是主动/被动标记。
 - **`read_only_dispatch`**：派发是否只允许只读操作。主动轮固定为 `True`，按任务实际声明的工具逐项判定，不请求审批；声明含写入工具即拒绝（见「派发分支」）。
 - **`trigger_reason`**：主动轮的事实依据，来自解析器的 `Trigger.reason`；不是话术，不写入记录。
 - **Notices**：本轮用户可见的系统提示 code；只有 `memory_unloaded` 会经此通道出现，不占回复正文（见「降级提示（notices）」）。
-- **Sources**：本次回复引用到的记忆片段；只保留本次实际注入上下文的片段。
+- **Sources**：本次回复的引用来源；当前不产生来源（片段只用行 id 作提示词内锚点），该字段恒为空。
 
 ## 依赖与落点
 
@@ -129,11 +129,11 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ### 输入顺序
 
-1. **系统提示词**：由 [chat_system_prompt.py](../backend/agent/prompts/chat_system.py) 的 `TOPIC_REGISTRY` 提供主题，`Topic(id, category, render(ctx))` 只返回正文；[prompt.py](../backend/agent/prompts/templates.py) 的 `compose_chat_prompt` 负责包装 `【主题】\n正文` 与范畴分隔线。输出时范畴固定为 身份 → 能力 → 行为，范畴内按注册顺序；映射为人设 / 可用能力、可用资源 / 行动规则、发言规则、约束，段间以空行分隔。`$persona_section`、能力名与资源 ID 清单一类占位符由各主题的 `render` 填充。**不存在** `prompts/chat.md`、`prompts/persona.md` 这类文件模板，chat 提示词只有 `chat_system_prompt.py` 这一个来源。
+1. **系统提示词**：由 [chat_system.py](../backend/agent/prompts/chat_system.py) 的 `TOPIC_REGISTRY` 提供主题，`Topic(id, category, render(ctx))` 只返回正文；[prompt.py](../backend/agent/prompts/templates.py) 的 `compose_chat_prompt` 负责包装 `【主题】\n正文` 与范畴分隔线。输出时范畴固定为 身份 → 能力 → 行为，范畴内按注册顺序；映射为人设 / 可用能力、可用资源 / 行动规则、发言规则、约束，段间以空行分隔。`$persona_section`、能力名与资源 ID 清单一类占位符由各主题的 `render` 填充。**不存在** `prompts/chat.md`、`prompts/persona.md` 这类文件模板，chat 提示词只有 `chat_system.py` 这一个来源。
 2. **日期分隔线**：紧接系统提示词之后，全局只出现这一次（见「日期标记」）；其后才是各类注入段落。
 3. **昨天的回忆**：有可用回忆时注入（见「昨天的回忆」）；失败或无历史时不占位。
-4. **结构化记忆全文**：全文注入，不设预算、不截断（它是大纲，截断会丢语义）。
-5. **检索片段**：被动轮由 `RecallService` 按本轮输入自动召回早于当天的 `master` / `me` 记录（见「每轮召回」）；调用方提供的 `fragments` 排在召回结果之前。超出 `FRAGMENT_TOKEN_BUDGET`（按字符累加、整条舍弃）记 warning；有片段时追加引用规则。主动轮不召回。
+4. **结构化记忆全文**：全量注入、必保、**不排序**（没有价值分级）、不设独立字符预算、不静默截断（它是长期事实的集中视图，截断会丢语义）；只取启用条目，停用条目仍见于只读视图但不进提示词。超窗不在此裁剪，由「超窗降级」按块丢弃。
+5. **检索片段**：被动轮由 `RecallService` 按本轮输入自动召回早于当天的 `master` / `me` 记录（见「每轮召回」）；调用方提供的 `fragments` 排在召回结果之前。片段**不设独立字符预算**，超窗由「超窗降级」从相关度最低端逐条丢弃；片段不产生用户可见来源，提示词不教引用。主动轮不召回。
 6. **当日历史**：从 `daily_log` 恢复当前人设当天的 `master` / `me` / `assistant`，统一渲染为 `[角色][HH:MM:SS]正文`；`master → Human`，`me` / `assistant → AI`，按 `created_at, id` 排序；不做 master/me 成对要求。
 7. **current 分界**：历史区为当天全部聊天记录（不按角色扫描分界）；历史非空时在其后插入 `===========current============`（`current` 居中到 30 列），其后为 current 区（感知事件与本次输入）；当天没有任何历史记录时不插分隔线。
 8. **current 区**：被动轮先放本轮感知事件（当天、最多 5 条、`[event][HH:MM:SS]<内容>` 的 AI 消息），再放本次输入；本次输入是 current 区的最后一条，正文带 `[master][HH:MM:SS]` 前缀（见「快照规则」）。上一轮以来记录的互动以 `[master] <行为>` 并入本次输入块，不写记录。主动轮不读 current，改用临时触发块（见「主动轮的上下文」）。
@@ -144,7 +144,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 - 不保存进程内快照：切换人设只改变读取的人设，不迁移旧人设的行；日切只是换一个读取日期。
 - 一轮内只采样一次时点：`received_at` 同时决定本次输入前缀、日期标记（见「日期标记」）、历史读取日期与感知事件的「当天」过滤，跨零点也不切换当天（D-07）。
 - 允许连续同角色、允许以 `me` 开头、允许孤立 `me`。
-- 不按预算裁剪快照；只对检索片段做预算（`FRAGMENT_TOKEN_BUDGET`，按字符累加、整条舍弃），结构化记忆全文注入。
+- 不按预算裁剪快照；检索片段与结构化记忆都不设独立字符预算，超窗由「超窗降级」逐块丢弃。
 - `event` 行永不进入上下文：它只用于审计与前端展示，历史里的事件行也不恢复；审批拒绝、派发失败等诊断只经 assistant 合并回注（见「派发分支」）。
 - 感知事件不写入 transcript 与 `daily_log`：被动轮每次组装调用解析器读取当天 current 事件，读入即清空，不延续到下一回合；主动轮不读 current。
 - 历史行一律渲染为纯文本 `[角色][HH:MM:SS]正文`：`master`、`me`、`assistant` 使用各自角色名。不再把助手历史包装成 `{"type": "chat", ...}` JSON，避免模型把历史当成待模仿的输出格式。
@@ -158,7 +158,7 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 ### 日期标记
 
 - 系统提示词之后固定追加一行日期分隔线，形如 `==========2026/11/03==========`；日期取本轮 `received_at`，而不是再读一次时钟。
-- 分隔线宽度统一 30 列（`chat_system_prompt.SEPARATOR_WIDTH`），`=` 填充，且**先格式化再居中**——先居中再格式化会得到宽度不定的结果。日期线先格式化成 `YYYY/MM/DD`，范畴线直接居中范畴名；日期线、`current` 线与三条范畴线同宽同类。
+- 分隔线宽度统一 30 列（`chat_system.SEPARATOR_WIDTH`），`=` 填充，且**先格式化再居中**——先居中再格式化会得到宽度不定的结果。日期线先格式化成 `YYYY/MM/DD`，范畴线直接居中范畴名；日期线、`current` 线与三条范畴线同宽同类。
 - 位置紧随拼好的基础提示词，之后才是回忆、记忆、快照等注入段落：全局只出现这一次，不进入快照、不写入 `daily_log`、不产生 `sources`。
 - 各层提示词不各自带日期；快照只覆盖当天，因此一次请求只出现一个日期标记。
 
@@ -179,18 +179,20 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 
 ### 引用
 
-- 只有本次注入的检索片段可以作为来源。
-- 模型输出中的 `[引用 日期]` 标记被去除；`sources` 只保留命中注入片段的引用。
-- 感知事件、结构化记忆全文、昨天的回忆、assistant 回注都不产生 `sources`。
+- 检索片段**不产生用户可见来源**：片段的真实行 id 只作提示词内的定位锚点，不是面向回复的引用键；过时的日期键引用解析已移除，`ChatReply.sources` 恒为空。
+- 提示词不含引用指令；模型若仍输出 `[引用 …]` 标记，解析层会剥除，不影响正文。
+- 感知事件、结构化记忆、昨天的回忆、assistant 回注都不产生来源。
+
+### 感知事件的注入
+
+- **现状**：被动轮从解析器读取当天事件，最多 5 条，按发生时间排序，渲染为 `[event][HH:MM:SS]<摘要>` 的 AI 消息放在 current 区；互动以 `[master] <行为>` 并入本次输入块。两条通道各行其道。
+- **目标态（未实施）**：按主题优先级「用户状态 > 应用活动 > 互动」每轮只选出一个主题、该主题内取最近一个事件，其余丢弃；两条通道合并为「至多一个」单一感知。主题 taxonomy、可感知池与选取规则已定，代码尚未改造，因此当前仍按现状呈现。
 
 ### 昨天的回忆
 
 回忆是把某个历史日期的原始对话压成一段第一人称正文，解决「跨日之后模型只知道今天」的问题。
 
-- **回顾哪一天**：`RecollectionService.ensure(day, persona=...)` 的 `day` 是「今天」，目标是 `day - 1`；同一人设同一天只保留一份回忆，重复调用直接复用已落库的内容。
-- **判定有没有聊天**：先看昨天是否同时存在 `master` 与 `me` 两种角色的行。有 → 直接回忆昨天；没有 → 找更早的最近一天有聊天记录的日子，派发时带上前缀 `昨天没有聊天，上次聊天在 <YYYY-MM-DD>：`；更早全都没有 → 不派发，直接写入 `昨天没有聊天，也没有更早的聊天记录可以回忆。`。
-- **派发方式**：交给「记忆检索」子代理，`read_only=True`（不弹审批）并带上 `turn_id`；只给事实（哪天、要什么），话术由子代理提示词决定。
-- **重试**：本轮与「无聊天回退」共用预算，最多 2 次派发；全部失败则把原因写成回忆正文并落库。
+- **结算流程**：结算哪一天、无聊天回退、幂等键、任务素材与重试预算的权威口径见 [MEMORY/README.md](MEMORY/README.md) 的「日结回忆」；对话域在组装前等待结算完成（`RecollectionService.ensure(day, persona=...)`），并按其产物注入。
 - **落库**：回忆写进被回忆的那一天（`event_time` 是该日），`created_at` 是生成时刻；失败也落库，正文以 `回忆生成失败：` 开头，`ok=False`，注入时整段跳过。
 - **注入格式**：一段带角色的纯文本行，与历史同构：
 
@@ -209,14 +211,11 @@ ChatService.chat(request: ChatRequest) -> ChatReply
 召回解决「主人提到几天前的事，模型只看得见今天」的问题；它只读、确定性、可回退，不增加模型调用与审批。
 
 - **范围**：只覆盖被动轮（`user_text` 有值）；主动轮没有用户输入，不召回。
-- **时间范围**：早于当天，`date_to = 今天 - 1`。当天记录本来就整体重放进历史，召回当天只会重复。
-- **角色范围**：只取 `master` / `me`；排除 `assistant`（子代理回执，单条可达数千字）、`event`（感知事实）、`回忆`（已单独注入）。
-- **关键词**：`keywords()` 是纯函数——按标点与空白切段，英文/数字整词（纯数字至少 4 位），中文不超过 4 字的短词整体保留，长串取二元组；去掉高频虚词、寒暄与虚字碎片，最多 4 个。
-- **检索与排序**：每个关键词按 `created_at` 倒序取最近 6 条；按记录 id 去重；先按「命中的关键词数」降序、再按时间倒序，最多取 6 条。
-- **截断**：单条压平换行后截到 160 字，避免一条长记录吃掉整个预算。
-- **注入**：转成 `MemoryFragment(kind=每日对话, date=记录所属日, text="[角色] 正文")`，沿用 `FRAGMENT_TOKEN_BUDGET` 与引用规则；日期即 `[引用 日期]` 的键。
+- **关键词与排序**：词提取规则、检索范围与排序上限的权威口径见 [MEMORY/README.md](MEMORY/README.md) 的「召回」；本域只负责调用召回并渲染结果。
+- **不截断单条**：片段保留原文，只把换行压平为单行，避免长记录被静默改写。
+- **注入**：转成 `MemoryFragment(id, role, text)`，渲染为 `[#行号][角色] 原文`；不附日期、不附引用指令、不设独立字符预算。
 - **失败与空结果**：检索抛异常、没有关键词或没有命中时静默跳过，只记日志；不产生 notices，不影响本轮回复。
-- **不做什么**：不调用模型做改写或摘要、不派发子代理、不写 `daily_log`、不缓存；召回结果只存在于本次上下文，被引用时只进入本轮 `sources`，不回写记录。
+- **不做什么**：不调用模型做改写或摘要、不派发子代理、不写 `daily_log`、不缓存；召回结果只存在于本次上下文，不回写记录，也不产生 `sources`。
 
 ## 生成与校验
 
@@ -284,34 +283,32 @@ chat 输出 dispatch（plan 项为 topic/task）
 ```
 
 - **任务身份**：入口取得 `PersonaSnapshot`，`run_plan` 生成 `TaskContext`（人设 ID 与版本、主任务 ID、每个子代理的子任务 ID、`turn_id`、来源、权限快照）并写入 `agent_run` 与审批项；子代理在 `task_scope` 内运行，文件访问读取同一快照。来源由入口决定：被动轮为 `user`，自动回忆等系统派发为 `system_auto`。工具签名不接收身份参数，模型无法自行声明或扩大权限。
-- **任务规划者固定交接**：用户来源的 `run_plan`（含单步 `dispatch`）在路由技能前，先把整份派发交给内部「任务」能力。该能力由 `task_skill()` 按说明书 `resources/skills/planning.md` 装配，只暴露 `index`、`read`、`grep`：先只读核对现状，再把需求整理成 1–5 项任务，按可独立验收的边界拆分，并保证任务之间没有先后依赖（必须串行的步骤合并为一项）。规划本身单独写一条 `agent_run`（`skill=任务`，步骤 `phase=plan`），不进入本轮检查点。规划失败（模型不可用、无效输出、说明书缺失）只记录失败运行并按原计划执行，不阻断用户请求；自动回忆显式传 `plan_first=False`，系统自动来源默认不规划。
+- **任务规划者固定交接**：用户来源的 `run_plan`（含单步 `dispatch`）在路由技能前，先把整份派发交给内部「任务」能力。该能力由 `task_skill()` 按说明书 `resources/skills/planning/SKILL.md` 装配，只暴露 `index`、`read`、`grep`：先只读核对现状，再把需求整理成 1–5 项任务，按可独立验收的边界拆分，并保证任务之间没有先后依赖（必须串行的步骤合并为一项）。规划本身单独写一条 `agent_run`（`skill=任务`，步骤 `phase=plan`），不进入本轮检查点。规划失败（模型不可用、无效输出、说明书缺失）只记录失败运行并按原计划执行，不阻断用户请求；自动回忆显式传 `plan_first=False`，系统自动来源默认不规划。
 - **规划能力隐藏且幂等**：`任务` 不参与关键词路由，也不出现在主 agent 的能力清单和子代理的 `SKILLS` 索引里，只由派发执行器按固定名字取用。相同 `SkillSpec` 可重复登记（重新读取说明书，结果一致），同名但工具、关键词或规划标记不同则直接拒绝，避免装配漂移。
 - `allow_dispatch=false` 时，`dispatch` 视为 `invalid_output`。
-- 主动轮允许派发，但 `read_only_dispatch=true`：判定依据是草案**实际声明的工具**，全部在 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里才放行；声明含写入工具时在起草后立即拒绝，执行阶段的非只读过滤只作兜底（D-25/D-28）。混合技能中的纯读取任务因此可以执行，写入型任务仍整项拒绝。
-- 混合计划按项处理：只读项正常执行，写入项单独拒绝；只读项不因同批次的写入项而取消。
+- 主动轮允许派发，但 `read_only_dispatch=true`：放行判定与拒绝细则以 [PROACTIVE.md](PROACTIVE.md) 的「主动轮只读派发」为权威——按草案实际声明的工具逐项判定，全部在 `READ_ONLY_TOOLS` 里才执行，执行阶段再作兜底过滤；混合计划按项处理，只读项不因同批次的写入项而取消。
 - 主动轮不请求审批；被动轮仍逐项确认。只读拒绝不写 `approval_rejected` 事件，拒绝原因与成功输出一起合并进 assistant 回注并落账。
 - **逐次读取审批**：用户来源的子代理调用 `index` / `read` / `grep` 时，每次调用在真正读取前各开一张票据，展示动作、资源与路径、参数摘要（`line_ranges`、grep 模式与 limit、日期区间）、起草子任务、人设版本与模型。一次调用一张票，不把多次读取塞进同一张任务票。拒绝时该次调用返回失败回执、不返回内容、不建立 `base`，任务继续执行其他步骤；等待不超时，任务挂起可恢复，取消任务或进程退出才作废票据。系统自动来源（自动回忆、主动轮）跳过读取审批，但仍受资源权限与派发快照约束；来源由后端决定，模型无法声明。读取审批与结算审批相互独立，申请编辑不能跳过读取审批。
-- **工具入口**：文件工具只有 `index`、`read`、`grep`、`edit` 四个；写动作由 `edit.action` 区分（`replace_lines`、`replace_regex`、`append`、`insert`、`delete`）。每个使用文件工具的子代理任务首次工具调用必须是 `index`（`finish` 除外）；`index` 只做能力/路径投影，不返回正文、不建立 `base`。
-- **草稿层与结算**：`draft`/`world` 的上述写动作不再直接落盘，而是在首次 `read` 留底的 `base` 全文上得到暂存文本，工具结果明确返回“已暂存，尚未写入文件”。同一主任务的子代理共享草稿；命中“换成非写动作 / 换文件 / 同一文件写满 N 次（默认 8）”时结算一次，由后端生成净 diff 并弹出该文件的结算审批卡。批准后提交前重读磁盘：与 `base` 相同则直接写；不同则按 `base`/磁盘/草稿三方合并，仅一方改动的区间保留，双方不同的区间判冲突且不覆盖磁盘。拒绝、提交失败或冲突都会丢弃该文件草稿；冲突回执列出磁盘侧与草稿侧区间，要求子代理重新 `read` 后以新内容为基准重新提出，下一次结算即新的净 diff 预览。未读先写、非 UTF-8、超单文件 2 MB/2 万行或任务合计 32 MB 时严格失败；结构化记忆仍即时校验并更新索引。
-- **并发、部分失败与取消**：同一文件的结算按 `(resource, path)` 进程内锁串行，后来者等待当前结算完成；不同主任务先后结算同一文件时各自在提交前重读磁盘并做三方合并，不相交的改动都保留，同一区间冲突则后结算方失败且不覆盖磁盘。多文件任务逐文件结算与提交，某个文件被拒绝、提交失败或冲突只影响该文件，已成功的文件不回滚；失败文件草稿被丢弃，需重新 `read` 后重新提出。任务取消或进程退出会作废该主任务全部未决票据并唤醒等待方，回执为“任务已取消”或“后端已退出，审批已作废”；草稿只驻留内存，退出即丢弃。结算审批期间持有该文件锁，取消后等待方得到失败回执而不是继续挂起。
-- **版本令牌与逐文件结局**：`read` 的文件级结果与 `grep` 的文件级片段末尾附一行“快照 token”，由资源显示名与该次交付文本派生，标记“读到的是哪个版本”；它不是权限凭据，不改变读取审批与白名单。`edit` 可把该 token 作为可选入参回传：传了但目标已被别处改动，该次编辑以 `stale_snapshot` 失败、不产生草稿并要求重新 `read`；不传则退化为只校验磁盘相对 `base` 是否漂移。结算按文件产出结构化结局，取值为 `committed`、`rejected`、`conflict`、`failed`、`skipped`；其中 `committed` 与 `skipped` 无需模型再处理，`rejected`、`conflict`、`failed` 必须把回执交回模型，让它在新基准上重新决策。结算日志只记各结局计数（`event=files.settle`），不复制正文。
+- **工具入口**：文件工具为 `index`、`read`、`grep` 与九个独立写动作（`append`、`insert`、`replace_lines`、`replace_regex`、`delete_lines`、`create_file`、`delete_file`、`create_dir`、`delete_dir`），不存在 `edit` 聚合入口；动作语义与分组见 [FILES/ACTIONS.md](FILES/ACTIONS.md)。每个使用文件工具的子代理任务首次工具调用必须是 `index`（`finish` 除外）；`index` 只做能力与路径投影，不返回文件正文。
+- **条目队列与结算**：写动作把修改归一为 range 条目入队，不直接落盘；人工授权只在 review 一处，按 hunk（action）批准或驳回，主任务终态结算时才提交。条目归一、状态机与 review 呈现见 [FILES/QUEUE.md](FILES/QUEUE.md)。提交前复核全文哈希：相交条目作废、不相交条目按偏移保留原批准，冲突文件不写入且只报告「检测到哈希不一致」，不做三方合并；版本与外部变更分区处置见 [FILES/VERSION.md](FILES/VERSION.md)。结算按文件产出 `committed` / `rejected` / `conflict` / `failed` / `skipped`，其中 `committed` 与 `skipped` 无需模型再处理，其余结局的回执必须交回模型，让它在新基准上重新决策。结算日志只记各结局计数（`event=files.settle`），不复制正文。
 - 审批拒绝、派发失败写入 `event` 行，只作审计与前端展示，永不进入上下文；它们的原因随本轮结果合并为一条 assistant 回注。都不进入 `sources`。
 
 #### 技能与工具分组
 
 | 技能（内部） | 说明书 | 可声明工具 | 写到哪里 |
 |---|---|---|---|
-| 记忆写入 | `resources/skills/memory_write.md` | `index`、`read`、`grep`、`edit` | `structured` 资源（`data/memory/structured.md`） |
-| 记忆检索 | `resources/skills/memory_retrieve.md` | `index`、`read`、`grep` | 只读 |
-| 自记笔记 | `resources/skills/draft_note.md` | `index`、`read`、`grep`、`edit` | `draft` 资源（资源库内的 `草稿本.md`） |
-| 任务（规划） | `resources/skills/planning.md` | `index`、`read`、`grep` | 只读；固定第一交接，不参与路由与能力清单 |
+| 记忆写入 | `resources/skills/memory_write/SKILL.md` | `index`、`read`、`grep`、`memory` | `memory_structured` 条目（`pet.db`），经记忆域事务写入 |
+| 记忆检索 | `resources/skills/memory_retrieve/SKILL.md` | `index`、`read`、`grep` | 只读 |
+| 自记笔记 | `resources/skills/draft_note/SKILL.md` | `index`、`read`、`grep`、`append`、`insert`、`replace_lines`、`replace_regex`、`delete_lines` | `draft` 资源（资源库内的 `草稿本.md`） |
+| 任务（规划） | `resources/skills/planning/SKILL.md` | `index`、`read`、`grep` | 只读；固定第一交接，不参与路由与能力清单 |
 
+- 说明书统一为 `<slug>/SKILL.md` + YAML frontmatter：`name` 与 `description` 是唯一元数据源，正文由子代理按需 `read`；`read` 只下发正文，不再重复下发 frontmatter。代码侧 `SkillSpec` 只登记目录名、工具与关键词，名称与说明书不一致时登记即报错。
 - 技能名只用于内部路由与审计（`agent_run.skill` 存推断出的技能名或 `natural`），不是模型派发协议的一部分；模型只给 `topic` 与 `task`，审批卡片展示 `topic` / `task` / 工具 / 草案内容，并标注起草子任务、人设版本与模型；读取卡另展示动作、资源/路径与参数摘要；文件结算卡另展示后端生成的净 diff（新建、删除、改动数与逐 hunk）。
 - 「任务」规划能力的说明书正文直接嵌入规划提示词，不作为可选技能暴露给执行子代理；它产出的 `topic` / `task` 才进入后续路由与审批。
 - 工具清单在 `agent/skills/registry.py` 登记；草案阶段只给 `READ_ONLY_TOOLS`（`index`、`read`、`grep`）里的交集，执行阶段才放开写工具。
 - 每个技能声明的工具都必须在 `SubAgent` 构造时注册过，否则草案阶段直接返回 `tool_missing`。
 - 草稿本是**短期便签**，不是长期记忆：跨天依然成立的偏好与约定走「记忆写入」，临时计划与待办走「自记笔记」。
-- 全部动作共用 `agent/files/registry.py` 的资源注册表：`draft`、`structured`、`permanent`、`world` 各有允许的动作；草稿本与结构化记忆可以按行删除内容，但不能删除文件本体；只有 `world` 能新建或删除文件。
+- 全部动作共用 `agent/resources.py` 的资源登记表：`draft`、`structured`、`permanent`、`world` 各有允许的动作；草稿本与结构化记忆可以按行删除内容，但不能删除文件本体；只有 `world` 能新建或删除文件。
 - 资源按 ID 解析到运行时数据目录；也可传已注册路径，但必须落在白名单内。`..` 穿越、符号链接或目录联接外跳由 `agent/files/resolver.py` 拒绝；指向草稿本的路径会归到 `draft`，不能借 `world` 绕过权限。
 - 永久记忆（`permanent`）是只读虚拟资源，用 `date` 或 `from`/`to` 读取当前人设的记录；结果按子代理模型的 `max_tokens` 限制单次读取，超限时明确失败。
 - 资源库根目录取 `settings.data_dir / "resources"`，随 `PET_DATA_DIR` 变化；后端启动时由 `agent/files/workspace.prepare_workspace()` 建目录与 `草稿本.md`，已有内容不覆盖。
@@ -339,6 +336,19 @@ chat 输出 dispatch（plan 项为 topic/task）
 - 上下文告警用稳定 code（`agent/capabilities/chat/context.py` 的 `WARNING_MEMORY_UNLOADED`、`WARNING_FRAGMENTS_DROPPED`）；只有 `memory_unloaded` 映射为 notices，检索片段超预算只记 warning，不打扰用户（D-30）。
 - 诊断信息不含记忆正文；前端按 code 映射展示文案，未知 code 忽略。
 
+### 超窗降级
+
+调用前预检 `输入 token + max_tokens <= context_window`。超窗时按固定顺序**逐块丢弃**，每步只丢一个块并记对应 warning，然后重试预检：
+
+| 顺序 | 丢弃的块 | 规格字段 | warning |
+|---|---|---|---|
+| 1 | 主题感知事件 | `drop_events` | `events_dropped` |
+| 2 | 昨天的回忆 | `drop_recollection` | `recollection_dropped` |
+| 3 | 召回片段（从相关度最低端逐条） | `keep_fragments` | `fragments_dropped` |
+| 4 | 最旧的历史轮（从最旧端逐轮） | `keep_history_turns` | `history_dropped` |
+
+**必保块**（系统提示词与人设、本轮输入、结构化记忆）不参与降级：它们自身超窗即报 `context_overflow`，不裁剪、不静默截断。各块的计数取自装配快照的全量口径，不随已丢块变化，因此每步只丢一个块、不会连锁多丢。降级只影响本轮请求，不改动 `daily_log` 与结构化条目。
+
 ## 落账与快照
 
 ### daily_log
@@ -352,7 +362,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 | `回忆` | 昨日回忆正文（成功内容或失败原因） | 回忆生成完成后；每个「被回忆的那一天 + 人设」一条 |
 
 - `daily_log` 带 `persona_id`：写入时取本轮开始时的启用人设；旧数据由迁移按当时启用人设回填，没有设置时回填默认人设「芙芙」。
-- `event_time` 是事件发生时刻（带时区偏移的 ISO 8601 文本），按天读取时取它的日期部分；`created_at` 是入库时刻。聊天与事件行由同一采样时间写入，迁移 `0014` 用 `created_at` 回填旧的 `date` 列。唯一的例外是 `回忆`：`event_time` 记**被回忆的那一天**，`created_at` 才是生成时刻。
+- `event_time` 是事件发生时刻（带时区偏移的 ISO 8601 文本），按天读取时取它的日期部分；`created_at` 是入库时刻。聊天与事件行由同一采样时间写入。唯一的例外是 `回忆`：`event_time` 记**被回忆的那一天**，`created_at` 才是生成时刻。
 - `master` 先落库再调用模型：模型不可用、输入/output 校验失败或上下文超限时，用户这句话仍然保留，重启后可见；落库之后、拼装之前会等回忆就绪，构建器按记录身份剔除历史里的这一行，再由本次输入表达，因此当前输入不会在自己的提示词里出现两次（见「快照规则」）。
 - `me` 只在最终回复通过校验后写入；`master`、`assistant`、`me` 各自独立写入，互不依赖对方是否成功。被动轮 `record_user` 失败直接报 `record_failed`，不调模型、不回复（见「失败与重试」）。
 - `assistant` 存本轮合并正文：成功时拼接各子代理 `output`，失败或拒绝时拼接 `error`；一轮只写一行。不存 `执行：<topic>` 前缀、`[finished_plan]` 检查点包装、`plan_id`、派发 JSON 或通用提示文字。查询任务的正文应包含查到的内容，可同时包含反馈。
@@ -363,7 +373,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 - `master` 一行的内容就是用户原文，事件时刻存在 `event_time` 列；`[角色][时间]` 前缀只在装配上下文与界面渲染时拼接，不写进 `content`。
 - 每轮都写入，不再有跳过 `daily_log` 的模式。
 - 事件类型维持 3 种，不因感知扩表；感知只进 current 区，不进 `daily_log`。
-- `回忆` 不是聊天角色：`restore_day` 只恢复 `master` / `me` / `assistant`，回忆由 `read_recollection` 单独读、单独注入（见「昨天的回忆」）。迁移 `0015` 给 `role` 的 CHECK 加上该值，并建了部分唯一索引 `(persona_id, substr(event_time, 1, 10)) WHERE role = '回忆'`，同一人设同一天最多一条。
+- `回忆` 不是聊天角色：`restore_day` 只恢复 `master` / `me` / `assistant`，回忆由 `read_recollection` 单独读、单独注入（见「昨天的回忆」）。基线迁移 `0001_init` 中 `role` 的 CHECK 已含该值，并建了部分唯一索引 `(persona_id, substr(event_time, 1, 10)) WHERE role = '回忆'`，同一人设同一天最多一条。
 - 历史跨天永久保留；上下文只恢复当天。
 
 ### transcript
@@ -376,7 +386,7 @@ chat 输出 dispatch（plan 项为 topic/task）
 ### 历史与来源
 
 - 历史查询读 `daily_log`，不读 transcript。
-- `sources` 只来自本次注入的检索片段；不来自 transcript 或感知。
+- `sources` 恒为空：检索片段带真实行 id 作提示词内锚点，不是面向回复的引用键；transcript 与感知也不产生来源。
 
 ## 事件出口
 
@@ -436,6 +446,8 @@ chat 输出 dispatch（plan 项为 topic/task）
 | 感知事件生命周期 | 每轮重新读取并消费，不延续到下一回合；主动轮不读 current |
 | 回注 | 本轮所有子代理结果合并为一条 assistant 消息，二次生成与落库同源；不带 `plan_id` / 检查点包装 |
 | 记忆降级 | 结构化记忆读取失败经 `notices`（`memory_unloaded`）提示；文档不含记忆正文 |
+| 超窗降级 | 按 感知事件 → 每日回忆 → 召回片段 → 最旧历史轮 逐块丢弃并记 warning；必保块超窗直接报 `context_overflow` |
+| 召回来源 | 片段带真实行 id 作提示词内锚点，不产生用户可见来源，`sources` 恒空 |
 | 被动串行 | session 级占位，第二个被动请求 `session_busy`；主动轮不占位 |
 | 触发块措辞 | `agent/capabilities/chat/context.py` 的 `PROACTIVE_TRIGGER` |
 | 事件 sink | 构造期默认 sink，可按 `ChatRequest.events` 覆盖 |
@@ -457,9 +469,9 @@ chat 输出 dispatch（plan 项为 topic/task）
 - 本轮所有子代理结果合并成一条 assistant 回注，与落库同源；二次生成不携带派发 JSON、检查点或计划结构。
 - 相邻相同 query 只在上下文去重，`daily_log` 保留两条；去重按本轮记录身份定位，不依赖正文回查。
 - 被动轮串行：占位期间第二个请求报 `session_busy`；本轮输入落库失败报 `record_failed`，不调模型、不回复。
-- 结构化记忆读取失败经 `notices`（`memory_unloaded`）提示，不占回复正文；检索片段超预算只记 warning。
+- 结构化记忆读取失败经 `notices`（`memory_unloaded`）提示，不占回复正文；结构化记忆与检索片段都不设独立字符预算，超窗按 感知事件 → 每日回忆 → 召回片段 → 最旧历史轮 逐块丢弃，必保块不再降级。
 - 主动轮允许只读派发：按草案实际声明的工具逐项判定，全部只读才放行，含写入立即拒绝，执行阶段过滤只作兜底；不请求审批。
-- 提示词只有一份来源：`chat_system_prompt.py` 用 `TOPIC_REGISTRY` 定义主题正文、范畴与 `render` 入口；装配器每轮按 身份 → 能力 → 行为 分组，包装 `【主题】\n正文` 并以范畴线分隔；该模块不读文件系统。
+- 提示词只有一份来源：`chat_system.py` 用 `TOPIC_REGISTRY` 定义主题正文、范畴与 `render` 入口；装配器每轮按 身份 → 能力 → 行为 分组，包装 `【主题】\n正文` 并以范畴线分隔；该模块不读文件系统。
 - 回忆策略：先确定性地判定「昨天有没有聊天」，有就回忆昨天，没有就回退到更早最近的一天并说明「上次聊天在 X」，完全没有历史则不派发、只落原因；派发与重试共用 2 次预算，失败也落库但不注入。
 - 回忆是旁注不是聊天：`回忆` 行只经 `read_recollection` 注入，不进 `restore_day` 时间线，记忆读取时也会被过滤掉。
 - 草稿本（`自记笔记`）是短期便签，与 `daily_log` 这份长期记忆分开；它只能经派发子代理读写，被动轮写入走审批闸门，主动轮不允许写入，根目录为数据目录下的资源库。
