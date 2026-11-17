@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from hashlib import sha256
@@ -28,6 +27,7 @@ from agent.constants import (
 from agent.harness.review import ReviewService
 from agent.llm.llm_service import LlmService, LlmUnavailableError
 from agent.prompts.dsml import DsmlError, parse_dsml
+from agent.prompts.output_parse import clean_output_text
 from agent.prompts.templates import read_template
 from agent.skills.registry import Skill
 from agent.spec.context import TaskContext, task_scope
@@ -51,13 +51,6 @@ LOG_TEXT_LIMIT = 2000
 Accept = Callable[[dict[str, Any]], "str | None"]
 
 logger = logging.getLogger("pet.agent.subagent")
-
-_PRIVATE_TAG = re.compile(
-    r"<[^<>\n]{0,200}DSML[^<>\n]{0,200}>"
-    r"|<[|｜][^<>\n]{0,200}[|｜]>"
-)
-_ZERO_WIDTH = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
-_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 @dataclass(frozen=True)
@@ -115,7 +108,7 @@ def parse_action(text: str) -> dict[str, Any] | None:
             name = call.name
             args = call.parameters
         return {"action": "tool", "tool": name, "args": args}
-    cleaned = _clean_reply(text)
+    cleaned = clean_output_text(text)
     decoder = json.JSONDecoder()
     for index, char in enumerate(cleaned):
         if char != "{":
@@ -127,12 +120,6 @@ def parse_action(text: str) -> dict[str, Any] | None:
         if isinstance(data, dict) and data.get("action") in ACTIONS:
             return data
     return None
-
-
-def _clean_reply(text: str) -> str:
-    cleaned = _PRIVATE_TAG.sub("", text)
-    cleaned = _ZERO_WIDTH.sub("", cleaned)
-    return _CONTROL.sub("", cleaned)
 
 
 def _clip_log(text: str) -> str:

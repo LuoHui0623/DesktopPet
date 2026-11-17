@@ -4,20 +4,18 @@
 避免规则文案与审核逻辑分居两处后漂移（D-14）。
 """
 
-import json
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from agent.prompts.dsml import DsmlError, parse_dsml
+from agent.prompts.output_parse import extract_json_object, parse_json_output
 from constants.speech import REPLY_MAX_ITEMS
+
+TIMELINE_PREFIX = re.compile(r"^\[(?:master|me|assistant|system)\]\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
 
 if TYPE_CHECKING:
     from agent.spec.plan import PlanStep
-
-FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
-JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
-TIMELINE_PREFIX = re.compile(r"^\[(?:master|me|assistant|system)\]\[\d{1,2}:\d{2}(?::\d{2})?\]\s*")
 
 ACTION_RULES_BODY = """每次说话要用 `{}` JSON 格式!!!
 每次对话前，你可以先派发一次任务，最多一次哦
@@ -87,13 +85,6 @@ def _reply_texts(value: Any) -> tuple[str, ...]:
     return tuple(texts)
 
 
-def _extract_json(content: str) -> str:
-    """模型偶尔把 JSON 包进代码块或夹在说明文字里，取最外层对象再交给 json 解析。"""
-    text = FENCE.sub("", content.strip()).strip()
-    match = JSON_OBJECT.search(text)
-    return match.group(0) if match else text
-
-
 def _plain_reply_texts(content: str) -> tuple[str, ...]:
     """兜底解析模型直接说的人话：按空行分段，去掉它抄来的时间线前缀。"""
     items: list[str] = []
@@ -104,7 +95,7 @@ def _plain_reply_texts(content: str) -> tuple[str, ...]:
             items.append("\n".join(current))
             current.clear()
 
-    for raw in _extract_json(content).splitlines():
+    for raw in extract_json_object(content).splitlines():
         if not raw.strip():
             flush()
             continue
@@ -132,7 +123,7 @@ def parse_chat_output(content: str) -> ChatOutput:
         data = {"type": "dispatch", "plan": call.parameters["plan"]}
     else:
         try:
-            data = json.loads(_extract_json(content))
+            data = parse_json_output(content)
         except ValueError as exc:
             if "{" in content or "}" in content:
                 raise ModelOutputError("回复不是合法的 JSON") from exc

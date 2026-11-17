@@ -1,4 +1,3 @@
-import json
 import logging
 import threading
 from collections.abc import Callable, Sequence
@@ -54,9 +53,9 @@ from agent.prompts.chat_output import (
     ChatOutput,
     DispatchRejectedError,
     ModelOutputError,
-    _extract_json,
     parse_chat_output,
 )
+from agent.prompts.output_parse import parse_json_output
 from agent.prompts.templates import (
     CapabilityDescription,
     PromptTemplates,
@@ -257,7 +256,7 @@ def _text_of(content: Any) -> str:
 
 def _attempted_topic(content: str) -> str:
     try:
-        data = json.loads(_extract_json(content))
+        data = parse_json_output(content)
     except ValueError:
         return UNSPECIFIED_TOPIC
     plan = data.get("plan") if isinstance(data, dict) else None

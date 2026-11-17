@@ -10,6 +10,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+# fence 剥离在此自包含：`agent/spec` 是契约层，不得依赖实现包（含 `agent/prompts`
+# 的 output_parse helper，见 tests/agent/test_layer_dependency.py），属有意重复。
 FENCE = re.compile(r"^```[A-Za-z]*\s*|\s*```$")
 
 PLAN_MIN_ITEMS = 1
